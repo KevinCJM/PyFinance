@@ -251,12 +251,12 @@ def get_etf_daily_data(etf_code, start_date='20040101', end_date=datetime.now().
 
     # 将数据保存为parquet格式
     if save_parquet:
-        final_df.to_parquet(f'../data/{etf_code}_daily.parquet')
+        final_df.to_parquet(f'../Data/{etf_code}_daily.parquet')
     return final_df
 
 
 # 全量获取所有未清盘的ETF的每日数据，并将其保存到一个Parquet文件中
-def get_etf_daily_data_all():
+def get_etf_daily_data_all(output_path="../Data/etf_daily.parquet"):
     """
     获取所有未清盘的ETF的每日数据，并将其保存到一个Parquet文件中。
     该函数首先获取所有ETF的代码和发行日期，然后为每个ETF获取每日数据，
@@ -277,13 +277,11 @@ def get_etf_daily_data_all():
     # 打印ETF基金总数
     print(f"共有 {len(ts_issue_dict)} 只 ETF 基金")
 
-    '''2) 启动前备份旧文件'''
-    # 定义保存路径
-    output_path = "../data/etf_daily.parquet"
-    # 如果文件已存在，则进行备份
+    '''2) 启动前备份旧文件'''  # 如果文件已存在，则进行备份
     if os.path.exists(output_path):
         today = datetime.today().strftime('%Y%m%d')
-        backup_path = f"../data/etf_daily_{today}.parquet"
+        back_file_name = f"etf_daily_{today}.parquet"
+        backup_path = os.path.join(os.path.dirname(output_path), back_file_name)
         os.rename(output_path, backup_path)
         print(f"[备份] 原 parquet 文件已保存为 {backup_path}")
 
@@ -329,7 +327,7 @@ def get_etf_daily_data_all():
 
 
 # 递增获取ETF每日数据并更新到parquet文件中
-def get_etf_daily_data_increment():
+def get_etf_daily_data_increment(parquet_path="../Data/etf_daily.parquet"):
     """
     递增获取ETF每日数据并更新到parquet文件中。
 
@@ -367,12 +365,12 @@ def get_etf_daily_data_increment():
     new_data = pd.concat(final_df, ignore_index=True)
 
     # 3. 读取原 parquet 数据（如果存在）
-    parquet_path = "../data/etf_daily.parquet"
     if os.path.exists(parquet_path):
         old_data = pd.read_parquet(parquet_path)
         # 备份原文件（新增逻辑）
         today = datetime.today().strftime('%Y%m%d')
-        backup_path = f"../data/etf_daily_{today}.parquet"
+        back_file_name = f"etf_daily_{today}.parquet"
+        backup_path = os.path.join(os.path.dirname(parquet_path), back_file_name)
         os.rename(parquet_path, backup_path)
         print(f"[备份] 原文件已备份为 {backup_path}")
 
