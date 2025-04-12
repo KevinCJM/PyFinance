@@ -6,12 +6,13 @@
 @Descriptions: 因子加工厂
 """
 import gc
-import os.path
-
+import os
+import time
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from dateutil.relativedelta import relativedelta
+
 from MetricsFactory.metrics_cal import CalMetrics
 from multiprocessing import Pool, cpu_count, shared_memory
 from functools import partial
@@ -255,10 +256,11 @@ def compute_metrics_for_period_initialize(log_return_df,
     gc.collect()
 
     ''' 2) 遍历各个区间 '''
-    for period in p_list if period_list else period_list:
-        print(f"计算区间: {period}")
+    for period in p_list if p_list else period_list:
         if period not in period_metrics_map:
             continue
+        print(f"[开始] 计算区间: {period}")
+        s_t = time.time()
 
         ''' 3.1) 遍历每一天的结束日期,滚动计算每天的指标 (进程池) '''
         if multi_process:
@@ -310,6 +312,8 @@ def compute_metrics_for_period_initialize(log_return_df,
             final_df = pd.concat(results, axis=0)
             file_path = os.path.join(save_path, f"{period}.parquet")
             final_df.to_parquet(file_path)
+            print(f"[完成] 区间{period}指标计算完成, 保存至 {file_path}，"
+                  f"共 {len(final_df)} 条记录，耗时 {time.time() - s_t} 秒")
 
         else:
             ''' 3.2) 遍历每一天的结束日期,滚动计算每天的指标 (单进程) '''
@@ -349,6 +353,8 @@ def compute_metrics_for_period_initialize(log_return_df,
             final_df = pd.concat(final_df, axis=0)
             file_path = os.path.join(save_path, f"{period}.parquet")
             final_df.to_parquet(file_path)
+            print(f"[完成] 区间{period}指标计算完成, 保存至 {file_path}，"
+                  f"共 {len(final_df)} 条记录，耗时 {time.time() - s_t} 秒")
 
 
 if __name__ == '__main__':

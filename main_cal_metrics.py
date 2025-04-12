@@ -5,6 +5,7 @@
 @Author: Kevin-Chen
 @Descriptions: 主程序: 计算各类指标
 """
+import time
 import pandas as pd
 from MetricsFactory.metrics_factory import compute_metrics_for_period_initialize
 
@@ -29,8 +30,10 @@ close_price_df = pd.read_parquet(close_price_file)  # 读取ETF日频收盘价�
 
 if __name__ == '__main__':
     # 计算指标
+    s_t = time.time()
     compute_metrics_for_period_initialize(log_return_df,  # 对数收益率数据
                                           close_price_df,  # 收盘价数据
                                           save_path,  # 指标的保存文件路径
                                           p_list=specific_period_list,  # 计算指定的区间
                                           )
+    print(f"所有指标计算完成, 耗时: {(time.time() - s_t) / 60:.2f} 分钟")
