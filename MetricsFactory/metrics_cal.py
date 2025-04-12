@@ -283,7 +283,7 @@ class CalMetrics:
                  time_zone_code,
                  nature_days_in_p,
                  end_date,
-                 min_data_required=5,
+                 min_data_required=2,
                  trans_to_cumulative_return=False):
         # 初始化基金代码列表
         self.fund_codes = fund_codes

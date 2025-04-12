@@ -313,7 +313,7 @@ def compute_metrics_for_period_initialize(log_return_df,
             file_path = os.path.join(save_path, f"{period}.parquet")
             final_df.to_parquet(file_path)
             print(f"[完成] 区间{period}指标计算完成, 保存至 {file_path}，"
-                  f"共 {len(final_df)} 条记录，耗时 {time.time() - s_t} 秒")
+                  f"共 {len(final_df)} 条记录，耗时 {(time.time() - s_t):.2f} 秒")
 
         else:
             ''' 3.2) 遍历每一天的结束日期,滚动计算每天的指标 (单进程) '''
@@ -343,7 +343,7 @@ def compute_metrics_for_period_initialize(log_return_df,
                     period,  # 计算指标的时间区间类型，例如'1m'(近一个月)、'qtd'(本季至今)等
                     days_in_p,  # 指定日期范围内自然日的数量，用于计算某些时间相关的指标
                     end_date,  # 当前计算周期的结束日期，pd.Timestamp格式
-                    5  # 最小数据要求，表示计算指标时至少需要的数据点数量，默认为5
+                    2  # 最小数据要求，表示计算指标时至少需要的数据点数量，默认为2
                 )
 
                 sub_df = c_m.cal_metric_main(period_metrics_map[period])
@@ -354,7 +354,7 @@ def compute_metrics_for_period_initialize(log_return_df,
             file_path = os.path.join(save_path, f"{period}.parquet")
             final_df.to_parquet(file_path)
             print(f"[完成] 区间{period}指标计算完成, 保存至 {file_path}，"
-                  f"共 {len(final_df)} 条记录，耗时 {time.time() - s_t} 秒")
+                  f"共 {len(final_df)} 条记录，耗时 {(time.time() - s_t):.2f} 秒")
 
 
 if __name__ == '__main__':

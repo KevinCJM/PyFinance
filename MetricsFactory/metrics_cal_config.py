@@ -695,5 +695,19 @@ def create_period_metrics_map():
 
 
 if __name__ == '__main__':
-    # print(create_period_metrics_map()['10y'])
-    print(len(log_return_metrics_dict) * 13)
+    # 构建表格数据
+    rows = []
+    for k, v in log_return_metrics_dict.items():
+        rows.append({
+            "指标代码": k,
+            "指标名称": v[0],
+            "指标含义": v[1].split("=")[0].strip(),
+            "简要计算逻辑": v[1].split("=")[1].strip() if "=" in v[1] else v[1],
+            "支持区间": ", ".join(v[2])
+        })
+
+    # 显示表格
+    import pandas as pd
+
+    df = pd.DataFrame(rows)
+    df.to_excel("指标说明.xlsx", index=False)
