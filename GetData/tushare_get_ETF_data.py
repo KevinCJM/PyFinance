@@ -5,6 +5,7 @@
 @Author: Kevin-Chen
 @Descriptions: 使用 Tushare 接口获取 ETF 数据
 """
+import gc
 from datetime import datetime, timedelta
 from collections import deque
 import pyarrow.parquet as pq
@@ -340,21 +341,41 @@ def get_etf_daily_data_increment(parquet_path="../Data/etf_daily.parquet"):
     ts_issue_list = get_etf_info().drop_duplicates(subset="ts_code", keep="first")["ts_code"].unique().tolist()
     final_df = list()
 
-    # 遍历每只ETF，获取其每日数据（带重连机制）
+    # 读取原 parquet 数据, 找到已有哪些ETF, 以及这些ETF最后一条数据的交易日
+    exist_df = pd.read_parquet(parquet_path)
+    # 从 exist_df 中提取每个 ts_code 以及其对应的最后一条 trade_date
+    exist_latest_date_df = exist_df.groupby("ts_code")["trade_date"].max().reset_index()
+    # 转为字典
+    exist_latest_date_dict = dict(zip(exist_latest_date_df["ts_code"], exist_latest_date_df["trade_date"]))
+    # 删除无用数据
+    del exist_df, exist_latest_date_df
+    gc.collect()
+
+    # 遍历每只 ETF，带增量逻辑与重连机制
     for ts_code in tqdm(ts_issue_list):
+        # 获取 start_date：如果存在则取最后日期往前 5 天，否则取默认初始日期
+        if ts_code in exist_latest_date_dict:
+            latest_date = pd.to_datetime(exist_latest_date_dict[ts_code])
+            start_date = (latest_date - timedelta(days=5)).strftime('%Y%m%d')
+        else:
+            start_date = "20050101"
+
+        end_date = datetime.now().strftime('%Y%m%d')
+
+        # 重试机制
         for attempt in range(5):
             try:
                 usb_df = safe_fund_daily(
                     ts_code=ts_code,
-                    start_date=(datetime.today() - timedelta(days=6)).strftime('%Y%m%d'),
-                    end_date=datetime.now().strftime('%Y%m%d')
+                    start_date=start_date,
+                    end_date=end_date
                 )
                 if usb_df is not None and not usb_df.empty:
                     final_df.append(usb_df)
                     break  # 成功跳出重试
             except Exception as e:
                 print(f"[重试 {attempt + 1}/5] 获取 {ts_code} 数据失败: {e}")
-                if attempt == 4:  # 第3次还是失败
+                if attempt == 4:
                     print(f"获取 {ts_code} 数据失败: {e}")
                     print(traceback.format_exc())
 
@@ -387,5 +408,5 @@ def get_etf_daily_data_increment(parquet_path="../Data/etf_daily.parquet"):
 
 
 if __name__ == '__main__':
-    get_etf_daily_data_all()
+    # get_etf_daily_data_all()
     get_etf_daily_data_increment()
