@@ -5,8 +5,8 @@
 __pycache__/
 
 # 忽略 data 文件夹下的所有文件, 但是保留 data 文件夹本身
-data/.gitkeep
-data/*
+#data/.gitkeep
+#data/*
 
 # 忽略所有 parquet 数据文件
 *.parquet
