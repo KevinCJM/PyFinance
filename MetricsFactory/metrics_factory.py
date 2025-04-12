@@ -142,6 +142,7 @@ def calc_metrics_shared_worker(args, shm_info):
         funds_codes,
         period,
         period_metrics_map,
+        min_data_required,
     ) = args
 
     # 解包共享内存信息，包括共享内存名称、形状和数据类型
@@ -168,7 +169,7 @@ def calc_metrics_shared_worker(args, shm_info):
         period,
         days_in_p,
         end_date,
-        min_data_required=5,
+        min_data_required=min_data_required,
     )
     sub_df = c_m.cal_metric_main(period_metrics_map[period])
 
@@ -220,7 +221,9 @@ def compute_metrics_for_period_initialize(log_return_df,
                                           save_path,
                                           p_list=None,
                                           num_workers=None,
-                                          multi_process=True):
+                                          multi_process=True,
+                                          min_data_required=2
+                                          ):
     """
     计算特定时间段内的基金业绩指标，并将结果保存为 Parquet 文件。
 
@@ -230,6 +233,7 @@ def compute_metrics_for_period_initialize(log_return_df,
     :param p_list: 需要计算指标的时间段列表，如果为 None，则计算所有预定义的时间段。
     :param num_workers: 并行处理时的进程数，如果为 None，则默认使用所有可用的 CPU 核心数。
     :param multi_process: 是否使用多进程并行计算指标，默认为 True。
+    :param min_data_required: int, 计算指标的最少数据量要求，默认为 True。
     :return: 无返回值。
     """
     ''' 1) 数据预处理 '''
@@ -290,7 +294,8 @@ def compute_metrics_for_period_initialize(log_return_df,
                     days_in_p,  # 当前计算周期内的自然日数量，用于时间相关的指标计算。
                     funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码。
                     period,  # 当前计算的时间区间类型，例如'1m'(近一个月)、'qtd'(本季至今)等。
-                    period_metrics_map  # 时间区间与对应指标计算方法的映射关系，定义了每个区间需要计算哪些指标。
+                    period_metrics_map,  # 时间区间与对应指标计算方法的映射关系，定义了每个区间需要计算哪些指标。
+                    min_data_required,  # 每个基金至少需要多少天的数据才能计算指标，默认为2天。
                 ))
 
             # 使用多进程执行任务
@@ -343,7 +348,7 @@ def compute_metrics_for_period_initialize(log_return_df,
                     period,  # 计算指标的时间区间类型，例如'1m'(近一个月)、'qtd'(本季至今)等
                     days_in_p,  # 指定日期范围内自然日的数量，用于计算某些时间相关的指标
                     end_date,  # 当前计算周期的结束日期，pd.Timestamp格式
-                    2  # 最小数据要求，表示计算指标时至少需要的数据点数量，默认为2
+                    min_data_required,  # 最小数据要求，表示计算指标时至少需要的数据点数量，默认为2
                 )
 
                 sub_df = c_m.cal_metric_main(period_metrics_map[period])
@@ -358,42 +363,10 @@ def compute_metrics_for_period_initialize(log_return_df,
 
 
 if __name__ == '__main__':
-    # (open_df,  # 包含ETF基金的开盘价数据的数据框，行索引为日期，列索引为基金代码
-    #  high_df,  # 包含ETF基金的最高价数据的数据框，行索引为日期，列索引为基金代码
-    #  low_df,  # 包含ETF基金的最低价数据的数据框，行索引为日期，列索引为基金代码
-    #  close_df,  # 包含ETF基金的收盘价数据的数据框，行索引为日期，列索引为基金代码
-    #  change_df,  # 包含ETF基金的价格变动数据的数据框，行索引为日期，列索引为基金代码
-    #  pct_chg_df,  # 包含ETF基金的价格百分比变动数据的数据框，行索引为日期，列索引为基金代码
-    #  vol_df,  # 包含ETF基金的交易量数据的数据框，行索引为日期，列索引为基金代码
-    #  amount_df,  # 包含ETF基金的交易金额数据的数据框，行索引为日期，列索引为基金代码
-    #  log_return_df,  # 包含ETF基金的对数收益率数据的数据框，行索引为日期，列索引为基金代码
-    #  etf_info_df  # 包含ETF基金的基本信息的数据框，如基金代码、基金名称、投资类型等
-    #  ) = data_prepare()
-    #
-    # close_df.to_parquet('close_df.parquet')
-    the_close_df = pd.read_parquet('close_df.parquet')
-
-    # log_return_df.to_parquet('log_return_df.parquet')
-    the_log_return_df = pd.read_parquet('log_return_df.parquet')
+    the_close_df = pd.read_parquet('../Data/wide_close_df.parquet')
+    the_log_return_df = pd.read_parquet('../Data/wide_log_return_df.parquet')
 
     compute_metrics_for_period_initialize(the_log_return_df, the_close_df,
                                           '../Data/Metrics',
-                                          p_list=['mtd', 'qtd', 'ytd'],
+                                          p_list=['2d'],
                                           multi_process=True)
-
-    # # 获取交易日序列
-    # trading_days = np.array(open_df.index)
-    #
-    # # 将索引日期扩充到自然日
-    # open_df = open_df.resample('D').asfreq()
-    # high_df = high_df.resample('D').asfreq()
-    # low_df = low_df.resample('D').asfreq()
-    # close_df = close_df.resample('D').asfreq()
-    # change_df = change_df.resample('D').asfreq()
-    # pct_chg_df = pct_chg_df.resample('D').asfreq()
-    # vol_df = vol_df.resample('D').asfreq()
-    # amount_df = amount_df.resample('D').asfreq()
-    # log_return_df = log_return_df.resample('D').asfreq()
-    #
-    # # 获取自然日序列
-    # nature_days = np.array(open_df.index)

@@ -1069,8 +1069,8 @@ class CalMetrics:
 
 
 if __name__ == '__main__':
-    the_close_price_array = pd.read_parquet('close_df.parquet')
-    the_log_return_df = pd.read_parquet('log_return_df.parquet')
+    the_close_price_array = pd.read_parquet('../Data/wide_close_df.parquet')
+    the_log_return_df = pd.read_parquet('../Data/wide_log_return_df.parquet')
 
     the_close_price_array = the_close_price_array.resample('D').asfreq()
     the_log_return_df = the_log_return_df.resample('D').asfreq()
@@ -1083,8 +1083,8 @@ if __name__ == '__main__':
     # the_log_return_df = the_log_return_df[:, :3]
 
     c_m = CalMetrics(funds_codes, the_log_return_df, the_close_price_array,
-                     '1m', 61, pd.to_datetime('2025-04-11'))
+                     '2d', 61, pd.to_datetime('2025-04-11'))
 
-    m_list = ['NetEquitySlope', 'EquitySmoothness']
+    m_list = ['TotalReturn', 'AverageDailyReturn']
     rr = c_m.cal_metric_main(m_list)
     print(rr)
