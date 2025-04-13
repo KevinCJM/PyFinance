@@ -311,8 +311,6 @@ def compute_metrics_for_period_initialize(log_return_df,
 
                 start_idx, end_idx = find_date_range_indices(nature_days_array, start_date, end_date)
                 days_in_p = end_idx - start_idx
-                # 是否有指定的指标需要计算
-                metrics_list = metrics_list if metrics_list else period_metrics_map[period]
                 # 将任务参数添加到任务列表中，每个任务包含以下信息：
                 task_args.append((
                     end_date,  # 当前计算周期的结束日期，表示指标计算的截止日期。
@@ -321,7 +319,7 @@ def compute_metrics_for_period_initialize(log_return_df,
                     days_in_p,  # 当前计算周期内的自然日数量，用于时间相关的指标计算。
                     funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码。
                     period,  # 当前计算的时间区间类型，例如'1m'(近一个月)、'qtd'(本季至今)等。
-                    metrics_list,  # 需要计算的指标列表
+                    metrics_list if metrics_list else period_metrics_map[period],  # 需要计算的指标列表
                     min_data_required,  # 每个基金至少需要多少天的数据才能计算指标，默认为2天。
                 ))
 
@@ -392,8 +390,7 @@ def compute_metrics_for_period_initialize(log_return_df,
                     min_data_required,  # 最小数据要求，表示计算指标时至少需要的数据点数量，默认为2
                 )
                 # 是否有指定的指标需要计算
-                metrics_list = metrics_list if metrics_list else period_metrics_map[period]
-                sub_df = c_m.cal_metric_main(metrics_list)
+                sub_df = c_m.cal_metric_main(metrics_list if metrics_list else period_metrics_map[period])
                 final_df.append(sub_df)
 
             # 将所有区间的指标数据合并

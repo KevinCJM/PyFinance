@@ -8,6 +8,8 @@
 import numpy as np
 from collections import defaultdict
 
+import pandas as pd
+
 # 年化收益率计算的天数
 return_ann_factor = 365
 # 年化波动率计算的天数
@@ -696,11 +698,4 @@ def create_period_metrics_map():
 
 
 if __name__ == '__main__':
-    import re
-    s = '10d'
-    match = re.match(r'^(\d+).*d$', s)
-    if match:
-        print(int(match.group(1)))
-    else:
-        print(None)
-
+    pass
