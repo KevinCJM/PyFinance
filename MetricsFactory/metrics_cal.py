@@ -81,7 +81,7 @@ def cache_metric(func):
     return wrapper
 
 
-@njit
+@njit(float64(float64[:]), cache=True)
 def calculate_hurst_exponent(portfolio_return):
     """
     计算hurst指数，用于判断时间序列的长期趋势是呈现自相似性还是anti-self-similarity。
@@ -1069,8 +1069,12 @@ class CalMetrics:
 
 
 if __name__ == '__main__':
+    funds_codes = ['510050.SH']
+
     the_close_price_array = pd.read_parquet('../Data/wide_close_df.parquet')
     the_log_return_df = pd.read_parquet('../Data/wide_log_return_df.parquet')
+    the_close_price_array = the_close_price_array[funds_codes]
+    the_log_return_df = the_log_return_df[funds_codes]
 
     the_close_price_array = the_close_price_array.resample('D').asfreq()
     the_log_return_df = the_log_return_df.resample('D').asfreq()
@@ -1083,8 +1087,8 @@ if __name__ == '__main__':
     # the_log_return_df = the_log_return_df[:, :3]
 
     c_m = CalMetrics(funds_codes, the_log_return_df, the_close_price_array,
-                     '2d', 61, pd.to_datetime('2025-04-11'))
+                     '2m', 61, pd.to_datetime('2025-04-11'))
 
-    m_list = ['TotalReturn', 'AverageDailyReturn']
+    m_list = ['HurstExponent']
     rr = c_m.cal_metric_main(m_list)
     print(rr)

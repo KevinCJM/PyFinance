@@ -6,6 +6,7 @@
 @Descriptions: 因子加工厂
 """
 import gc
+import re
 import os
 import time
 import numpy as np
@@ -141,7 +142,7 @@ def calc_metrics_shared_worker(args, shm_info):
         days_in_p,
         funds_codes,
         period,
-        period_metrics_map,
+        metrics_list,
         min_data_required,
     ) = args
 
@@ -171,7 +172,7 @@ def calc_metrics_shared_worker(args, shm_info):
         end_date,
         min_data_required=min_data_required,
     )
-    sub_df = c_m.cal_metric_main(period_metrics_map[period])
+    sub_df = c_m.cal_metric_main(metrics_list)
 
     # 关闭共享内存视图，注意不要在此处释放共享内存，它将在主进程中释放
     shm_log.close()
@@ -220,6 +221,8 @@ def compute_metrics_for_period_initialize(log_return_df,
                                           close_price_df,
                                           save_path,
                                           p_list=None,
+                                          metrics_list=None,
+                                          fund_list=None,
                                           num_workers=None,
                                           multi_process=True,
                                           min_data_required=2
@@ -230,13 +233,18 @@ def compute_metrics_for_period_initialize(log_return_df,
     :param log_return_df: 对数收益率 DataFrame，索引为日期，列为基金代码。
     :param close_price_df: 收盘价 DataFrame，索引为日期，列为基金代码。
     :param save_path: 指标结果保存路径。
-    :param p_list: 需要计算指标的时间段列表，如果为 None，则计算所有预定义的时间段。
+    :param p_list: 特定需要计算指标的时间段列表，如果为 None，则计算所有预定义的时间段。
+    :param metrics_list: 特定需要计算的指标列表，如果为 None，则计算所有预定义的指标。
+    :param fund_list: 特定需要计算的ETF列表，如果为 None，则计算所有ETF的指标。
     :param num_workers: 并行处理时的进程数，如果为 None，则默认使用所有可用的 CPU 核心数。
     :param multi_process: 是否使用多进程并行计算指标，默认为 True。
     :param min_data_required: int, 计算指标的最少数据量要求，默认为 True。
     :return: 无返回值。
     """
     ''' 1) 数据预处理 '''
+    if fund_list is not None:
+        log_return_df = log_return_df[fund_list]
+        close_price_df = close_price_df[fund_list]
     # 获取交易日序列
     trading_days_array = pd.to_datetime(np.array(log_return_df.index))
     # 将索引日期扩充到自然日
@@ -281,11 +289,30 @@ def compute_metrics_for_period_initialize(log_return_df,
             # 构造任务列表
             task_args = []
             for end_date in reversed(trading_days_array):
-                start_date = get_start_date(end_date, period)
-                if start_date not in nature_days_array:
-                    continue
+                match = re.match(r'^(\d+).*d$', period)
+                # 对于短区间 (2d, 3d, 5d), 我们使用交易日来划分 (避免非交易日导致的数据不完整)
+                if match:
+                    days = int(match.group(1))  # 获取天数
+                    # 获取 end_date 在 trading_days_array 中的索引
+                    end_idx_in_trading = np.searchsorted(trading_days_array, end_date)
+                    # 检查是否越界
+                    if end_idx_in_trading < days:
+                        continue
+                    # 获取 start_date
+                    start_date = trading_days_array[end_idx_in_trading - days]
+
+                # 对于1周以上的中长区间, 我们使用自然日来划分
+                else:
+                    # 计算开始日期
+                    start_date = get_start_date(end_date, period)
+                    # 如果 区间开始日期不在自然日序列中，则跳出循环 (区间不完整)
+                    if start_date not in nature_days_array:
+                        continue
+
                 start_idx, end_idx = find_date_range_indices(nature_days_array, start_date, end_date)
                 days_in_p = end_idx - start_idx
+                # 是否有指定的指标需要计算
+                metrics_list = metrics_list if metrics_list else period_metrics_map[period]
                 # 将任务参数添加到任务列表中，每个任务包含以下信息：
                 task_args.append((
                     end_date,  # 当前计算周期的结束日期，表示指标计算的截止日期。
@@ -294,7 +321,7 @@ def compute_metrics_for_period_initialize(log_return_df,
                     days_in_p,  # 当前计算周期内的自然日数量，用于时间相关的指标计算。
                     funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码。
                     period,  # 当前计算的时间区间类型，例如'1m'(近一个月)、'qtd'(本季至今)等。
-                    period_metrics_map,  # 时间区间与对应指标计算方法的映射关系，定义了每个区间需要计算哪些指标。
+                    metrics_list,  # 需要计算的指标列表
                     min_data_required,  # 每个基金至少需要多少天的数据才能计算指标，默认为2天。
                 ))
 
@@ -324,13 +351,27 @@ def compute_metrics_for_period_initialize(log_return_df,
             ''' 3.2) 遍历每一天的结束日期,滚动计算每天的指标 (单进程) '''
             final_df = list()
             for end_date in tqdm(list(reversed(trading_days_array))):
-                # 计算开始日期
-                start_date = get_start_date(end_date, period)
-                # 如果 区间开始日期不在自然日序列中，则跳出循环 (区间不完整)
-                if start_date not in nature_days_array:
-                    continue
+                match = re.match(r'^(\d+).*d$', period)
+                # 对于短区间 (2d, 3d, 5d), 我们使用交易日来划分 (避免非交易日导致的数据不完整)
+                if match:
+                    days = int(match.group(1))  # 获取天数
+                    # 获取 end_date 在 trading_days_array 中的索引
+                    end_idx_in_trading = np.searchsorted(trading_days_array, end_date)
+                    # 检查是否越界
+                    if end_idx_in_trading < days:
+                        continue
+                    # 获取 start_date
+                    start_date = trading_days_array[end_idx_in_trading - days]
 
-                # 找到 开始日期 & 解释日期在 nature_days_array 的索引位置
+                # 对于1周以上的中长区间, 我们使用自然日来划分
+                else:
+                    # 计算开始日期
+                    start_date = get_start_date(end_date, period)
+                    # 如果 区间开始日期不在自然日序列中，则跳出循环 (区间不完整)
+                    if start_date not in nature_days_array:
+                        continue
+
+                # 找到 开始日期 & 结束日期在 nature_days_array 的索引位置
                 start_idx, end_idx = find_date_range_indices(nature_days_array, start_date, end_date)
 
                 # 截取在区间内的 log_return_array 数据 和 close_price_array 数据
@@ -350,8 +391,9 @@ def compute_metrics_for_period_initialize(log_return_df,
                     end_date,  # 当前计算周期的结束日期，pd.Timestamp格式
                     min_data_required,  # 最小数据要求，表示计算指标时至少需要的数据点数量，默认为2
                 )
-
-                sub_df = c_m.cal_metric_main(period_metrics_map[period])
+                # 是否有指定的指标需要计算
+                metrics_list = metrics_list if metrics_list else period_metrics_map[period]
+                sub_df = c_m.cal_metric_main(metrics_list)
                 final_df.append(sub_df)
 
             # 将所有区间的指标数据合并
@@ -368,5 +410,7 @@ if __name__ == '__main__':
 
     compute_metrics_for_period_initialize(the_log_return_df, the_close_df,
                                           '../Data/Metrics',
-                                          p_list=['2d'],
-                                          multi_process=True)
+                                          p_list=['70d'],
+                                          metrics_list=['HurstExponent'],
+                                          fund_list=['510050.SH'],
+                                          multi_process=False)
