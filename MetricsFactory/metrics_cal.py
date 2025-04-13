@@ -351,7 +351,7 @@ class CalMetrics:
     @cache_metric  # 盈利总和 / 亏损总和
     def cal_TotalReturnRatio(self, **kwargs):
         ratio = self.cal_TotalPositiveReturn() / np.abs(self.cal_TotalNegativeReturn())
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 每日回报率的中位数
     def cal_MedianDailyReturn(self, **kwargs):
@@ -428,7 +428,7 @@ class CalMetrics:
         r_dd = total_return / np.abs(max_dd)
         ann_r_dd = (((total_return + 1) ** (return_ann_factor / self.nature_days) - 1) / np.abs(max_dd))
         # 处理无穷大情况
-        self.res_dict['ReturnDrawDownRatio'] = np.where(r_dd == -np.inf, 0, r_dd)
+        self.res_dict['ReturnDrawDownRatio'] = np.where(np.isfinite(r_dd), r_dd, 0.0)
         self.res_dict['AnnReturnDrawDownRatio'] = np.where(ann_r_dd == -np.inf, 0, ann_r_dd)
         self.res_dict["MaxDrawDown"] = max_dd
 
@@ -445,17 +445,17 @@ class CalMetrics:
     @cache_metric  # 年化夏普比率
     def cal_AnnualizedSharpeRatio(self, **kwargs):
         ratio = (self.cal_AnnualizedReturn() - log_ann_return) / self.cal_AnnualizedVolatility()
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 夏普比率
     def cal_SharpeRatio(self, **kwargs):
         ratio = (self.cal_TotalReturn() - (log_daily_return * self.nature_days)) / self.cal_Volatility()
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 收益率波动率比
     def cal_ReturnVolatilityRatio(self, **kwargs):
         ratio = self.cal_TotalReturn() / self.cal_Volatility()
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 下行波动率
     def cal_DownsideVolatility(self, mar=log_daily_return, **kwargs):
@@ -465,7 +465,7 @@ class CalMetrics:
         downside_var = np.nanvar(down_diff, axis=0, ddof=1)
         # 返回标准差（即下行波动率）
         ratio = np.sqrt(downside_var)
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 上行波动率
     def cal_UpsideVolatility(self, mar=0, **kwargs):
@@ -475,7 +475,7 @@ class CalMetrics:
         upside_var = np.nanvar(up_diff, axis=0, ddof=1)
         # 返回上行标准差
         ratio = np.sqrt(upside_var)
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 波动率偏度
     def cal_VolatilitySkew(self, **kwargs):
@@ -485,12 +485,12 @@ class CalMetrics:
     @cache_metric  # 波动率比率
     def cal_VolatilityRatio(self, **kwargs):
         ratio = self.cal_UpsideVolatility() / self.cal_DownsideVolatility()
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 索提诺比率
     def cal_SortinoRatio(self, **kwargs):
         ratio = (self.cal_TotalReturn() - (log_daily_return * self.nature_days)) / self.cal_DownsideVolatility()
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 收益趋势一致性
     def cal_GainConsistency(self, **kwargs):
@@ -504,7 +504,7 @@ class CalMetrics:
         # 避免除以 0 或 nan
         gain_consistency = gain_std / gain_mean
 
-        return np.where(np.isnan(gain_consistency), 0, gain_consistency)
+        return np.where(np.isfinite(gain_consistency), gain_consistency, 0.0)
 
     @cache_metric  # 损失趋势一致性
     def cal_LossConsistency(self, **kwargs):
@@ -518,19 +518,21 @@ class CalMetrics:
         # 用 abs(loss_mean) 避免除以负值
         loss_consistency = loss_std / np.abs(loss_mean)
 
-        return np.where(np.isnan(loss_consistency), 0, loss_consistency)
+        return np.where(np.isfinite(loss_consistency), loss_consistency, 0.0)
 
     @cache_metric  # 计算盈利率
     def cal_WinningRatio(self, **kwargs):
         # 计算胜率
-        return (np.sum((self.return_array > 0) & ~np.isnan(self.return_array), axis=0)
-                / np.sum(~np.isnan(self.return_array), axis=0))
+        ratio = (np.sum((self.return_array > 0) & ~np.isnan(self.return_array), axis=0)
+                 / np.sum(~np.isnan(self.return_array), axis=0))
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 计算亏损率
     def cal_LosingRatio(self, **kwargs):
         # 计算亏损率
-        return (np.sum((self.return_array < 0) & ~np.isnan(self.return_array), axis=0)
-                / np.sum(~np.isnan(self.return_array), axis=0))
+        ratio = (np.sum((self.return_array < 0) & ~np.isnan(self.return_array), axis=0)
+                 / np.sum(~np.isnan(self.return_array), axis=0))
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 平均绝对偏差
     def cal_MeanAbsoluteDeviation(self, **kwargs):
@@ -561,9 +563,7 @@ class CalMetrics:
     def cal_VaRSharpe(self, confidence_level=0.99, **kwargs):
         var_name = 'VaR' + '-' + str(int(confidence_level * 100))
         ratio = (self.cal_TotalReturn() - (log_daily_return * self.nature_days)) / self.cal_metric(var_name)
-        # 将 inf 转为 0
-        ratio = np.where(np.isinf(ratio), 0, ratio)
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 计算 Cornish-Fisher修正后的在险价值 (参数法)
     def cal_VaRModified(self, confidence_level=0.99, **kwargs):
@@ -588,9 +588,7 @@ class CalMetrics:
     def cal_VaRModifiedSharpe(self, confidence_level=0.99, **kwargs):
         var_name = 'VaRModified' + '-' + str(int(confidence_level * 100))
         ratio = (self.cal_TotalReturn() - (log_daily_return * self.nature_days)) / self.cal_metric(var_name)
-        # 将 inf 转为 0
-        ratio = np.where(np.isinf(ratio), 0, ratio)
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 计算期望损失ES (参数法)
     def cal_CVaR(self, confidence_level=0.99, **kwargs):
@@ -606,9 +604,7 @@ class CalMetrics:
     def cal_CVaRSharpe(self, confidence_level=0.99, **kwargs):
         cvar_name = 'CVaR' + '-' + str(int(confidence_level * 100))
         ratio = (self.cal_TotalReturn() - (log_daily_return * self.nature_days)) / self.cal_metric(cvar_name)
-        # 将 inf 转为 0
-        ratio = np.where(np.isinf(ratio), 0, ratio)
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 计算 Cornish-Fisher修正后的期望损失ES (参数法)
     def cal_CVaRModified(self, confidence_level=0.99, **kwargs):
@@ -634,9 +630,7 @@ class CalMetrics:
     def cal_CVaRModifiedSharpe(self, confidence_level=0.99, **kwargs):
         cvar_name = 'CVaRModified' + '-' + str(int(confidence_level * 100))
         ratio = (self.cal_TotalReturn() - (log_daily_return * self.nature_days)) / self.cal_metric(cvar_name)
-        # 将 inf 转为 0
-        ratio = np.where(np.isinf(ratio), 0, ratio)
-        return np.where(np.isnan(ratio), 0, ratio)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 计算收益率的分位数 (考虑所有收益率)
     def cal_Percentile(self, tile=5, **kwargs):
@@ -675,7 +669,8 @@ class CalMetrics:
         eps = 1e-6
         safe_loss = np.where(np.abs(loss) < eps, eps, loss)
 
-        return win / safe_loss
+        ratio = win / safe_loss
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 净值新高率 (净值创新高的天数 / 总非空天数)
     def cal_NewHighRatio(self, **kwargs):
@@ -693,7 +688,8 @@ class CalMetrics:
         valid_counts = np.sum(~np.isnan(self.price_array), axis=0)
 
         # 新高率
-        return new_high_counts / np.maximum(valid_counts, 1)
+        ratio = new_high_counts / np.maximum(valid_counts, 1)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     # 工具函数: 计算 n 日收益率之和
     def tool_sum_return(self, n=2, **kwargs):
@@ -818,7 +814,7 @@ class CalMetrics:
         denominator = wl * lw
         ratio = np.where(denominator == 0, np.nan, numerator / denominator)
 
-        return ratio  # shape=(n_funds,)
+        return np.where(np.isfinite(ratio), ratio, 0.0)
 
     @cache_metric  # 近似 Hurst 指数
     def cal_HurstExponent(self, **kwargs):
@@ -910,7 +906,7 @@ class CalMetrics:
         # 计算Omega比率，使用eps避免除以零
         omega = rdi / (ldi + eps)
         # 返回计算得到的Omega比率
-        return omega
+        return np.where(np.isfinite(omega), omega, 0.0)
 
     @cache_metric  # 计算K比率的综合代码
     def cal_k_ratio_all(self, metric_name='KRatio', **kwargs):
@@ -956,7 +952,7 @@ class CalMetrics:
 
         # 计算索提诺偏度
         skewness = num / denom
-        return skewness
+        return np.where(np.isfinite(skewness), skewness, 0.0)
 
     @cache_metric  # 净值增长斜率
     def cal_nv_slope_all(self, metric_name='NetEquitySlope', **kwargs):
