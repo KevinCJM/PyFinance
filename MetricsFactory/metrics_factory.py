@@ -223,6 +223,7 @@ def compute_metrics_for_period_initialize(log_return_df,
                                           p_list=None,
                                           metrics_list=None,
                                           fund_list=None,
+                                          spec_end_date=None,
                                           num_workers=None,
                                           multi_process=True,
                                           min_data_required=2
@@ -236,6 +237,7 @@ def compute_metrics_for_period_initialize(log_return_df,
     :param p_list: 特定需要计算指标的时间段列表，如果为 None，则计算所有预定义的时间段。
     :param metrics_list: 特定需要计算的指标列表，如果为 None，则计算所有预定义的指标。
     :param fund_list: 特定需要计算的ETF列表，如果为 None，则计算所有ETF的指标。
+    :param spec_end_date: 特定的区间结束日期 (必须是交易日才能计算)，如果为 None，则计算所有。
     :param num_workers: 并行处理时的进程数，如果为 None，则默认使用所有可用的 CPU 核心数。
     :param multi_process: 是否使用多进程并行计算指标，默认为 True。
     :param min_data_required: int, 计算指标的最少数据量要求，默认为 True。
@@ -288,7 +290,9 @@ def compute_metrics_for_period_initialize(log_return_df,
 
             # 构造任务列表
             task_args = []
-            for end_date in reversed(trading_days_array):
+            # 如果有特定结束日期，则只计算该日期
+            days_array = np.array([pd.to_datetime(spec_end_date)]) if spec_end_date else trading_days_array
+            for end_date in reversed(days_array):
                 match = re.match(r'^(\d+).*d$', period)
                 # 对于短区间 (2d, 3d, 5d), 我们使用交易日来划分 (避免非交易日导致的数据不完整)
                 if match:
@@ -348,7 +352,8 @@ def compute_metrics_for_period_initialize(log_return_df,
         else:
             ''' 3.2) 遍历每一天的结束日期,滚动计算每天的指标 (单进程) '''
             final_df = list()
-            for end_date in tqdm(list(reversed(trading_days_array))):
+            days_array = np.array([pd.to_datetime(spec_end_date)]) if spec_end_date else trading_days_array
+            for end_date in tqdm(list(reversed(days_array))):
                 match = re.match(r'^(\d+).*d$', period)
                 # 对于短区间 (2d, 3d, 5d), 我们使用交易日来划分 (避免非交易日导致的数据不完整)
                 if match:

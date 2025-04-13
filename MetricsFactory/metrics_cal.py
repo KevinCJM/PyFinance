@@ -812,7 +812,9 @@ class CalMetrics:
         # 计算 ratio = (WW*LL)/(WL*LW), 若 WL*LW==0 => np.nan
         numerator = ww * ll
         denominator = wl * lw
-        ratio = np.where(denominator == 0, np.nan, numerator / denominator)
+        # 分母的0值处理
+        np.where(denominator == 0, 0.01, denominator)
+        ratio = numerator / denominator
 
         return np.where(np.isfinite(ratio), ratio, 0.0)
 
@@ -1065,26 +1067,4 @@ class CalMetrics:
 
 
 if __name__ == '__main__':
-    funds_codes = ['510050.SH']
-
-    the_close_price_array = pd.read_parquet('../Data/wide_close_df.parquet')
-    the_log_return_df = pd.read_parquet('../Data/wide_log_return_df.parquet')
-    the_close_price_array = the_close_price_array[funds_codes]
-    the_log_return_df = the_log_return_df[funds_codes]
-
-    the_close_price_array = the_close_price_array.resample('D').asfreq()
-    the_log_return_df = the_log_return_df.resample('D').asfreq()
-    funds_codes = the_log_return_df.columns.values
-
-    the_close_price_array = the_close_price_array.values
-    the_log_return_df = the_log_return_df.values
-
-    # the_close_price_array = the_close_price_array[:, :3]
-    # the_log_return_df = the_log_return_df[:, :3]
-
-    c_m = CalMetrics(funds_codes, the_log_return_df, the_close_price_array,
-                     '2m', 61, pd.to_datetime('2025-04-11'))
-
-    m_list = ['HurstExponent']
-    rr = c_m.cal_metric_main(m_list)
-    print(rr)
+    pass

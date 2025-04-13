@@ -51,5 +51,5 @@ for idx, fil in enumerate(os.listdir(folder_path)):
 
 # 按日期排序
 df_final = df_final.sort_values('date').reset_index(drop=True)
-
+# df_final = df_final[['date', 'CrossProductRatio-5:50d', 'CrossProductRatio-10:75d']]
 print(df_final)

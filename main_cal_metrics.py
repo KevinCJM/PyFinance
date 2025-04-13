@@ -22,9 +22,6 @@ log_return_file = "./Data/wide_log_return_df.parquet"  # ETF日频对数收益�
 close_price_file = "./Data/wide_close_df.parquet"  # ETF日频收盘价文件路径
 save_path = "./Data/Metrics"  # 计算完成的指标,存放的文件夹路径
 
-# 如果你有特定的时间段需要计算指标，可以在写区间列表, 例如 ['1m', '2m']. 写None则计算所有预设的区间
-specific_period_list = None
-
 log_return_df = pd.read_parquet(log_return_file)  # 读取ETF日频对数收益率数据
 close_price_df = pd.read_parquet(close_price_file)  # 读取ETF日频收盘价数据
 
@@ -34,6 +31,10 @@ if __name__ == '__main__':
     compute_metrics_for_period_initialize(log_return_df,  # 对数收益率数据
                                           close_price_df,  # 收盘价数据
                                           save_path,  # 指标的保存文件路径
-                                          p_list=specific_period_list,  # 计算指定的区间
+                                          p_list=None,  # 可以计算指定的区间列表, list格式
+                                          metrics_list=None,  # 可以计算指定的指标列表, list格式
+                                          fund_list=None,  # 可以指定要计算的ETF列表, list格式
+                                          spec_end_date=None,  # 可以指定的区间结束日期
+                                          multi_process=True  # 是否使用多进程计算, True为使用多进程, False为单进程
                                           )
     print(f"所有指标计算完成, 耗时: {(time.time() - s_t) / 60:.2f} 分钟")
