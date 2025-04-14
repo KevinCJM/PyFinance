@@ -136,14 +136,16 @@ def calc_metrics_shared_worker(args, shm_info):
     """
     # 解包计算指标所需的参数
     (
-        end_date,
-        start_idx,
-        end_idx,
-        days_in_p,
-        funds_codes,
-        period,
-        metrics_list,
-        min_data_required,
+        start_date,  # 当前计算周期的开始日期，表示指标计算的起始日期（pd.Timestamp 类型）。
+        end_date,  # 当前计算周期的结束日期，表示指标计算的截止日期（pd.Timestamp 类型）。
+        start_idx,  # 指定日期范围在自然日数组中的起始索引位置（整数类型）。
+        end_idx,  # 指定日期范围在自然日数组中的结束索引位置（整数类型）。
+        days_in_p,  # 当前计算周期内的自然日数量，用于时间相关的指标计算（整数类型）。
+        funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码（numpy 数组类型）。
+        period,  # 当前计算的时间区间类型，例如 '1m'（近一个月）、'qtd'（本季至今）等（字符串类型）。
+        metrics_list,  # 需要计算的指标列表，包含具体的指标名称（列表类型）。
+        min_data_required,  # 每个基金至少需要多少天的数据才能计算指标，默认为 2 天（整数类型）。
+        first_valid_dates,  # 每个基金第一个非 NaN 值所对应的日期（numpy 数组类型，元素为 pd.Timestamp）。
     ) = args
 
     # 解包共享内存信息，包括共享内存名称、形状和数据类型
@@ -162,11 +164,18 @@ def calc_metrics_shared_worker(args, shm_info):
     in_p_log = log_arr[start_idx + 1: end_idx + 1]
     in_p_price = price_arr[start_idx + 1: end_idx + 1]
 
+    # 使用布尔索引得到保留的列索引
+    keep_indices = np.where(first_valid_dates <= start_date)[0]
+    # 使用切片保留对应基金（共享内存）
+    filtered_funds_codes = funds_codes[keep_indices]
+    filtered_log_return_array = in_p_log[:, keep_indices]
+    filtered_close_price_array = in_p_price[:, keep_indices]
+
     # 实例化 CalMetrics 类，并使用切片后的数据计算指标
     c_m = CalMetrics(
-        funds_codes,
-        in_p_log,
-        in_p_price,
+        filtered_funds_codes,
+        filtered_log_return_array,
+        filtered_close_price_array,
         period,
         days_in_p,
         end_date,
@@ -256,6 +265,8 @@ def compute_metrics_for_period_initialize(log_return_df,
     nature_days_array = pd.to_datetime(np.array(log_return_df.index))
     # 得到区间与该区间要计算指标的映射
     period_metrics_map = create_period_metrics_map()
+    # 找到每个产品第一个非nan值所对应的日期
+    first_valid_dates = log_return_df.apply(lambda col: col.first_valid_index()).values
     # 将 log_return_df 转换为 numpy 数组
     log_return_array = log_return_df.values
     # 将 close_price_df 转换为 numpy 数组
@@ -317,6 +328,7 @@ def compute_metrics_for_period_initialize(log_return_df,
                 days_in_p = end_idx - start_idx
                 # 将任务参数添加到任务列表中，每个任务包含以下信息：
                 task_args.append((
+                    start_date,  # 当前计算周期的开始日期，表示指标计算的起始日期。
                     end_date,  # 当前计算周期的结束日期，表示指标计算的截止日期。
                     start_idx,  # 指定日期范围在自然日数组中的起始索引位置。
                     end_idx,  # 指定日期范围在自然日数组中的结束索引位置。
@@ -325,6 +337,7 @@ def compute_metrics_for_period_initialize(log_return_df,
                     period,  # 当前计算的时间区间类型，例如'1m'(近一个月)、'qtd'(本季至今)等。
                     metrics_list if metrics_list else period_metrics_map[period],  # 需要计算的指标列表
                     min_data_required,  # 每个基金至少需要多少天的数据才能计算指标，默认为2天。
+                    first_valid_dates,  # 每个基金第一个非nan值所对应的日期
                 ))
 
             # 使用多进程执行任务
@@ -384,11 +397,18 @@ def compute_metrics_for_period_initialize(log_return_df,
                 # 计算区间内有多少个自然日
                 days_in_p = end_idx - start_idx
 
+                # 使用布尔索引得到保留的列索引
+                keep_indices = np.where(first_valid_dates <= start_date)[0]
+                # 使用切片保留对应基金（共享内存）
+                filtered_funds_codes = funds_codes[keep_indices]
+                filtered_log_return_array = in_p_log_return_array[:, keep_indices]
+                filtered_close_price_array = in_p_close_price_array[:, keep_indices]
+
                 # 创建CalMetrics类的实例，用于计算特定时间段内的基金指标
                 c_m = CalMetrics(
-                    funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码
-                    in_p_log_return_array,  # 在指定日期范围内的对数收益率数据，numpy数组格式
-                    in_p_close_price_array,  # 在指定日期范围内的收盘价数据，numpy数组格式
+                    filtered_funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码
+                    filtered_log_return_array,  # 在指定日期范围内的对数收益率数据，numpy数组格式
+                    filtered_close_price_array,  # 在指定日期范围内的收盘价数据，numpy数组格式
                     period,  # 计算指标的时间区间类型，例如'1m'(近一个月)、'qtd'(本季至今)等
                     days_in_p,  # 指定日期范围内自然日的数量，用于计算某些时间相关的指标
                     end_date,  # 当前计算周期的结束日期，pd.Timestamp格式

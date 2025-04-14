@@ -297,7 +297,7 @@ class CalMetrics:
         self.nature_days = nature_days_in_p
         # 存储是否将收益率转换为累计收益率的选项
         self.cum_rtn = trans_to_cumulative_return
-        # 存储结束日期
+        # 区间结束日期
         self.end_date = end_date
         # 最少需要的数据量
         self.min_data_required = min_data_required
