@@ -21,29 +21,62 @@ pd.set_option('display.width', 1000)  # 表格不分段显示
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 
 
-@njit
+# @njit
+# def kdj_recursive(rsv, alpha_k, alpha_d):
+#     n_days, n_funds = rsv.shape
+#     K = np.empty((n_days, n_funds))
+#     D = np.empty((n_days, n_funds))
+#     J = np.empty((n_days, n_funds))
+#
+#     # 初始化
+#     K[0, :] = 50.0
+#     D[0, :] = 50.0
+#
+#     for t in range(1, n_days):
+#         for i in range(n_funds):
+#             if np.isfinite(rsv[t, i]):
+#                 K[t, i] = alpha_k * rsv[t, i] + (1 - alpha_k) * K[t - 1, i]
+#                 D[t, i] = alpha_d * K[t, i] + (1 - alpha_d) * D[t - 1, i]
+#                 J[t, i] = 3 * K[t, i] - 2 * D[t, i]
+#             else:
+#                 K[t, i] = K[t - 1, i]
+#                 D[t, i] = D[t - 1, i]
+#                 J[t, i] = 3 * K[t, i] - 2 * D[t, i]
+#
+#     return K, D, J
+
+@njit(float64[:, :, :](float64[:, :], float64, float64), cache=True, parallel=True)
 def kdj_recursive(rsv, alpha_k, alpha_d):
     n_days, n_funds = rsv.shape
-    K = np.empty((n_days, n_funds))
-    D = np.empty((n_days, n_funds))
-    J = np.empty((n_days, n_funds))
 
-    # 初始化
-    K[0, :] = 50.0
-    D[0, :] = 50.0
+    # 三维数组：最后一维表示 [K, D, J]
+    kdj = np.empty((n_days, n_funds, 3), dtype=np.float64)
+
+    # 初始化第0天：K = D = 50，J = 3K - 2D = 50
+    for i in prange(n_funds):
+        kdj[0, i, 0] = 50.0  # K
+        kdj[0, i, 1] = 50.0  # D
+        kdj[0, i, 2] = 50.0  # J
 
     for t in range(1, n_days):
-        for i in range(n_funds):
+        for i in prange(n_funds):
             if np.isfinite(rsv[t, i]):
-                K[t, i] = alpha_k * rsv[t, i] + (1 - alpha_k) * K[t - 1, i]
-                D[t, i] = alpha_d * K[t, i] + (1 - alpha_d) * D[t - 1, i]
-                J[t, i] = 3 * K[t, i] - 2 * D[t, i]
-            else:
-                K[t, i] = K[t - 1, i]
-                D[t, i] = D[t - 1, i]
-                J[t, i] = 3 * K[t, i] - 2 * D[t, i]
+                K_prev = kdj[t - 1, i, 0]
+                D_prev = kdj[t - 1, i, 1]
 
-    return K, D, J
+                K_t = alpha_k * rsv[t, i] + (1 - alpha_k) * K_prev
+                D_t = alpha_d * K_t + (1 - alpha_d) * D_prev
+                J_t = 3 * K_t - 2 * D_t
+            else:
+                K_t = kdj[t - 1, i, 0]
+                D_t = kdj[t - 1, i, 1]
+                J_t = 3 * K_t - 2 * D_t
+
+            kdj[t, i, 0] = K_t
+            kdj[t, i, 1] = D_t
+            kdj[t, i, 2] = J_t
+
+    return kdj
 
 
 # 装饰器函数，用于缓存被装饰函数的计算结果
@@ -159,11 +192,12 @@ class CalRollingMetrics:
         alpha_k, alpha_d = 1 / M1, 1 / M2
 
         rsv = self.cal_RSV()
-        K, D, J = kdj_recursive(rsv, alpha_k, alpha_d)
+        kdj = kdj_recursive(rsv, alpha_k, alpha_d)
 
-        self.res_dict['K'] = K
-        self.res_dict['D'] = D
-        self.res_dict['J'] = J
+        # 拆分成 K / D / J 并缓存
+        self.res_dict['K'] = kdj[:, :, 0]
+        self.res_dict['D'] = kdj[:, :, 1]
+        self.res_dict['J'] = kdj[:, :, 2]
 
         return K
 
@@ -188,19 +222,24 @@ if __name__ == '__main__':
     high_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_high_df.parquet')
     low_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_low_df.parquet')
 
+    fund = ['510050.SH', '513660.SH', '510310.SH']
+    price_df = price_df[fund]
+    return_df = return_df[fund]
+    high_df = high_df[fund]
+    low_df = low_df[fund]
+
     # print(price_df.head())
     # print(return_df.head())
 
-    price_df = price_df.resample('D').asfreq()
-    return_df = return_df.resample('D').asfreq()
-
     fund_codes_array = np.array(price_df.columns.tolist())
+    days = price_df.index
+
     log_return = return_df.values
     close_price = price_df.values
     high_df = high_df.values
     low_df = low_df.values
 
-    roll_d = 5
+    roll_d = 9
 
     cal = CalRollingMetrics(fund_codes=fund_codes_array,
                             log_return_array=log_return,
@@ -210,7 +249,7 @@ if __name__ == '__main__':
                             rolling_days=roll_d,
                             )
     s_t = time.time()
-    res = cal.cal_metric('RSV')
+    res = cal.cal_metric('KDJ')
     print(res)
     # res = cal.cal_metric('L')
     # print(res)
