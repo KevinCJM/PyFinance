@@ -21,30 +21,6 @@ pd.set_option('display.width', 1000)  # 表格不分段显示
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 
 
-# @njit
-# def kdj_recursive(rsv, alpha_k, alpha_d):
-#     n_days, n_funds = rsv.shape
-#     K = np.empty((n_days, n_funds))
-#     D = np.empty((n_days, n_funds))
-#     J = np.empty((n_days, n_funds))
-#
-#     # 初始化
-#     K[0, :] = 50.0
-#     D[0, :] = 50.0
-#
-#     for t in range(1, n_days):
-#         for i in range(n_funds):
-#             if np.isfinite(rsv[t, i]):
-#                 K[t, i] = alpha_k * rsv[t, i] + (1 - alpha_k) * K[t - 1, i]
-#                 D[t, i] = alpha_d * K[t, i] + (1 - alpha_d) * D[t - 1, i]
-#                 J[t, i] = 3 * K[t, i] - 2 * D[t, i]
-#             else:
-#                 K[t, i] = K[t - 1, i]
-#                 D[t, i] = D[t - 1, i]
-#                 J[t, i] = 3 * K[t, i] - 2 * D[t, i]
-#
-#     return K, D, J
-
 @njit(float64[:, :, :](float64[:, :], float64, float64), cache=True, parallel=True)
 def kdj_recursive(rsv, alpha_k, alpha_d):
     n_days, n_funds = rsv.shape
@@ -86,6 +62,8 @@ def cache_rolling_metric(func):
 
         # 布林带特殊处理
         if func.__name__ == 'cal_Boll':
+            metric_name = kwargs['metric_name']
+        elif func.__name__ == 'cal_KDJ':
             metric_name = kwargs['metric_name']
         else:
             # 从函数名中提取指标名称，去掉前缀 "cal_"
@@ -154,8 +132,8 @@ class CalRollingMetrics:
         except (IndexError, ValueError):
             raise ValueError(
                 f"Invalid Boll metric_name format: '{metric_name}'. Should be like 'BollUp-2' or 'BollDo-2'")
-        ma = self.cal_CloseMA(self)
-        sigma = self.cal_PriceSigma(self)
+        ma = self.cal_CloseMA()
+        sigma = self.cal_PriceSigma()
         self.res_dict[f'BollUp-{k}'] = ma + k * sigma
         self.res_dict[f'BollDo-{k}'] = ma - k * sigma
         return self.res_dict[metric_name]
@@ -171,7 +149,7 @@ class CalRollingMetrics:
         return rolling_max.to_numpy()
 
     @cache_rolling_metric  # 滚动N日的 RSV指标
-    def cal_RSV(self):
+    def cal_RSV(self, **kwargs):
         c = self.price_array  # 收盘价
         the_h = self.cal_H()  # N日最高价
         the_l = self.cal_L()  # N日最低价
@@ -187,25 +165,29 @@ class CalRollingMetrics:
         return rsv
 
     @cache_rolling_metric  # 滚动N日的 KDJ指标
-    def cal_KDJ(self):
-        M1, M2 = 3, 3
-        alpha_k, alpha_d = 1 / M1, 1 / M2
+    def cal_KDJ(self, metric_name, **kwargs):
+        _, m1, m2 = metric_name.split('-')
+        m1, m2 = int(m1), int(m2)
+        alpha_k, alpha_d = 1 / m1, 1 / m2
 
         rsv = self.cal_RSV()
         kdj = kdj_recursive(rsv, alpha_k, alpha_d)
 
         # 拆分成 K / D / J 并缓存
-        self.res_dict['K'] = kdj[:, :, 0]
-        self.res_dict['D'] = kdj[:, :, 1]
-        self.res_dict['J'] = kdj[:, :, 2]
+        self.res_dict[f'K-{m1}-{m2}'] = kdj[:, :, 0]
+        self.res_dict[f'D-{m1}-{m2}'] = kdj[:, :, 1]
+        self.res_dict[f'J-{m1}-{m2}'] = kdj[:, :, 2]
 
-        return K
+        return self.res_dict[metric_name]
 
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
         # 布林带计算处理, 会同时计算上下两个轨道
         if metric_name.startswith('Boll'):
             func_name = 'cal_Boll'
+            kwargs['metric_name'] = metric_name
+        elif metric_name.startswith('K-') or metric_name.startswith('D-') or metric_name.startswith('J-'):
+            func_name = 'cal_KDJ'
             kwargs['metric_name'] = metric_name
         else:
             func_name = f'cal_{metric_name}'
@@ -239,7 +221,7 @@ if __name__ == '__main__':
     high_df = high_df.values
     low_df = low_df.values
 
-    roll_d = 9
+    roll_d = 26
 
     cal = CalRollingMetrics(fund_codes=fund_codes_array,
                             log_return_array=log_return,
@@ -249,7 +231,7 @@ if __name__ == '__main__':
                             rolling_days=roll_d,
                             )
     s_t = time.time()
-    res = cal.cal_metric('KDJ')
+    res = cal.cal_metric('K-3-3')
     print(res)
     # res = cal.cal_metric('L')
     # print(res)
