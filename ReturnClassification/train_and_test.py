@@ -385,5 +385,6 @@ if __name__ == '__main__':
                                    train_end='2024-11-30',
                                    test_start='2024-12-01',
                                    test_end='2025-04-30',
-                                   random_seed=42, n_iter=20, cv=5, threshold=0.6
+                                   random_seed=42, n_iter=20, cv=5,
+                                   threshold=0.5
                                    )

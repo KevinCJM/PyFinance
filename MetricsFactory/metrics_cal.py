@@ -13,6 +13,7 @@ import pandas as pd
 from functools import wraps
 from numba import prange, float64, njit
 from scipy.stats import norm, kurtosis, skew
+from numpy.lib.stride_tricks import sliding_window_view
 from MetricsFactory.metrics_cal_config import return_ann_factor, risk_ann_factor, log_ann_return, log_daily_return
 
 warnings.filterwarnings("ignore")
@@ -1066,5 +1067,89 @@ class CalMetrics:
         return final_df
 
 
+# 装饰器函数，用于缓存被装饰函数的计算结果
+def cache_rolling_metric(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        # 从函数名中提取指标名称，去掉前缀 "cal_"
+        metric_name = func.__name__.replace("cal_", "")
+
+        # 如果指标已经存在于缓存中，则直接返回缓存中的值
+        if metric_name in self.res_dict:
+            return self.res_dict[metric_name]
+
+        # 调用被装饰函数计算结果，并将结果缓存到 `self.res_dict` 中
+        result = func(self, *args, **kwargs)
+        self.res_dict[metric_name] = result
+
+        return result
+
+    return wrapper
+
+
+class CalRollingMetrics:
+    def __init__(self, fund_codes,
+                 log_return_array,
+                 close_price_array,
+                 rolling_days,
+                 trans_to_cumulative_return=False):
+        # 基金代码数组 (一维ndarray)
+        self.fund_codes = fund_codes
+        # 移除对数收益率数组中的全NaN行，并存储为返回数组 (2维ndarray, 行表示日期, 列表示基金, 值为基金的对数收益率)
+        self.return_array = log_return_array[~np.all(np.isnan(log_return_array), axis=1)]
+        # 移除收盘价数组中的全NaN行，并存储为价格数组   (2维ndarray, 行表示日期, 列表示基金, 值为基金的每日收盘价)
+        self.price_array = close_price_array[~np.all(np.isnan(close_price_array), axis=1)]
+        # 滚动天数, int
+        self.rolling_days = rolling_days
+        # 存储是否将收益率转换为累计收益率的选项
+        self.cum_rtn = trans_to_cumulative_return
+        # 原始数据的行数和列数，分别代表天数和基金数量
+        self.n_days, self.n_funds = self.return_array.shape
+        # 初始化结果字典，用于存储后续计算的业绩评估指标
+        self.res_dict = dict()
+
+        self.price_df = pd.DataFrame(self.price_array)
+
+    @cache_rolling_metric  # 滚动N日的收盘价标准差
+    def cal_PriceSigma(self):
+        # 逐列进行 rolling 标准差计算，忽略 NaN（min_periods=1），得到新的 DataFrame
+        rolling_std = self.price_df.rolling(window=self.rolling_days, min_periods=1).std()
+        # 再转回 numpy，并返回
+        return rolling_std.to_numpy()
+
+    # 根据指标名 计算相应的指标值
+    def cal_metric(self, metric_name, **kwargs):
+        method_name = f'cal_{metric_name}'
+        try:
+            return getattr(self, method_name)(**kwargs)
+        except Exception as e:
+            print(f"Error when calling '{method_name}': {e}")
+            print(traceback.format_exc())
+
+
 if __name__ == '__main__':
-    pass
+    price_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_close_df.parquet')
+    return_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_log_return_df.parquet')
+
+    # print(price_df.head())
+    # print(return_df.head())
+
+    price_df = price_df.resample('D').asfreq()
+    return_df = return_df.resample('D').asfreq()
+
+    fund_codes_array = np.array(price_df.columns.tolist())
+    log_return = return_df.values
+    close_price = price_df.values
+
+    roll_d = 5
+
+    cal = CalRollingMetrics(fund_codes=fund_codes_array,
+                            log_return_array=log_return,
+                            close_price_array=close_price,
+                            rolling_days=roll_d,
+                            )
+    s_t = time.time()
+    res = cal.cal_metric('PriceSigma')
+    print(res)
+    print(f"共 {len(res)} 条记录，耗时 {(time.time() - s_t):.4f} 秒")
+    # print(cal.res_dict)
