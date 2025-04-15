@@ -13,10 +13,10 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from dateutil.relativedelta import relativedelta
-
-from MetricsFactory.metrics_cal import CalMetrics
 from multiprocessing import Pool, cpu_count, shared_memory
+
 from functools import partial
+from MetricsFactory.period_metrics_cal import CalMetrics
 from MetricsFactory.metrics_cal_config import period_list, create_period_metrics_map
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
