@@ -6,7 +6,12 @@
 @Descriptions: 
 """
 import warnings
+import numpy as np
 import pandas as pd
+from scipy.stats import randint
+from sklearn.metrics import classification_report
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import RandomizedSearchCV
 from ReturnClassification.metrics_data_prepare import (
     get_fund_close_price, cal_future_log_return, get_fund_metrics_data, preprocess_data)
 
@@ -123,33 +128,23 @@ def main_data_prepare(the_fund_code='159919.SZ',
     return x_train, y_train, x_test, y_test, metrics_data
 
 
-# 使用随机森林分类器进行训练和测试，并进行超参数优化和特征重要性评估
-def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
-                                 random_seed=42, n_iter=20, cv=5):
+# 自动化参数调优函数 (随机森林)
+def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5):
     """
-    使用随机森林分类器进行训练和测试，并进行超参数优化和特征重要性评估。
+    自动化参数调优函数。
+
+    使用随机搜索和交叉验证的方法来自动调整随机森林分类器的超参数。
 
     参数:
-    :param x_train: 训练集特征数据
-    :param x_test: 测试集特征数据
-    :param y_train: 训练集标签
-    :param y_test: 测试集标签
-    :param metrics_data: 指标结果dataframe
-    :param random_seed: 随机种子，用于确保结果可重复
-    :param n_iter: 随机搜索的迭代次数
-    :param cv: 交叉验证的折数
-    :return: 训练好的随机森林模型
+    - x_train: 训练特征数据集。
+    - y_train: 训练标签数据集。
+    - random_seed: 随机种子，用于确保结果的可重复性。
+    - n_iter: 随机搜索的迭代次数。
+    - cv: 交叉验证的折数。
+
+    返回:
+    - 最优超参数的字典。
     """
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.metrics import classification_report
-    from sklearn.model_selection import RandomizedSearchCV
-    from scipy.stats import randint
-
-    # 筛选特征列
-    feature_cols = [
-        col for col in metrics_data.columns if col not in ['ts_code', 'date']]
-
-    ''' 自动超参数调优 '''
     # 定义随机搜索的超参数空间
     param_dist = {
         'n_estimators': randint(100, 1000),
@@ -180,12 +175,39 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
 
     # 输出最优参数
     print("最优参数:", rs.best_params_)
+    return rs.best_params_
+
+
+# 使用随机森林分类器进行训练和测试，并进行超参数优化和特征重要性评估
+def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
+                                 random_seed=42, n_iter=20, cv=5):
+    """
+    使用随机森林分类器进行训练和测试，并进行超参数优化和特征重要性评估。
+
+    参数:
+    :param x_train: 训练集特征数据
+    :param x_test: 测试集特征数据
+    :param y_train: 训练集标签
+    :param y_test: 测试集标签
+    :param metrics_data: 指标结果dataframe
+    :param random_seed: 随机种子，用于确保结果可重复
+    :param n_iter: 随机搜索的迭代次数
+    :param cv: 交叉验证的折数
+    :return: 训练好的随机森林模型
+    """
+
+    # 筛选特征列
+    feature_cols = [
+        col for col in metrics_data.columns if col not in ['ts_code', 'date']]
+
+    ''' 自动超参数调优 '''
+    best_dict = auto_parameter_tuning(x_train, y_train, random_seed=random_seed, n_iter=n_iter, cv=cv)
 
     # 从最优参数中提取每个超参数的值
-    n_estimators = rs.best_params_['n_estimators']
-    max_depth = rs.best_params_['max_depth']
-    min_samples_split = rs.best_params_['min_samples_split']
-    min_samples_leaf = rs.best_params_['min_samples_leaf']
+    n_estimators = best_dict['n_estimators']
+    max_depth = best_dict['max_depth']
+    min_samples_split = best_dict['min_samples_split']
+    min_samples_leaf = best_dict['min_samples_leaf']
 
     # 使用最优参数重新初始化随机森林分类器
     clf = RandomForestClassifier(
@@ -193,7 +215,7 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
         max_depth=max_depth,  # 决策树最大深度, 防止过拟合
         min_samples_split=min_samples_split,  # 子表中最小样本数,越大越保守，减少过拟合
         min_samples_leaf=min_samples_leaf,  # 叶子节点最小样本数, 增大可提升泛化能力
-        max_features='sqrt',  # 每棵树随机选择的特征数, 'sqrt'或'log2' (sqrt（默认）适用于分类任务，log2/None 也可尝试)
+        max_features='sqrt',  # 每棵树随机选择的特征数, 'sqrt' 或 'log2' (sqrt（默认）适用于分类任务，log2/None 也可尝试)
         random_state=random_seed,  # 随机种子
     )
     # 训练模型
@@ -233,6 +255,67 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
     return clf
 
 
+def confidence_based_random_forest(x_train, x_test, y_train, y_test,
+                                   random_seed=42, n_iter=20, cv=5, threshold=0.7,
+                                   parameter_dict=None):
+    """
+
+    :param x_train:
+    :param x_test:
+    :param y_train:
+    :param y_test:
+    :param random_seed:
+    :param n_iter:
+    :param cv:
+    :param threshold:
+    :param parameter_dict: 必须要有: n_estimators, max_depth, min_samples_split, min_samples_leaf
+    :return:
+    """
+    if parameter_dict is None:
+        best_dict = auto_parameter_tuning(x_train, y_train, random_seed=random_seed, n_iter=n_iter, cv=cv)
+    else:
+        best_dict = parameter_dict
+
+    # 从最优参数中提取每个超参数的值
+    n_estimators = best_dict['n_estimators']
+    max_depth = best_dict['max_depth']
+    min_samples_split = best_dict['min_samples_split']
+    min_samples_leaf = best_dict['min_samples_leaf']
+
+    # 使用最优参数重新初始化随机森林分类器
+    clf = RandomForestClassifier(
+        n_estimators=n_estimators,  # 构建n棵决策树
+        max_depth=max_depth,  # 决策树最大深度, 防止过拟合
+        min_samples_split=min_samples_split,  # 子表中最小样本数,越大越保守，减少过拟合
+        min_samples_leaf=min_samples_leaf,  # 叶子节点最小样本数, 增大可提升泛化能力
+        max_features='sqrt',  # 每棵树随机选择的特征数, 'sqrt' 或 'log2' (sqrt（默认）适用于分类任务，log2/None 也可尝试)
+        random_state=random_seed,  # 随机种子
+    )
+    # 训练模型
+    clf.fit(x_train, y_train)
+
+    y_pred = clf.predict(x_test)
+    y_proba = clf.predict_proba(x_test)
+    confidence = np.max(y_proba, axis=1)
+
+    # 筛选高置信度的预测
+    mask = confidence >= threshold
+    y_test_confident = y_test[mask]
+    y_pred_confident = y_pred[mask]
+
+    # 打印信息
+    print(f"原测试集样本数量: {len(y_test)}")
+    print(f"置信度 ≥ {threshold} 的样本数量: {mask.sum()}")
+    print(f"占比: {mask.sum() / len(y_test):.2%}\n")
+
+    # 打印分类评估结果
+    if len(y_test) == 0:
+        print("没有满足置信度要求的样本, 无法生成分类报告")
+    else:
+        print(classification_report(y_test_confident, y_pred_confident))
+    return clf
+
+
 # 未来收益分类主函数，用于执行基金数据预处理、模型训练等任务 (使用随机森林)
 def predict_main_random_forest(the_fund_code='159919.SZ',
                                n_days=20,
@@ -242,7 +325,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                train_end='2023-12-31',
                                test_start='2024-01-01',
                                test_end='2025-03-31',
-                               random_seed=42, n_iter=20, cv=5
+                               random_seed=42, n_iter=20, cv=5,
+                               threshold=None
                                ):
     """
     使用随机森林模型预测基金走势。
@@ -258,6 +342,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param random_seed: 随机种子，默认为 42。
     :param n_iter: 随机搜索的迭代次数，默认为 20 次。
     :param cv: 交叉验证的折数，默认为 5 折。
+    :param threshold:
     :return: 训练完成的随机森林模型。
     """
     ''' 数据准备 '''
@@ -274,10 +359,15 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     )
 
     ''' 训练模型 '''
-    # 训练随机森林模型
-    trained_model = train_and_test_random_forest(
-        x_train, x_test, y_train, y_test, metrics_data,
-        random_seed=random_seed, n_iter=n_iter, cv=cv)
+    if threshold:
+        trained_model = confidence_based_random_forest(
+            x_train, x_test, y_train, y_test,
+            random_seed=random_seed, n_iter=n_iter, cv=cv, threshold=threshold)
+    else:
+        # 训练随机森林模型
+        trained_model = train_and_test_random_forest(
+            x_train, x_test, y_train, y_test, metrics_data,
+            random_seed=random_seed, n_iter=n_iter, cv=cv)
     # 输出模型训练完成的信息
     print("模型训练完成")
     # 返回训练完成的模型
@@ -285,7 +375,15 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
-    for d in [3, 5, 10, 15, 20, 30]:
-        predict_main_random_forest(the_fund_code='159919.SZ', n_days=d,
-                                   folder_path='../Data', metrics_folder='../Data/Metrics',
+    for d in [10]:
+        print(f"预测未来{d}天的收益率 .....")
+        predict_main_random_forest(the_fund_code='510050.SH',
+                                   n_days=d,
+                                   folder_path='../Data',
+                                   metrics_folder='../Data/Metrics',
+                                   train_start=None,
+                                   train_end='2024-11-30',
+                                   test_start='2024-12-01',
+                                   test_end='2025-04-30',
+                                   random_seed=42, n_iter=20, cv=5, threshold=0.6
                                    )
