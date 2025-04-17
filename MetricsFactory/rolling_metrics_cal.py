@@ -37,20 +37,20 @@ def kdj_recursive(rsv, alpha_k, alpha_d):
     for t in range(1, n_days):
         for i in prange(n_funds):
             if np.isfinite(rsv[t, i]):
-                K_prev = kdj[t - 1, i, 0]
-                D_prev = kdj[t - 1, i, 1]
+                k_prev = kdj[t - 1, i, 0]
+                d_prev = kdj[t - 1, i, 1]
 
-                K_t = alpha_k * rsv[t, i] + (1 - alpha_k) * K_prev
-                D_t = alpha_d * K_t + (1 - alpha_d) * D_prev
-                J_t = 3 * K_t - 2 * D_t
+                k_t = alpha_k * rsv[t, i] + (1 - alpha_k) * k_prev
+                d_t = alpha_d * k_t + (1 - alpha_d) * d_prev
+                j_t = 3 * k_t - 2 * d_t
             else:
-                K_t = kdj[t - 1, i, 0]
-                D_t = kdj[t - 1, i, 1]
-                J_t = 3 * K_t - 2 * D_t
+                k_t = kdj[t - 1, i, 0]
+                d_t = kdj[t - 1, i, 1]
+                j_t = 3 * k_t - 2 * d_t
 
-            kdj[t, i, 0] = K_t
-            kdj[t, i, 1] = D_t
-            kdj[t, i, 2] = J_t
+            kdj[t, i, 0] = k_t
+            kdj[t, i, 1] = d_t
+            kdj[t, i, 2] = j_t
 
     return kdj
 
@@ -61,9 +61,7 @@ def cache_rolling_metric(func):
     def wrapper(self, *args, **kwargs):
 
         # 布林带特殊处理
-        if func.__name__ == 'cal_Boll':
-            metric_name = kwargs['metric_name']
-        elif func.__name__ == 'cal_KDJ':
+        if func.__name__ in ['cal_Boll', 'cal_KDJ']:
             metric_name = kwargs['metric_name']
         else:
             # 从函数名中提取指标名称，去掉前缀 "cal_"
@@ -88,20 +86,26 @@ class CalRollingMetrics:
                  close_price_array,
                  high_price_array,
                  low_price_array,
+                 volume_array,
                  rolling_days,
+                 days_array,
                  trans_to_cumulative_return=False):
         # 基金代码数组 (一维ndarray)
         self.fund_codes = fund_codes
-        # 移除对数收益率数组中的全NaN行，并存储为返回数组 (2维ndarray, 行表示日期, 列表示基金, 值为基金的对数收益率)
-        self.return_array = log_return_array[~np.all(np.isnan(log_return_array), axis=1)]
-        # 移除收盘价数组中的全NaN行，并存储为价格数组   (2维ndarray, 行表示日期, 列表示基金, 值为基金的每日收盘价)
-        self.price_array = close_price_array[~np.all(np.isnan(close_price_array), axis=1)]
-        # 移除收盘价数组中的全NaN行，并存储为价格数组   (2维ndarray, 行表示日期, 列表示基金, 值为基金的每日最高价)
-        self.high_array = high_price_array[~np.all(np.isnan(high_price_array), axis=1)]
-        # 移除收盘价数组中的全NaN行，并存储为价格数组   (2维ndarray, 行表示日期, 列表示基金, 值为基金的每日最低价)
-        self.low_array = low_price_array[~np.all(np.isnan(low_price_array), axis=1)]
+        #  2维ndarray, 行表示日期, 列表示基金, 值为基金的对数收益率
+        self.return_array = log_return_array
+        # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日收盘价
+        self.price_array = close_price_array
+        # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日最高价
+        self.high_array = high_price_array
+        # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日最低价
+        self.low_array = low_price_array
+        # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日交易量
+        self.volume_array = volume_array
         # 滚动天数, int
         self.rolling_days = rolling_days
+        # 日期序列 (一维ndarray)
+        self.days_array = days_array
         # 存储是否将收益率转换为累计收益率的选项
         self.cum_rtn = trans_to_cumulative_return
         # 原始数据的行数和列数，分别代表天数和基金数量
@@ -112,6 +116,7 @@ class CalRollingMetrics:
         self.price_df = pd.DataFrame(self.price_array)
         self.high_df = pd.DataFrame(self.high_array)
         self.low_df = pd.DataFrame(self.low_array)
+        self.volume_df = pd.DataFrame(self.volume_array)
 
     @cache_rolling_metric  # 滚动N日的收盘价标准差
     def cal_PriceSigma(self, **kwargs):
@@ -123,6 +128,11 @@ class CalRollingMetrics:
     @cache_rolling_metric  # 滚动N日的收盘价均值
     def cal_CloseMA(self, **kwargs):
         rolling_mean = self.price_df.rolling(window=self.rolling_days, min_periods=1).mean()
+        return rolling_mean.to_numpy()
+
+    @cache_rolling_metric  # 滚动N日的成交量均值
+    def cal_VolMA(self, **kwargs):
+        rolling_mean = self.volume_df.rolling(window=self.rolling_days, min_periods=1).mean()
         return rolling_mean.to_numpy()
 
     @cache_rolling_metric  # 布林带上轨
@@ -139,12 +149,12 @@ class CalRollingMetrics:
         return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 滚动N日的最低价
-    def cal_L(self):
+    def cal_L(self, **kwargs):
         rolling_min = self.low_df.rolling(window=self.rolling_days, min_periods=1).min()
         return rolling_min.to_numpy()
 
     @cache_rolling_metric  # 滚动N日的最高价
-    def cal_H(self):
+    def cal_H(self, **kwargs):
         rolling_max = self.high_df.rolling(window=self.rolling_days, min_periods=1).max()
         return rolling_max.to_numpy()
 
@@ -166,36 +176,108 @@ class CalRollingMetrics:
 
     @cache_rolling_metric  # 滚动N日的 KDJ指标
     def cal_KDJ(self, metric_name, **kwargs):
-        _, m1, m2 = metric_name.split('-')
-        m1, m2 = int(m1), int(m2)
+        _, _, m = metric_name.split('-')
+        m1, m2 = int(m), int(m)
         alpha_k, alpha_d = 1 / m1, 1 / m2
 
         rsv = self.cal_RSV()
         kdj = kdj_recursive(rsv, alpha_k, alpha_d)
 
         # 拆分成 K / D / J 并缓存
-        self.res_dict[f'K-{m1}-{m2}'] = kdj[:, :, 0]
-        self.res_dict[f'D-{m1}-{m2}'] = kdj[:, :, 1]
-        self.res_dict[f'J-{m1}-{m2}'] = kdj[:, :, 2]
+        self.res_dict[f'KDJ-K-{m}'] = kdj[:, :, 0]
+        self.res_dict[f'KDJ-D-{m}'] = kdj[:, :, 1]
+        self.res_dict[f'KDJ-J-{m}'] = kdj[:, :, 2]
 
         return self.res_dict[metric_name]
+
+    @cache_rolling_metric  # 滚动N日的数移动平均收盘价
+    def cal_EMA(self, **kwargs):
+        span = self.rolling_days  # 滚动窗口长度，常见值如 12、26
+        # 使用 pandas 的 ewm（exponential weighted moving average）
+        ema_df = self.price_df.ewm(span=span, adjust=False, min_periods=1).mean()
+        # 转回 numpy 并返回
+        return ema_df.to_numpy()
+
+    @cache_rolling_metric
+    def cal_RSI(self, **kwargs):
+        # 1) 计算每日价格变动
+        df_diff = price_df.diff()
+
+        # 2) 计算收益和损失
+        #    gain：大于0的diff部分，其他为0
+        #    loss：小于0的diff取绝对值，其他为0
+        df_gain = df_diff.clip(lower=0)  # 等价于 np.where(df_diff>0, df_diff, 0)
+        df_loss = (-df_diff).clip(lower=0)  # 等价于 np.where(df_diff<0, -df_diff, 0)
+
+        # 3) 分别对 gain 和 loss 进行简单移动平均 (SMA)
+        avg_gain = df_gain.rolling(window=self.rolling_days, min_periods=1).mean()
+        avg_loss = df_loss.rolling(window=self.rolling_days, min_periods=1).mean()
+
+        # 4) 计算 RS = AvgGain / AvgLoss
+        #    注意避免除零，这里简单做个防零处理：如果 avg_loss 为0，可视为RS极大；也可改用更严谨方法
+        rs = avg_gain / avg_loss.replace(0, 1e-10)
+
+        # 5) 计算 RSI = 100 - (100 / (1 + RS))
+        rsi = 100 - 100 / (1 + rs)
+
+        return rsi
+
+    @cache_rolling_metric
+    def cal_OBV(self, **kwargs):
+        close = self.price_array  # shape: (n_days, n_funds)
+        volume = self.volume_array  # shape: (n_days, n_funds)
+
+        # 价格变动方向：+1 (涨), -1 (跌), 0 (持平)
+        price_diff = np.diff(close, axis=0)
+        direction = np.sign(price_diff)
+
+        # 将方向扩展为 (n_days, n_funds)（第一行补 0）
+        direction = np.vstack([np.zeros((1, self.n_funds)), direction])
+
+        # 构造 OBV 增量
+        obv_delta = direction * volume
+
+        # 初始 OBV 为 0，累加方向量
+        obv = np.nancumsum(obv_delta, axis=0)
+
+        return obv
 
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
         # 布林带计算处理, 会同时计算上下两个轨道
         if metric_name.startswith('Boll'):
             func_name = 'cal_Boll'
-            kwargs['metric_name'] = metric_name
-        elif metric_name.startswith('K-') or metric_name.startswith('D-') or metric_name.startswith('J-'):
+        elif metric_name.startswith('KDJ-'):
             func_name = 'cal_KDJ'
-            kwargs['metric_name'] = metric_name
         else:
             func_name = f'cal_{metric_name}'
+        kwargs['metric_name'] = metric_name
+
         try:
             return getattr(self, func_name)(**kwargs)
         except Exception as e:
             print(f"Error when calling '{func_name}': {e}")
             print(traceback.format_exc())
+
+    def cal_all_metrics(self, metric_name_list, **kwargs):
+        df_list = list()
+        # 计算各个指标值
+        for metric_name in metric_name_list:
+            res_array = self.cal_metric(metric_name, **kwargs)
+            sub_df = pd.DataFrame(
+                data=res_array,  # 二维数组（值）
+                columns=self.fund_codes,  # 列名（日期）
+                index=self.days_array  # 索引（基金代码）
+            )
+            long_df = sub_df.stack().reset_index()
+            long_df.columns = ['date', 'ts_code', f'{metric_name}:{self.rolling_days}']
+            df_list.append(long_df)
+
+        # 按关联列合并所有 DataFrame
+        final_df = df_list[0]  # 从第一个 DataFrame 开始
+        for df in df_list[1:]:
+            final_df = pd.merge(final_df, df, on=['date', 'ts_code'], how='outer')
+        return final_df
 
 
 if __name__ == '__main__':
@@ -203,15 +285,16 @@ if __name__ == '__main__':
     return_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_log_return_df.parquet')
     high_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_high_df.parquet')
     low_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_low_df.parquet')
+    vol_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_vol_df.parquet')
 
-    fund = ['510050.SH', '513660.SH', '510310.SH']
+    fund = ['510050.SH', '159915.SZ', '159912.SZ', '512500.SH', '164701.SZ', '511010.SH', '513100.SH', '513030.SH',
+            '513080.SH', '513520.SH', '518880.SH', '161226.SZ', '501018.SH', '159981.SZ', '159985.SZ', '159980.SZ',
+            ]
     price_df = price_df[fund]
     return_df = return_df[fund]
     high_df = high_df[fund]
     low_df = low_df[fund]
-
-    # print(price_df.head())
-    # print(return_df.head())
+    vol_df = vol_df[fund]
 
     fund_codes_array = np.array(price_df.columns.tolist())
     days = price_df.index
@@ -220,20 +303,49 @@ if __name__ == '__main__':
     close_price = price_df.values
     high_df = high_df.values
     low_df = low_df.values
-
-    roll_d = 26
+    vol_df = vol_df.values
 
     cal = CalRollingMetrics(fund_codes=fund_codes_array,
                             log_return_array=log_return,
                             close_price_array=close_price,
                             high_price_array=high_df,
                             low_price_array=low_df,
-                            rolling_days=roll_d,
+                            volume_array=vol_df,
+                            rolling_days=10,
+                            days_array=days,
                             )
-    s_t = time.time()
-    res = cal.cal_metric('K-3-3')
+    # 计算所有指标
+    res = cal.cal_all_metrics(['OBV'])
     print(res)
-    # res = cal.cal_metric('L')
-    # print(res)
-    print(f"共 {len(res)} 条记录，耗时 {(time.time() - s_t):.4f} 秒")
-    print(cal.res_dict)
+
+    # from MetricsFactory.metrics_cal_config import create_rolling_metrics_map
+    #
+    # res_df = None  # 初始化空的 final_df
+    # for roll_day, metrics_list in create_rolling_metrics_map().items():  # 滚动天数 和 指标列表
+    #     print(roll_day)
+    #     print(metrics_list)
+    #     cal = CalRollingMetrics(fund_codes=fund_codes_array,
+    #                             log_return_array=log_return,
+    #                             close_price_array=close_price,
+    #                             high_price_array=high_df,
+    #                             low_price_array=low_df,
+    #                             volume_array=vol_df,
+    #                             rolling_days=roll_day,
+    #                             days_array=days,
+    #                             )
+    #     # 计算所有指标
+    #     res = cal.cal_all_metrics(metrics_list)
+    #
+    #     # 第一次循环直接赋值，后续循环按关联列合并
+    #     if res_df is None:
+    #         res_df = res
+    #     else:
+    #         res_df = pd.merge(
+    #             res_df,
+    #             res,
+    #             on=['date', 'ts_code'],
+    #             how='outer'  # 保留所有数据（即使某些行缺少部分指标）
+    #         )
+    #
+    # res_df = res_df.reset_index(drop=True)  # 重置索引
+    # print(res_df)

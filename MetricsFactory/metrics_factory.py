@@ -156,7 +156,7 @@ def calc_metrics_shared_worker(args, shm_info):
     low_shm_name, low_shape, low_dtype = shm_info["low"]
     vol_shm_name, vol_shape, vol_dtype = shm_info["vol"]
 
-    # 收益
+    # 对数收益
     shm_log = shared_memory.SharedMemory(name=log_shm_name)  # 收益
     log_arr = np.ndarray(log_shape, dtype=log_dtype, buffer=shm_log.buf)  # 价格
     # 收盘价
