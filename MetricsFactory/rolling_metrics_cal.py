@@ -55,13 +55,194 @@ def kdj_recursive(rsv, alpha_k, alpha_d):
     return kdj
 
 
+# 计算移动平均
+@njit(float64[:, :](float64[:, :], float64), parallel=True, cache=True)
+def rolling_mean_2d_numba(arr: np.ndarray, window: float) -> np.ndarray:
+    n_days, n_assets = arr.shape
+    result = np.empty((n_days, n_assets), dtype=np.float64)
+    result[:, :] = np.nan  # 先全部填 nan
+
+    w = int(window)
+
+    for j in prange(n_assets):  # 并发处理每列
+        for i in range(w - 1, n_days):
+            s = 0.0
+            count = 0
+            for k in range(i - w + 1, i + 1):
+                val = arr[k, j]
+                if not np.isnan(val):
+                    s += val
+                    count += 1
+            result[i, j] = s / count if count > 0 else np.nan
+
+    return result
+
+
+# 计算移动标准差
+@njit(float64[:, :](float64[:, :], float64), parallel=True, cache=True)
+def rolling_std_2d_numba(data: np.ndarray, rolling_days: float) -> np.ndarray:
+    """
+    计算二维ndarray的滚动样本标准差（有自由度），忽略NaN值，
+    并使用 Numba 的 @njit 和 parallel=True。
+
+    参数:
+        data (np.ndarray): 输入的二维ndarray (dtype=float64)。
+        rolling_days (float): 滚动窗口的天数 (将自动转换为整数)。
+
+    返回:
+        np.ndarray: 包含每列滚动样本标准差的二维ndarray (dtype=float64)。
+    """
+    rows, cols = data.shape
+    results = np.empty_like(data, dtype=np.float64)
+    window = int(rolling_days)  # 将滚动天数转换为整数
+
+    for j in prange(cols):
+        for i in range(rows):
+            start = max(0, i - window + 1)
+            end = i + 1
+            window_data = data[start:end, j]
+            valid_values = window_data[~np.isnan(window_data)]
+            n = valid_values.size
+            if n >= 2:  # 至少需要两个有效值才能计算样本标准差
+                mean = np.sum(valid_values) / n
+                variance = np.sum((valid_values - mean) ** 2) / (n - 1)
+                results[i, j] = np.sqrt(variance)
+            elif n == 1:
+                results[i, j] = 0.0  # 如果只有一个有效值，样本标准差为 0
+            else:
+                results[i, j] = np.nan
+    return results
+
+
+# 计算滚动最小值
+@njit(float64[:, :](float64[:, :], float64), parallel=True, cache=True)
+def rolling_min_2d_numba(arr: np.ndarray, window: float) -> np.ndarray:
+    """
+    计算二维ndarray的滚动最小值，忽略NaN值。
+
+    参数:
+        arr (np.ndarray): 输入的二维ndarray (dtype=float64)。
+        window (float): 滚动窗口的大小 (将自动转换为整数)。
+
+    返回:
+        np.ndarray: 包含每列滚动最小值的二维ndarray (dtype=float64)。
+    """
+    rows, cols = arr.shape
+    results = np.empty_like(arr, dtype=np.float64)
+    win_int = int(window)
+
+    for j in prange(cols):
+        for i in range(rows):
+            start = max(0, i - win_int + 1)
+            end = i + 1
+            window_data = arr[start:end, j]
+            valid_values = window_data[~np.isnan(window_data)]
+            if valid_values.size >= 1:
+                results[i, j] = np.nanmin(valid_values)
+            else:
+                results[i, j] = np.nan
+    return results
+
+
+# 计算滚动最大值
+@njit(float64[:, :](float64[:, :], float64), parallel=True, cache=True)
+def rolling_max_2d_numba(arr: np.ndarray, window: float) -> np.ndarray:
+    """
+    计算二维ndarray的滚动最大值，忽略NaN值。
+
+    参数:
+        arr (np.ndarray): 输入的二维ndarray (dtype=float64)。
+        window (float): 滚动窗口的大小 (将自动转换为整数)。
+
+    返回:
+        np.ndarray: 包含每列滚动最大值的二维ndarray (dtype=float64)。
+    """
+    rows, cols = arr.shape
+    results = np.empty_like(arr, dtype=np.float64)
+    win_int = int(window)
+
+    for j in prange(cols):
+        for i in range(rows):
+            start = max(0, i - win_int + 1)
+            end = i + 1
+            window_data = arr[start:end, j]
+            valid_values = window_data[~np.isnan(window_data)]
+            if valid_values.size >= 1:
+                results[i, j] = np.nanmax(valid_values)
+            else:
+                results[i, j] = np.nan
+    return results
+
+
+# 计算指数加权移动平均
+@njit(float64[:, :](float64[:, :], float64), parallel=True, cache=True)
+def rolling_ewm_2d_numba(arr: np.ndarray, span: float) -> np.ndarray:
+    """
+    计算二维ndarray的指数加权移动平均 (EWMA)，忽略NaN值，adjust=False。
+
+    参数:
+        arr (np.ndarray): 输入的二维ndarray (dtype=float64)。
+        span (float): EWMA 的 span 参数。
+
+    返回:
+        np.ndarray: 包含每列 EWMA 的二维ndarray (dtype=float64)。
+    """
+    rows, cols = arr.shape
+    results = np.empty_like(arr, dtype=np.float64)
+    alpha = 2.0 / (span + 1)
+
+    for j in prange(cols):
+        ewm_value = np.nan
+        for i in range(rows):
+            current_value = arr[i, j]
+            if np.isnan(current_value):
+                results[i, j] = ewm_value
+            else:
+                if np.isnan(ewm_value):
+                    ewm_value = current_value
+                else:
+                    ewm_value = alpha * current_value + (1 - alpha) * ewm_value
+                results[i, j] = ewm_value
+    return results
+
+
+# 计算滚动数据的总和
+@njit(float64[:, :](float64[:, :], float64), parallel=True, cache=True)
+def rolling_sum_2d_numba(arr: np.ndarray, window: float) -> np.ndarray:
+    """
+    计算二维ndarray的滚动和，忽略NaN值。
+
+    参数:
+        arr (np.ndarray): 输入的二维ndarray (dtype=float64)。
+        window (float): 滚动窗口的大小 (将自动转换为整数)。
+
+    返回:
+        np.ndarray: 包含每列滚动和的二维ndarray (dtype=float64)。
+    """
+    rows, cols = arr.shape
+    results = np.empty_like(arr, dtype=np.float64)
+    win_int = int(window)
+
+    for j in prange(cols):
+        for i in range(rows):
+            start = max(0, i - win_int + 1)
+            end = i + 1
+            window_data = arr[start:end, j]
+            valid_values = window_data[~np.isnan(window_data)]
+            if valid_values.size >= 1:
+                results[i, j] = np.nansum(valid_values)
+            else:
+                results[i, j] = np.nan
+    return results
+
+
 # 装饰器函数，用于缓存被装饰函数的计算结果
 def cache_rolling_metric(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
 
         # 布林带特殊处理
-        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA']:
+        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY']:
             metric_name = kwargs['metric_name']
         else:
             # 从函数名中提取指标名称，去掉前缀 "cal_"
@@ -113,27 +294,22 @@ class CalRollingMetrics:
         # 初始化结果字典，用于存储后续计算的业绩评估指标
         self.res_dict = dict()
 
-        self.price_df = pd.DataFrame(self.price_array)
-        self.high_df = pd.DataFrame(self.high_array)
-        self.low_df = pd.DataFrame(self.low_array)
-        self.volume_df = pd.DataFrame(self.volume_array)
+        # self.price_df = pd.DataFrame(self.price_array)
+        # self.high_df = pd.DataFrame(self.high_array)
+        # self.low_df = pd.DataFrame(self.low_array)
+        # self.volume_df = pd.DataFrame(self.volume_array)
 
     @cache_rolling_metric  # 滚动N日的收盘价标准差
     def cal_PriceSigma(self, **kwargs):
-        # 逐列进行 rolling 标准差计算，忽略 NaN（min_periods=1），得到新的 DataFrame
-        rolling_std = self.price_df.rolling(window=self.rolling_days, min_periods=1).std()
-        # 再转回 numpy，并返回
-        return rolling_std.to_numpy()
+        return rolling_std_2d_numba(self.price_array, self.rolling_days)
 
     @cache_rolling_metric  # 滚动N日的收盘价均值
     def cal_CloseMA(self, **kwargs):
-        rolling_mean = self.price_df.rolling(window=self.rolling_days, min_periods=1).mean()
-        return rolling_mean.to_numpy()
+        return rolling_mean_2d_numba(self.price_array, self.rolling_days)
 
     @cache_rolling_metric  # 滚动N日的成交量均值
     def cal_VolMA(self, **kwargs):
-        rolling_mean = self.volume_df.rolling(window=self.rolling_days, min_periods=1).mean()
-        return rolling_mean.to_numpy()
+        return rolling_mean_2d_numba(self.volume_array, self.rolling_days)
 
     @cache_rolling_metric  # 布林带上轨
     def cal_Boll(self, metric_name, **kwargs):
@@ -150,13 +326,11 @@ class CalRollingMetrics:
 
     @cache_rolling_metric  # 滚动N日的最低价
     def cal_L(self, **kwargs):
-        rolling_min = self.low_df.rolling(window=self.rolling_days, min_periods=1).min()
-        return rolling_min.to_numpy()
+        return rolling_min_2d_numba(self.low_array, self.rolling_days)
 
     @cache_rolling_metric  # 滚动N日的最高价
     def cal_H(self, **kwargs):
-        rolling_max = self.high_df.rolling(window=self.rolling_days, min_periods=1).max()
-        return rolling_max.to_numpy()
+        return rolling_max_2d_numba(self.high_array, self.rolling_days)
 
     @cache_rolling_metric  # 滚动N日的 RSV指标
     def cal_RSV(self, **kwargs):
@@ -192,32 +366,36 @@ class CalRollingMetrics:
 
     @cache_rolling_metric  # 滚动N日的数移动平均收盘价
     def cal_EMA(self, **kwargs):
-        span = self.rolling_days  # 滚动窗口长度，常见值如 12、26
-        # 使用 pandas 的 ewm（exponential weighted moving average）
-        ema_df = self.price_df.ewm(span=span, adjust=False, min_periods=1).mean()
-        # 转回 numpy 并返回
-        return ema_df.to_numpy()
+        return rolling_ewm_2d_numba(self.price_array, self.rolling_days)
 
-    @cache_rolling_metric
+    @cache_rolling_metric   # 计算RSI
     def cal_RSI(self, **kwargs):
-        # 1) 计算每日价格变动
-        df_diff = price_df.diff()
+        price = self.price_array  # shape: (n_days, n_assets)
+        n_days, n_assets = price.shape
+        window = self.rolling_days
 
-        # 2) 计算收益和损失
-        #    gain：大于0的diff部分，其他为0
-        #    loss：小于0的diff取绝对值，其他为0
-        df_gain = df_diff.clip(lower=0)  # 等价于 np.where(df_diff>0, df_diff, 0)
-        df_loss = (-df_diff).clip(lower=0)  # 等价于 np.where(df_diff<0, -df_diff, 0)
+        # 计算收盘价变动 (等价于 df.diff())
+        diff = np.empty_like(price)
+        diff[0, :] = np.nan
+        diff[1:, :] = price[1:, :] - price[:-1, :]
 
-        # 3) 分别对 gain 和 loss 进行简单移动平均 (SMA)
-        avg_gain = df_gain.rolling(window=self.rolling_days, min_periods=1).mean()
-        avg_loss = df_loss.rolling(window=self.rolling_days, min_periods=1).mean()
+        # 拆出涨跌部分
+        gain = np.where(diff > 0, diff, 0)
+        loss = np.where(diff < 0, -diff, 0)
 
-        # 4) 计算 RS = AvgGain / AvgLoss
-        #    注意避免除零，这里简单做个防零处理：如果 avg_loss 为0，可视为RS极大；也可改用更严谨方法
-        rs = avg_gain / avg_loss.replace(0, 1e-10)
+        # 平均（忽略 NaN）
+        avg_gain = rolling_mean_2d_numba(gain, window)
+        avg_loss = rolling_mean_2d_numba(loss, window)
 
-        # 5) 计算 RSI = 100 - (100 / (1 + RS))
+        # 前 window-1 行补 NaN，保持 shape 一致
+        pad = np.full((window - 1, n_assets), np.nan)
+        avg_gain = np.vstack([pad, avg_gain])
+        avg_loss = np.vstack([pad, avg_loss])
+
+        # 计算 RS = avg_gain / avg_loss，避免除0
+        rs = avg_gain / np.where(avg_loss == 0, 1e-10, avg_loss)
+
+        # RSI = 100 - (100 / (1 + RS))
         rsi = 100 - 100 / (1 + rs)
 
         return rsi
@@ -244,52 +422,58 @@ class CalRollingMetrics:
 
     @cache_rolling_metric  # 计算 MTM 动量指标
     def cal_MTM(self, **kwargs):
-        # 1. 当前价格 - N天前价格
-        mtm = self.price_df - self.price_df.shift(self.rolling_days)
-        # 2. 转回 ndarray 返回
-        return mtm.to_numpy()
+        out = np.full_like(self.price_array, np.nan, dtype=np.float64)
+        out[self.rolling_days:, :] = self.price_array[self.rolling_days:, :] - self.price_array[:-self.rolling_days, :]
+        return out
 
     @cache_rolling_metric  # 平滑动量指标
     def cal_MTMMA(self, metric_name, **kwargs):
         _, smooth = metric_name.split('-')
         smooth = int(smooth)
         mtm = self.cal_MTM()
-        df_mtm = pd.DataFrame(mtm, columns=self.fund_codes)
-        mtmma = df_mtm.rolling(window=smooth, min_periods=1).mean()
-        return mtmma.to_numpy()
+        return rolling_mean_2d_numba(mtm, smooth)
 
     @cache_rolling_metric  # 三重指数平滑移动平均
     def cal_TRIX(self, **kwargs):
-        # 一次 EMA
-        ema1 = self.price_df.ewm(span=self.rolling_days, adjust=False, min_periods=1).mean()
-        ema2 = ema1.ewm(span=self.rolling_days, adjust=False, min_periods=1).mean()
-        ema3 = ema2.ewm(span=self.rolling_days, adjust=False, min_periods=1).mean()
+        ema1 = rolling_ewm_2d_numba(self.price_array, self.rolling_days)
+        ema2 = rolling_ewm_2d_numba(ema1, self.rolling_days)
+        ema3 = rolling_ewm_2d_numba(ema2, self.rolling_days)
 
-        # 三重 EMA 的一阶变化率（百分比）
-        trix = ema3.pct_change() * 100  # 百分比形式
-
-        return trix.to_numpy()
+        result = np.full_like(ema3, np.nan, dtype=np.float64)
+        result[1:, :] = (ema3[1:, :] - ema3[:-1, :]) / ema3[:-1, :]
+        return result * 100
 
     @cache_rolling_metric  # 三重指数平滑移动平均的移动平均
     def cal_MATRIX(self, metric_name, **kwargs):
         _, smooth = metric_name.split('-')
         # 获取 TRIX 值（自动从缓存或重新计算）
         trix_array = self.cal_TRIX()
-        # 转回 DataFrame 做 EMA 平滑
-        df_trix = pd.DataFrame(trix_array, columns=self.fund_codes)
-        # 对每列做 EMA 平滑
-        matrix_df = df_trix.rolling(window=int(smooth), min_periods=1).mean()
-        return matrix_df.to_numpy()
+        return rolling_mean_2d_numba(trix_array, int(smooth))
 
-    @cache_rolling_metric
-    def cal_PSY(self, window: int = 12):
-        # 收盘价变动（t - t-1）
-        diff = self.price_df.diff()
-        # 涨则记为 1，跌或持平记为 0
-        up_days = (diff > 0).astype(int)
-        # 过去 N 天上涨天数占比
-        psy = up_days.rolling(window=window, min_periods=1).sum() / window * 100
-        return psy.to_numpy()
+    @cache_rolling_metric  # 心理线
+    def cal_PSY(self, **kwargs):
+        # 1. 计算收盘价变化（等价于 df.diff()）
+        diff = np.empty_like(self.price_array, dtype=np.float64)
+        diff[0, :] = np.nan
+        diff[1:, :] = self.price_array[1:, :] - self.price_array[:-1, :]
+
+        # 2. 标记上涨日（大于0为1，否则为0）
+        up_days = np.where(diff > 0, 1.0, 0.0)
+
+        # 3. 计算过去 N 日的上涨天数（使用你已有的 numba 滚动和）
+        up_days_sum = rolling_sum_2d_numba(up_days, self.rolling_days)
+
+        # 4. 转为百分比
+        psy = up_days_sum / self.rolling_days * 100
+
+        return psy
+
+    @cache_rolling_metric  # 心理线的移动均线
+    def cal_MAPSY(self, metric_name, **kwargs):
+        _, smooth = metric_name.split('-')
+        psy = self.cal_PSY()
+        # 对每列做 EMA 平滑
+        return rolling_mean_2d_numba(psy, int(smooth))
 
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
@@ -302,6 +486,8 @@ class CalRollingMetrics:
             func_name = 'cal_MTMMA'
         elif metric_name.startswith('MATRIX-'):
             func_name = 'cal_MATRIX'
+        elif metric_name.startswith('MAPSY-'):
+            func_name = 'cal_MAPSY'
         else:
             func_name = f'cal_{metric_name}'
         kwargs['metric_name'] = metric_name
@@ -368,7 +554,7 @@ if __name__ == '__main__':
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['MATRIX-9'])
+    res = cal.cal_all_metrics(['PSY'])
     print(res)
 
     # from MetricsFactory.metrics_cal_config import create_rolling_metrics_map
