@@ -148,34 +148,55 @@ def calc_metrics_shared_worker(args, shm_info):
         first_valid_dates,  # 每个基金第一个非 NaN 值所对应的日期（numpy 数组类型，元素为 pd.Timestamp）。
     ) = args
 
+    '''创建共享内存的收益和价格数组视图'''
     # 解包共享内存信息，包括共享内存名称、形状和数据类型
     log_shm_name, log_shape, log_dtype = shm_info["log"]
     price_shm_name, price_shape, price_dtype = shm_info["price"]
+    high_shm_name, high_shape, high_dtype = shm_info["high"]
+    low_shm_name, low_shape, low_dtype = shm_info["low"]
+    vol_shm_name, vol_shape, vol_dtype = shm_info["vol"]
 
-    # 创建共享内存的收益和价格数组视图
+    # 收益
     shm_log = shared_memory.SharedMemory(name=log_shm_name)  # 收益
     log_arr = np.ndarray(log_shape, dtype=log_dtype, buffer=shm_log.buf)  # 价格
-
-    # 创建共享内存的收益和价格数组视图
+    # 收盘价
     shm_price = shared_memory.SharedMemory(name=price_shm_name)
     price_arr = np.ndarray(price_shape, dtype=price_dtype, buffer=shm_price.buf)
+    # 最高价
+    shm_high = shared_memory.SharedMemory(name=high_shm_name)
+    high_arr = np.ndarray(high_shape, dtype=high_dtype, buffer=shm_high.buf)
+    # 最低价
+    shm_low = shared_memory.SharedMemory(name=low_shm_name)
+    low_arr = np.ndarray(low_shape, dtype=low_dtype, buffer=shm_low.buf)
+    # 成交量
+    shm_vol = shared_memory.SharedMemory(name=vol_shm_name)
+    vol_arr = np.ndarray(vol_shape, dtype=vol_dtype, buffer=shm_vol.buf)
 
     # 通过切片获取指定时期的日志和价格数据，注意切片操作不会复制数据
     in_p_log = log_arr[start_idx + 1: end_idx + 1]
     in_p_price = price_arr[start_idx + 1: end_idx + 1]
+    in_p_high = high_arr[start_idx + 1: end_idx + 1]
+    in_p_low = low_arr[start_idx + 1: end_idx + 1]
+    in_p_vol = vol_arr[start_idx + 1: end_idx + 1]
 
     # 使用布尔索引得到保留的列索引
     keep_indices = np.where(first_valid_dates <= start_date)[0]
-    # 使用切片保留对应基金（共享内存）
+    # 使用切片保留对应基金（不做内存复制）
     filtered_funds_codes = funds_codes[keep_indices]
     filtered_log_return_array = in_p_log[:, keep_indices]
     filtered_close_price_array = in_p_price[:, keep_indices]
+    filtered_high_array = in_p_high[:, keep_indices]
+    filtered_low_array = in_p_low[:, keep_indices]
+    filtered_vol_array = in_p_vol[:, keep_indices]
 
     # 实例化 CalMetrics 类，并使用切片后的数据计算指标
     c_m = CalMetrics(
         filtered_funds_codes,
         filtered_log_return_array,
         filtered_close_price_array,
+        filtered_high_array,
+        filtered_low_array,
+        filtered_vol_array,
         period,
         days_in_p,
         end_date,
@@ -310,11 +331,17 @@ def compute_metrics_for_period_initialize(log_return_df,
             # 创建共享内存
             shm_log, _ = create_shared_memory(log_return_array, "log_shm")
             shm_price, _ = create_shared_memory(close_price_array, "price_shm")
+            shm_high, _ = create_shared_memory(high_price_array, "high_shm")
+            shm_low, _ = create_shared_memory(low_price_array, "low_shm")
+            shm_vol, _ = create_shared_memory(volume_array, "vol_shm")
 
             # 创建共享内存信息字典，包含日志和价格的共享内存标识、形状和数据类型
             shm_info = {
                 "log": ("log_shm", log_return_array.shape, log_return_array.dtype),
                 "price": ("price_shm", close_price_array.shape, close_price_array.dtype),
+                "high": ("high_shm", high_price_array.shape, high_price_array.dtype),
+                "low": ("low_shm", low_price_array.shape, low_price_array.dtype),
+                "vol": ("vol_shm", volume_array.shape, volume_array.dtype),
             }
 
             # 构造任务列表
@@ -371,6 +398,12 @@ def compute_metrics_for_period_initialize(log_return_df,
             shm_log.unlink()
             shm_price.close()
             shm_price.unlink()
+            shm_high.close()
+            shm_high.unlink()
+            shm_low.close()
+            shm_low.unlink()
+            shm_vol.close()
+            shm_vol.unlink()
 
             # 合并结果
             results = [r for r in results if r is not None]
