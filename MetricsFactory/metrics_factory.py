@@ -228,6 +228,9 @@ def create_shared_memory(arr: np.ndarray, name: str):
 # 遍历要计算的区间
 def compute_metrics_for_period_initialize(log_return_df,
                                           close_price_df,
+                                          high_price_df,
+                                          low_price_df,
+                                          volume_df,
                                           save_path,
                                           p_list=None,
                                           metrics_list=None,
@@ -242,6 +245,9 @@ def compute_metrics_for_period_initialize(log_return_df,
 
     :param log_return_df: 对数收益率 DataFrame，索引为日期，列为基金代码。
     :param close_price_df: 收盘价 DataFrame，索引为日期，列为基金代码。
+    :param high_price_df: 最高价 DataFrame，索引为日期，列为基金代码。
+    :param low_price_df: 最低价 DataFrame，索引为日期，列为基金代码。
+    :param volume_df: 成交量 DataFrame，索引为日期，列为基金代码。
     :param save_path: 指标结果保存路径。
     :param p_list: 特定需要计算指标的时间段列表，如果为 None，则计算所有预定义的时间段。
     :param metrics_list: 特定需要计算的指标列表，如果为 None，则计算所有预定义的指标。
@@ -256,28 +262,40 @@ def compute_metrics_for_period_initialize(log_return_df,
     if fund_list is not None:
         log_return_df = log_return_df[fund_list]
         close_price_df = close_price_df[fund_list]
+        high_price_df = high_price_df[fund_list]
+        low_price_df = low_price_df[fund_list]
+        volume_df = volume_df[fund_list]
     # 获取交易日序列
     trading_days_array = pd.to_datetime(np.array(log_return_df.index))
+
     # 将索引日期扩充到自然日
     log_return_df = log_return_df.resample('D').asfreq()
     close_price_df = close_price_df.resample('D').asfreq()
+    high_price_df = high_price_df.resample('D').asfreq()
+    low_price_df = low_price_df.resample('D').asfreq()
+    volume_df = volume_df.resample('D').asfreq()
+
     # 获取自然日序列
     nature_days_array = pd.to_datetime(np.array(log_return_df.index))
     # 得到区间与该区间要计算指标的映射
     period_metrics_map = create_period_metrics_map()
     # 找到每个产品第一个非nan值所对应的日期
     first_valid_dates = log_return_df.apply(lambda col: col.first_valid_index()).values
-    # 将 log_return_df 转换为 numpy 数组
+
+    # 将 dataframe 转换为 numpy 数组
     log_return_array = log_return_df.values
-    # 将 close_price_df 转换为 numpy 数组
     close_price_array = close_price_df.values
+    high_price_array = high_price_df.values
+    low_price_array = low_price_df.values
+    volume_array = volume_df.values
+
     # 得到基金代码
     funds_codes = log_return_df.columns.values
     # 设置进程数
     num_workers = cpu_count() if num_workers is None else num_workers
 
     # 释放内存
-    del log_return_df, close_price_df
+    del log_return_df, close_price_df, high_price_df, low_price_df, volume_df
     gc.collect()
 
     ''' 2) 遍历各个区间 '''
@@ -390,25 +408,34 @@ def compute_metrics_for_period_initialize(log_return_df,
                 # 找到 开始日期 & 结束日期在 nature_days_array 的索引位置
                 start_idx, end_idx = find_date_range_indices(nature_days_array, start_date, end_date)
 
-                # 截取在区间内的 log_return_array 数据 和 close_price_array 数据
-                in_p_log_return_array = log_return_array[start_idx + 1: end_idx + 1]
-                in_p_close_price_array = close_price_array[start_idx + 1: end_idx + 1]
+                # 截取在区间内的数据
+                in_p_log_return_array = log_return_array[start_idx + 1: end_idx + 1]  # 对数收益率
+                in_p_close_price_array = close_price_array[start_idx + 1: end_idx + 1]  # 收盘价
+                in_p_high_price_array = high_price_array[start_idx + 1: end_idx + 1]  # 最高价
+                in_p_low_price_array = low_price_array[start_idx + 1: end_idx + 1]  # 最低价
+                in_p_volume_array = volume_array[start_idx + 1: end_idx + 1]  # 成交量
 
                 # 计算区间内有多少个自然日
                 days_in_p = end_idx - start_idx
 
-                # 使用布尔索引得到保留的列索引
+                # 找到那些在区间开始日期之前就有数据的基金, 用布尔索引得到这些基金的列索引 (我们只计算这些基金)
                 keep_indices = np.where(first_valid_dates <= start_date)[0]
-                # 使用切片保留对应基金（共享内存）
-                filtered_funds_codes = funds_codes[keep_indices]
-                filtered_log_return_array = in_p_log_return_array[:, keep_indices]
-                filtered_close_price_array = in_p_close_price_array[:, keep_indices]
+                # 使用切片保留对应基金
+                filtered_funds_codes = funds_codes[keep_indices]  # 基金代码
+                filtered_log_return_array = in_p_log_return_array[:, keep_indices]  # 对数收益率
+                filtered_close_price_array = in_p_close_price_array[:, keep_indices]  # 收盘价
+                filtered_high_price_array = in_p_high_price_array[:, keep_indices]  # 最高价
+                filtered_low_price_array = in_p_low_price_array[:, keep_indices]  # 最低价
+                filtered_volume_array = in_p_volume_array[:, keep_indices]  # 成交量
 
                 # 创建CalMetrics类的实例，用于计算特定时间段内的基金指标
                 c_m = CalMetrics(
                     filtered_funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码
                     filtered_log_return_array,  # 在指定日期范围内的对数收益率数据，numpy数组格式
                     filtered_close_price_array,  # 在指定日期范围内的收盘价数据，numpy数组格式
+                    filtered_high_price_array,  # 在指定日期范围内的最高价数据，numpy数组格式
+                    filtered_low_price_array,  # 在指定日期范围内的最低价数据，numpy数组格式
+                    filtered_volume_array,  # 在指定日期范围内的交易量数据，numpy数组格式
                     period,  # 计算指标的时间区间类型，例如'1m'(近一个月)、'qtd'(本季至今)等
                     days_in_p,  # 指定日期范围内自然日的数量，用于计算某些时间相关的指标
                     end_date,  # 当前计算周期的结束日期，pd.Timestamp格式
@@ -427,12 +454,4 @@ def compute_metrics_for_period_initialize(log_return_df,
 
 
 if __name__ == '__main__':
-    the_close_df = pd.read_parquet('../Data/wide_close_df.parquet')
-    the_log_return_df = pd.read_parquet('../Data/wide_log_return_df.parquet')
-
-    compute_metrics_for_period_initialize(the_log_return_df, the_close_df,
-                                          '../Data/Metrics',
-                                          p_list=['70d'],
-                                          metrics_list=['HurstExponent'],
-                                          fund_list=['510050.SH'],
-                                          multi_process=False)
+    pass

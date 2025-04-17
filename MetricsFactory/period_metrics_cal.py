@@ -259,6 +259,50 @@ def compute_net_equity_metrics(price_array):
     return result
 
 
+@njit(float64[:](float64[:, :]), parallel=True)
+def compute_vol_slope(volume_array):
+    """
+    计算成交量的线性回归斜率（忽略 NaN）
+
+    参数:
+        volume_array: ndarray, shape = (n_days, n_funds)
+                      每天的成交量数据，可能含 NaN
+
+    返回:
+        slopes: ndarray, shape = (n_funds,)
+                每只基金的成交量斜率
+    """
+    n_days, n_funds = volume_array.shape
+    slopes = np.full(n_funds, np.nan)
+
+    for i in prange(n_funds):
+        y = volume_array[:, i]
+        count = 0
+        for j in range(n_days):
+            if not np.isnan(y[j]):
+                count += 1
+        if count < 2:
+            continue
+
+        x_valid = np.empty(count)
+        y_valid = np.empty(count)
+        idx = 0
+        for j in range(n_days):
+            if not np.isnan(y[j]):
+                x_valid[idx] = j
+                y_valid[idx] = y[j]
+                idx += 1
+
+        x_mean = np.mean(x_valid)
+        y_mean = np.mean(y_valid)
+        num = np.sum((x_valid - x_mean) * (y_valid - y_mean))
+        den = np.sum((x_valid - x_mean) ** 2)
+        if den != 0.0:
+            slopes[i] = num / den
+
+    return slopes
+
+
 # 金融指标计算器类
 class CalMetrics:
     """
@@ -281,6 +325,9 @@ class CalMetrics:
     def __init__(self, fund_codes,
                  log_return_array,
                  close_price_array,
+                 high_price_array,
+                 low_price_array,
+                 volume_array,
                  time_zone_code,
                  nature_days_in_p,
                  end_date,
@@ -288,10 +335,16 @@ class CalMetrics:
                  trans_to_cumulative_return=False):
         # 初始化基金代码列表
         self.fund_codes = fund_codes
-        # 移除对数收益率数组中的全NaN行，并存储为返回数组
+        # 移除对数收益率数组中的全NaN行，并存储为返回数组 (2维ndarray, 行表示日期, 列表示基金, 值为基金的对数收益率)
         self.return_array = log_return_array[~np.all(np.isnan(log_return_array), axis=1)]
-        # 移除收盘价数组中的全NaN行，并存储为价格数组
+        # 移除收盘价数组中的全NaN行，并存储为价格数组   (2维ndarray, 行表示日期, 列表示基金, 值为基金的每日收盘价)
         self.price_array = close_price_array[~np.all(np.isnan(close_price_array), axis=1)]
+        # 移除收盘价数组中的全NaN行，并存储为价格数组   (2维ndarray, 行表示日期, 列表示基金, 值为基金的每日最高价)
+        self.high_array = high_price_array[~np.all(np.isnan(high_price_array), axis=1)]
+        # 移除收盘价数组中的全NaN行，并存储为价格数组   (2维ndarray, 行表示日期, 列表示基金, 值为基金的每日最低价)
+        self.low_array = low_price_array[~np.all(np.isnan(low_price_array), axis=1)]
+        # 移除收盘价数组中的全NaN行，并存储为价格数组   (2维ndarray, 行表示日期, 列表示基金, 值为基金的每日交易量)
+        self.volume_array = volume_array[~np.all(np.isnan(volume_array), axis=1)]
         # 存储时区代码
         self.time_zone_code = time_zone_code
         # 存储自然日数量
@@ -986,6 +1039,38 @@ class CalMetrics:
         # 返回指定的指标结果
         return self.res_dict[metric_name]
 
+    @cache_metric  # 计算平均成交量
+    def cal_VolAvg(self, **kwargs):
+        return np.nanmean(self.volume_array, axis=0)
+
+    @cache_metric  # 计算成交量斜率
+    def cal_VolSlope(self, **kwargs):
+        return compute_vol_slope(self.volume_array)
+
+    @cache_metric  # 成交量波动率
+    def cal_VolVolatility(self, **kwargs):
+        return np.nanstd(self.volume_array, axis=0, ddof=1)
+
+    @cache_metric  # 过去一段时间内的最高价
+    def cal_MaxHigh(self, **kwargs):
+        return np.nanmax(self.high_array, axis=0)
+
+    @cache_metric  # 过去一段时间内的最低价
+    def cal_MinLow(self, **kwargs):
+        return np.nanmin(self.low_array, axis=0)
+
+    @cache_metric  # 过去一段时间内的最高价与最低价之差
+    def cal_HLDiff(self, **kwargs):
+        return self.cal_MaxHigh() - self.cal_MinLow()
+
+    @cache_metric   # 最高价平均值
+    def cal_AvgHigh(self, **kwargs):
+        return np.nanmean(self.high_array, axis=0)
+
+    @cache_metric   # 最低价平均值
+    def cal_AvgLow(self, **kwargs):
+        return np.nanmean(self.low_array, axis=0)
+
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
         """
@@ -1025,7 +1110,7 @@ class CalMetrics:
         try:
             return getattr(self, method_name)(**kwargs)
         except Exception as e:
-            print(f"Error when calling '{method_name}': {e}")
+            print(f"计算 以{self.end_date} 为结束日期的 {self.time_zone_code} 区间指标 '{method_name}' 报错: {e}")
             print(traceback.format_exc())
 
     # 根据指标名列表 计算相应的指标值
@@ -1065,3 +1150,49 @@ class CalMetrics:
         columns = [col + ':' + self.time_zone_code if col not in ['ts_code', 'date'] else col for col in columns]
         final_df.columns = columns
         return final_df
+
+
+if __name__ == '__main__':
+    price_df = pd.read_parquet('../Data/wide_close_df.parquet')
+    return_df = pd.read_parquet('../Data/wide_log_return_df.parquet')
+    high_df = pd.read_parquet('../Data/wide_high_df.parquet')
+    low_df = pd.read_parquet('../Data/wide_low_df.parquet')
+    vol_df = pd.read_parquet('../Data/wide_vol_df.parquet')
+
+    # 指定要计算的基金
+    fund = ['510050.SH', '159915.SZ', '159912.SZ', '512500.SH', '164701.SZ', '511010.SH', '513100.SH', '513030.SH',
+            '513080.SH', '513520.SH', '518880.SH', '161226.SZ', '501018.SH', '159981.SZ', '159985.SZ', '159980.SZ',
+            ]
+
+    # 选择指定基金的数据
+    price_df = price_df[fund]
+    return_df = return_df[fund]
+    high_df = high_df[fund]
+    low_df = low_df[fund]
+    vol_df = vol_df[fund]
+
+    # 基金代码列表
+    fund_codes_array = np.array(price_df.columns.tolist())
+    # 获取数据的日期索引
+    days = price_df.index
+
+    log_return = return_df.values
+    close_price = price_df.values
+    high_df = high_df.values
+    low_df = low_df.values
+    vol_df = vol_df.values
+
+    cal = CalMetrics(fund_codes=fund_codes_array,
+                     log_return_array=log_return,
+                     close_price_array=close_price,
+                     high_price_array=high_df,
+                     low_price_array=low_df,
+                     volume_array=vol_df,
+                     time_zone_code='1m',
+                     nature_days_in_p=50,
+                     end_date=days[-1],  # 结束日期
+                     )
+    res = cal.cal_metric_main(['HLDiff'])
+    s_t = time.time()
+    print(res)
+    print(f"共 {len(res)} 条记录，耗时 {(time.time() - s_t):.4f} 秒")
