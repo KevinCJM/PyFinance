@@ -61,7 +61,7 @@ def cache_rolling_metric(func):
     def wrapper(self, *args, **kwargs):
 
         # 布林带特殊处理
-        if func.__name__ in ['cal_Boll', 'cal_KDJ']:
+        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA']:
             metric_name = kwargs['metric_name']
         else:
             # 从函数名中提取指标名称，去掉前缀 "cal_"
@@ -242,6 +242,55 @@ class CalRollingMetrics:
 
         return obv
 
+    @cache_rolling_metric  # 计算 MTM 动量指标
+    def cal_MTM(self, **kwargs):
+        # 1. 当前价格 - N天前价格
+        mtm = self.price_df - self.price_df.shift(self.rolling_days)
+        # 2. 转回 ndarray 返回
+        return mtm.to_numpy()
+
+    @cache_rolling_metric  # 平滑动量指标
+    def cal_MTMMA(self, metric_name, **kwargs):
+        _, smooth = metric_name.split('-')
+        smooth = int(smooth)
+        mtm = self.cal_MTM()
+        df_mtm = pd.DataFrame(mtm, columns=self.fund_codes)
+        mtmma = df_mtm.rolling(window=smooth, min_periods=1).mean()
+        return mtmma.to_numpy()
+
+    @cache_rolling_metric  # 三重指数平滑移动平均
+    def cal_TRIX(self, **kwargs):
+        # 一次 EMA
+        ema1 = self.price_df.ewm(span=self.rolling_days, adjust=False, min_periods=1).mean()
+        ema2 = ema1.ewm(span=self.rolling_days, adjust=False, min_periods=1).mean()
+        ema3 = ema2.ewm(span=self.rolling_days, adjust=False, min_periods=1).mean()
+
+        # 三重 EMA 的一阶变化率（百分比）
+        trix = ema3.pct_change() * 100  # 百分比形式
+
+        return trix.to_numpy()
+
+    @cache_rolling_metric  # 三重指数平滑移动平均的移动平均
+    def cal_MATRIX(self, metric_name, **kwargs):
+        _, smooth = metric_name.split('-')
+        # 获取 TRIX 值（自动从缓存或重新计算）
+        trix_array = self.cal_TRIX()
+        # 转回 DataFrame 做 EMA 平滑
+        df_trix = pd.DataFrame(trix_array, columns=self.fund_codes)
+        # 对每列做 EMA 平滑
+        matrix_df = df_trix.rolling(window=int(smooth), min_periods=1).mean()
+        return matrix_df.to_numpy()
+
+    @cache_rolling_metric
+    def cal_PSY(self, window: int = 12):
+        # 收盘价变动（t - t-1）
+        diff = self.price_df.diff()
+        # 涨则记为 1，跌或持平记为 0
+        up_days = (diff > 0).astype(int)
+        # 过去 N 天上涨天数占比
+        psy = up_days.rolling(window=window, min_periods=1).sum() / window * 100
+        return psy.to_numpy()
+
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
         # 布林带计算处理, 会同时计算上下两个轨道
@@ -249,6 +298,10 @@ class CalRollingMetrics:
             func_name = 'cal_Boll'
         elif metric_name.startswith('KDJ-'):
             func_name = 'cal_KDJ'
+        elif metric_name.startswith('MTMMA-'):
+            func_name = 'cal_MTMMA'
+        elif metric_name.startswith('MATRIX-'):
+            func_name = 'cal_MATRIX'
         else:
             func_name = f'cal_{metric_name}'
         kwargs['metric_name'] = metric_name
@@ -311,11 +364,11 @@ if __name__ == '__main__':
                             high_price_array=high_df,
                             low_price_array=low_df,
                             volume_array=vol_df,
-                            rolling_days=10,
+                            rolling_days=12,
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['OBV'])
+    res = cal.cal_all_metrics(['MATRIX-9'])
     print(res)
 
     # from MetricsFactory.metrics_cal_config import create_rolling_metrics_map
