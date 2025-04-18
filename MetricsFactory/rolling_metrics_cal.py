@@ -533,6 +533,37 @@ class CalRollingMetrics:
         shifted_ma_cr[int(m):, :] = ma_cr[:-int(m), :]
         return shifted_ma_cr
 
+    @cache_rolling_metric  # 计算 VR 指标
+    def cal_VR(self, **kwargs):
+        # 1. 计算涨跌状态：相对前一日
+        diff = np.empty_like(self.price_array, dtype=np.float64)
+        diff[0, :] = np.nan
+        diff[1:, :] = self.price_array[1:, :] - self.price_array[:-1, :]
+        # 2. 构造掩码
+        up_mask = (diff > 0).astype(np.float64)  # 涨
+        down_mask = (diff < 0).astype(np.float64)  # 跌
+        even_mask = (diff == 0).astype(np.float64)  # 平
+        # 3. 提取三种日的成交量
+        vol_up = self.volume_array * up_mask
+        vol_down = self.volume_array * down_mask
+        vol_even = self.volume_array * even_mask
+        # 4. 分别对3类成交量进行 N 日滚动求和
+        sum_up = rolling_sum_2d_numba(vol_up, self.rolling_days)
+        sum_down = rolling_sum_2d_numba(vol_down, self.rolling_days)
+        sum_even = rolling_sum_2d_numba(vol_even, self.rolling_days)
+        # 5. 按照公式计算 VR，避免除 0
+        numerator = sum_up + 0.5 * sum_even
+        denominator = sum_down + 0.5 * sum_even
+        denominator = np.where(denominator == 0, np.nan, denominator)
+        vr = numerator / denominator * 100
+        return vr
+
+    @cache_rolling_metric  # 计算 VR 指标
+    def cal_MAVR(self, metric_name, **kwargs):
+        _, n = metric_name.split('-')
+        vr = self.cal_VR()
+        return rolling_mean_2d_numba(vr, int(n))
+
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
         # 布林带计算处理, 会同时计算上下两个轨道
@@ -548,6 +579,8 @@ class CalRollingMetrics:
             func_name = 'cal_MAPSY'
         elif metric_name.startswith('MACR-'):
             func_name = 'cal_MACR'
+        elif metric_name.startswith('MAVR-'):
+            func_name = 'cal_MAVR'
         else:
             func_name = f'cal_{metric_name}'
         kwargs['metric_name'] = metric_name
@@ -614,7 +647,7 @@ if __name__ == '__main__':
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['MACR-10-5'])
+    res = cal.cal_all_metrics(['MAVR-6'])
     print(res[res['ts_code'] == '159980.SZ'])
 
     # from MetricsFactory.metrics_cal_config import create_rolling_metrics_map
