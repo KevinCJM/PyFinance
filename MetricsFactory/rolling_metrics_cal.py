@@ -242,7 +242,7 @@ def cache_rolling_metric(func):
     def wrapper(self, *args, **kwargs):
 
         # 布林带特殊处理
-        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY']:
+        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY', 'cal_MACR']:
             metric_name = kwargs['metric_name']
         else:
             # 从函数名中提取指标名称，去掉前缀 "cal_"
@@ -368,7 +368,7 @@ class CalRollingMetrics:
     def cal_EMA(self, **kwargs):
         return rolling_ewm_2d_numba(self.price_array, self.rolling_days)
 
-    @cache_rolling_metric   # 计算RSI
+    @cache_rolling_metric  # 计算RSI
     def cal_RSI(self, **kwargs):
         price = self.price_array  # shape: (n_days, n_assets)
         n_days, n_assets = price.shape
@@ -475,6 +475,64 @@ class CalRollingMetrics:
         # 对每列做 EMA 平滑
         return rolling_mean_2d_numba(psy, int(smooth))
 
+    @cache_rolling_metric  # 计算 CCI 顺势指标
+    def cal_CCI(self, **kwargs):
+        # 1. 计算 TP = (H + L + C) / 3
+        tp = (self.high_array + self.low_array + self.price_array) / 3  # shape: (n_days, n_assets)
+        # 2. 计算 TP 的 N 日滚动均值（MA）
+        tp_ma = rolling_mean_2d_numba(tp, self.rolling_days)  # shape: (n_days, n_assets)
+        # 3. 计算 |TP - MA|，然后再对其做滚动均值 → MD
+        tp_deviation = np.abs(tp - tp_ma)
+        tp_md = rolling_mean_2d_numba(tp_deviation, self.rolling_days)
+        # 4. CCI = (TP - MA) / (0.015 * MD)
+        denominator = 0.015 * tp_md
+        # 防止除以 0 或过小值
+        denominator = np.where(denominator == 0, np.nan, denominator)
+        cci = (tp - tp_ma) / denominator
+        return cci
+
+    @cache_rolling_metric  # 计算 CurrentRatio 现价能量强度指标
+    def cal_CR(self, **kwargs):
+        high = self.high_array
+        low = self.low_array
+        window = self.rolling_days
+        n_days, n_assets = high.shape
+
+        # 1. 构造前一日中间价 MP_{t-1} = (H_{t-1} + L_{t-1}) / 2
+        mp = (high + low) / 2
+
+        # 向后移动一行，首行补 nan
+        mp_prev = np.empty_like(mp)
+        mp_prev[0, :] = np.nan
+        mp_prev[1:, :] = mp[:-1, :]
+
+        # 2. 分子部分: max(0, H - MP_prev)
+        up = np.maximum(0, high - mp_prev)
+
+        # 3. 分母部分: max(0, MP_prev - L)
+        down = np.maximum(0, mp_prev - low)
+
+        # 4. 滚动求和（忽略 NaN）
+        sum_up = rolling_sum_2d_numba(up, window)
+        sum_down = rolling_sum_2d_numba(down, window)
+
+        # 5. 计算 CR = sum_up / sum_down * 100，防除零
+        denominator = np.where(sum_down == 0, np.nan, sum_down)
+        cr = sum_up / denominator * 100
+
+        return cr
+
+    @cache_rolling_metric  # CR指标的移动平均
+    def cal_MACR(self, metric_name, **kwargs):
+        _, n, m = metric_name.split('-')
+        cr = self.cal_CR()
+        # 计算 CR 的 N日 移动平均
+        ma_cr = rolling_mean_2d_numba(cr, int(n))
+        # 后移 M 天
+        shifted_ma_cr = np.full_like(ma_cr, np.nan)
+        shifted_ma_cr[int(m):, :] = ma_cr[:-int(m), :]
+        return shifted_ma_cr
+
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
         # 布林带计算处理, 会同时计算上下两个轨道
@@ -488,6 +546,8 @@ class CalRollingMetrics:
             func_name = 'cal_MATRIX'
         elif metric_name.startswith('MAPSY-'):
             func_name = 'cal_MAPSY'
+        elif metric_name.startswith('MACR-'):
+            func_name = 'cal_MACR'
         else:
             func_name = f'cal_{metric_name}'
         kwargs['metric_name'] = metric_name
@@ -550,12 +610,12 @@ if __name__ == '__main__':
                             high_price_array=high_df,
                             low_price_array=low_df,
                             volume_array=vol_df,
-                            rolling_days=12,
+                            rolling_days=26,
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['PSY'])
-    print(res)
+    res = cal.cal_all_metrics(['MACR-10-5'])
+    print(res[res['ts_code'] == '159980.SZ'])
 
     # from MetricsFactory.metrics_cal_config import create_rolling_metrics_map
     #
