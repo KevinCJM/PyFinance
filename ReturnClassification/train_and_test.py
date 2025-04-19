@@ -375,7 +375,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
-    for d in [10]:
+    for d in [2, 5, 10, 15]:
         print(f"预测未来{d}天的收益率 .....")
         predict_main_random_forest(the_fund_code='510050.SH',
                                    n_days=d,

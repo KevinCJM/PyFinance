@@ -242,7 +242,7 @@ def cache_rolling_metric(func):
     def wrapper(self, *args, **kwargs):
 
         # 布林带特殊处理
-        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY', 'cal_MACR']:
+        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY', 'cal_MACR', 'cal_ADX']:
             metric_name = kwargs['metric_name']
         else:
             # 从函数名中提取指标名称，去掉前缀 "cal_"
@@ -265,6 +265,7 @@ class CalRollingMetrics:
     def __init__(self, fund_codes,
                  log_return_array,
                  close_price_array,
+                 open_price_array,
                  high_price_array,
                  low_price_array,
                  volume_array,
@@ -277,6 +278,8 @@ class CalRollingMetrics:
         self.return_array = log_return_array
         # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日收盘价
         self.price_array = close_price_array
+        # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日开盘价
+        self.open_array = open_price_array
         # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日最高价
         self.high_array = high_price_array
         # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日最低价
@@ -402,23 +405,48 @@ class CalRollingMetrics:
 
     @cache_rolling_metric
     def cal_OBV(self, **kwargs):
-        close = self.price_array  # shape: (n_days, n_funds)
-        volume = self.volume_array  # shape: (n_days, n_funds)
-
         # 价格变动方向：+1 (涨), -1 (跌), 0 (持平)
-        price_diff = np.diff(close, axis=0)
+        price_diff = np.diff(self.price_array, axis=0)
         direction = np.sign(price_diff)
-
         # 将方向扩展为 (n_days, n_funds)（第一行补 0）
         direction = np.vstack([np.zeros((1, self.n_funds)), direction])
-
         # 构造 OBV 增量
-        obv_delta = direction * volume
-
+        obv_delta = direction * self.volume_array
         # 初始 OBV 为 0，累加方向量
         obv = np.nancumsum(obv_delta, axis=0)
-
         return obv
+
+    @cache_rolling_metric  # 计算 OBV 的移动平均
+    def cal_MAOBV(self, **kwargs):
+        obv = self.cal_OBV()
+        return rolling_mean_2d_numba(obv, self.rolling_days)
+
+    @cache_rolling_metric  # 计算 PVT 指标
+    def cal_PVT(self, **kwargs):
+        # 1. 收盘价差与前收（手动右移）
+        diff = np.empty_like(self.price_array, dtype=np.float64)
+        diff[0, :] = np.nan
+        diff[1:, :] = self.price_array[1:, :] - self.price_array[:-1, :]
+
+        close_prev = np.empty_like(self.price_array, dtype=np.float64)
+        close_prev[0, :] = np.nan
+        close_prev[1:, :] = self.price_array[:-1, :]
+
+        # 2. 涨跌幅 × 成交量
+        pct_change = diff / close_prev
+        pct_change = np.where(np.isfinite(pct_change), pct_change, 0.0)
+        pvt_delta = pct_change * self.volume_array  # shape = (n_days, n_assets)
+
+        # 3. 矢量化累积：PVT = 累加 delta（首行 = 0）
+        pvt = np.nancumsum(pvt_delta, axis=0)
+        pvt[0, :] = 0.0  # 显式设定首行为0
+
+        return pvt
+
+    @cache_rolling_metric  # 计算 PVT 指标的移动平均数
+    def cal_MAPVT(self, **kwargs):
+        pvt = self.cal_PVT()
+        return rolling_mean_2d_numba(pvt, self.rolling_days)
 
     @cache_rolling_metric  # 计算 MTM 动量指标
     def cal_MTM(self, **kwargs):
@@ -564,6 +592,157 @@ class CalRollingMetrics:
         vr = self.cal_VR()
         return rolling_mean_2d_numba(vr, int(n))
 
+    @cache_rolling_metric  # 计算夏 AR 指标
+    def cal_AR(self, **kwargs):
+        # 分子: H - O
+        up = self.high_array - self.open_array
+        # 分母: O - L
+        down = self.open_array - self.low_array
+        # 滚动求和（忽略 NaN）
+        up_sum = rolling_sum_2d_numba(up, self.rolling_days)
+        down_sum = rolling_sum_2d_numba(down, self.rolling_days)
+        # 防除 0
+        denominator = np.where(down_sum == 0, np.nan, down_sum)
+        ar = up_sum / denominator * 100
+        return ar
+
+    @cache_rolling_metric  # 计算夏 BR 指标
+    def cal_BR(self, **kwargs):
+        # 获取前一日收盘价（首行补 nan）
+        close_prev = np.empty_like(self.price_array)
+        close_prev[0, :] = np.nan
+        close_prev[1:, :] = self.price_array[:-1, :]
+        # 分子: max(0, H - C_{-1})
+        up = np.maximum(0, self.high_array - close_prev)
+        # 分母: max(0, C_{-1} - L)
+        down = np.maximum(0, close_prev - self.low_array)
+        # 滚动求和
+        up_sum = rolling_sum_2d_numba(up, self.rolling_days)
+        down_sum = rolling_sum_2d_numba(down, self.rolling_days)
+        # 防除 0
+        denominator = np.where(down_sum == 0, np.nan, down_sum)
+        br = up_sum / denominator * 100
+        return br
+
+    @cache_rolling_metric  # 计算 BIAS 乖离率
+    def cal_BIAS(self, **kwargs):
+        # 1. 计算 N 日均线
+        ma = self.cal_CloseMA()
+        # 2. 计算 BIAS = (C - MA) / MA * 100
+        bias = (self.price_array - ma) / ma * 100
+        return bias
+
+    @cache_rolling_metric  # 计算 TR 真实波动范围
+    def cal_TR(self, **kwargs):
+        # 构造前一日收盘价（首行为 nan）
+        close_prev = np.empty_like(self.price_array)
+        close_prev[0, :] = np.nan
+        close_prev[1:, :] = self.price_array[:-1, :]
+        # 计算三个候选值
+        h_minus_l = self.high_array - self.low_array
+        h_minus_pc = np.abs(self.high_array - close_prev)
+        l_minus_pc = np.abs(self.low_array - close_prev)
+        # 逐元素取三者最大值
+        tr = np.fmax.reduce([h_minus_l, h_minus_pc, l_minus_pc])
+        return tr
+
+    # 计算 H_t - H_{t-1} 指标
+    def cal_high_diff(self, **kwargs):
+        if 'high_diff' in self.res_dict:
+            return self.res_dict['high_diff']
+
+        # H_t - H_{t-1}
+        high_diff = np.empty_like(self.high_array)
+        high_diff[0, :] = np.nan
+        high_diff[1:, :] = self.high_array[1:, :] - self.high_array[:-1, :]
+        self.res_dict['high_diff'] = high_diff
+        return self.res_dict['high_diff']
+
+    # 计算 L_{t-1} - L_t 指标
+    def cal_low_diff(self, **kwargs):
+        if 'low_diff' in self.res_dict:
+            return self.res_dict['low_diff']
+
+        # L_{t-1} - L_t
+        low_diff = np.empty_like(self.low_array)
+        low_diff[0, :] = np.nan
+        low_diff[1:, :] = self.low_array[:-1, :] - self.low_array[1:, :]
+        self.res_dict['low_diff'] = low_diff
+        return self.res_dict['low_diff']
+
+    @cache_rolling_metric  # 计算 PDI 正向指标
+    def cal_PDI(self, **kwargs):
+        # H_t - H_{t-1}
+        high_diff = self.cal_high_diff()
+        # L_{t-1} - L_t
+        low_diff = self.cal_low_diff()
+
+        # +DM 条件判断
+        plus_dm = np.where(
+            (high_diff > low_diff) & (high_diff > 0),
+            high_diff,
+            0.0
+        )
+        # 平滑 +DM 和 TR
+        sum_plus_dm = rolling_sum_2d_numba(plus_dm, self.rolling_days)
+        sum_tr = rolling_sum_2d_numba(self.cal_TR(), self.rolling_days)
+        # PDI = +DM / TR * 100
+        pdi = np.where(sum_tr == 0, np.nan, sum_plus_dm / sum_tr * 100)
+        return pdi
+
+    @cache_rolling_metric  # 计算 MDI 负向指标
+    def cal_MDI(self, **kwargs):
+        # H_t - H_{t-1}
+        high_diff = self.cal_high_diff()
+        # L_{t-1} - L_t
+        low_diff = self.cal_low_diff()
+
+        # -DM 条件判断
+        minus_dm = np.where(
+            (low_diff > high_diff) & (low_diff > 0),
+            low_diff,
+            0.0
+        )
+
+        # 平滑 –DM 和 TR
+        sum_minus_dm = rolling_sum_2d_numba(minus_dm, self.rolling_days)
+        sum_tr = rolling_sum_2d_numba(self.cal_TR(), self.rolling_days)
+
+        # MDI = -DM / TR * 100
+        mdi = np.where(sum_tr == 0, np.nan, sum_minus_dm / sum_tr * 100)
+
+        return mdi
+
+    @cache_rolling_metric  # 计算 ADX 指标
+    def cal_ADX(self, metric_name, **kwargs):
+        _, n = metric_name.split('-')
+        n = int(n)
+        pdi = self.cal_PDI()  # +DI
+        mdi = self.cal_MDI()  # -DI
+
+        # 1. 计算 DX
+        denominator = pdi + mdi
+        numerator = np.abs(pdi - mdi)
+        dx = np.where(denominator == 0, np.nan, numerator / denominator * 100)
+
+        # 2. 平滑 DX 得 ADX
+        adx = rolling_mean_2d_numba(dx, n)
+
+        return adx
+
+    @cache_rolling_metric  # 计算 ADXR 指标
+    def cal_ADXR(self, metric_name, **kwargs):
+        _, m, n = metric_name.split('-')
+        n = int(n)
+        adx = self.cal_ADX(metric_name=f"ADX-{m}")
+
+        # 1. 平移 ADX（前移N天）构造 ADX_{t-N}
+        adx_prev = np.full_like(adx, np.nan)
+        adx_prev[n:, :] = adx[:-n, :]
+
+        # 2. 平均
+        return (adx + adx_prev) / 2
+
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
         # 布林带计算处理, 会同时计算上下两个轨道
@@ -581,6 +760,10 @@ class CalRollingMetrics:
             func_name = 'cal_MACR'
         elif metric_name.startswith('MAVR-'):
             func_name = 'cal_MAVR'
+        elif metric_name.startswith('ADX-'):
+            func_name = 'cal_ADX'
+        elif metric_name.startswith('ADXR-'):
+            func_name = 'cal_ADXR'
         else:
             func_name = f'cal_{metric_name}'
         kwargs['metric_name'] = metric_name
@@ -614,6 +797,7 @@ class CalRollingMetrics:
 
 if __name__ == '__main__':
     price_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_close_df.parquet')
+    open_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_open_df.parquet')
     return_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_log_return_df.parquet')
     high_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_high_df.parquet')
     low_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_low_df.parquet')
@@ -623,6 +807,7 @@ if __name__ == '__main__':
             '513080.SH', '513520.SH', '518880.SH', '161226.SZ', '501018.SH', '159981.SZ', '159985.SZ', '159980.SZ',
             ]
     price_df = price_df[fund]
+    open_df = open_df[fund]
     return_df = return_df[fund]
     high_df = high_df[fund]
     low_df = low_df[fund]
@@ -633,6 +818,7 @@ if __name__ == '__main__':
 
     log_return = return_df.values
     close_price = price_df.values
+    open_price = open_df.values
     high_df = high_df.values
     low_df = low_df.values
     vol_df = vol_df.values
@@ -640,14 +826,15 @@ if __name__ == '__main__':
     cal = CalRollingMetrics(fund_codes=fund_codes_array,
                             log_return_array=log_return,
                             close_price_array=close_price,
+                            open_price_array=open_price,
                             high_price_array=high_df,
                             low_price_array=low_df,
                             volume_array=vol_df,
-                            rolling_days=26,
+                            rolling_days=14,
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['MAVR-6'])
+    res = cal.cal_all_metrics(['ADX-6', 'ADXR-6-6'])
     print(res[res['ts_code'] == '159980.SZ'])
 
     # from MetricsFactory.metrics_cal_config import create_rolling_metrics_map
