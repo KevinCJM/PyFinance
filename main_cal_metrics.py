@@ -64,5 +64,4 @@ if __name__ == '__main__':
                                 fund_list=fund,
                                 num_workers=None,
                                 roll_list=None,
-                                multi_process=False,
                                 )

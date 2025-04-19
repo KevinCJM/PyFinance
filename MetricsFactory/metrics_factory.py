@@ -120,7 +120,7 @@ def find_date_range_indices(nature_days_array, start_date, end_date):
     return start_idx, end_idx
 
 
-# 使用共享内存中的数据计算指标
+# 使用共享内存中的数据计算指标 (区间指标)
 def calc_metrics_shared_worker(args, shm_info):
     """
     使用共享内存中的数据计算指标。
@@ -496,27 +496,27 @@ def compute_all_rolling_metrics(open_price_df,
                                 fund_list=None,
                                 num_workers=None,
                                 roll_list=None,
-                                multi_process=False,
                                 ):
     """
     计算所有滚动指标，并将结果保存为 Parquet 文件。
 
-    :param open_price_df:
-    :param close_price_df:
-    :param high_price_df:
-    :param low_price_df:
-    :param volume_df:
-    :param save_path:
-    :param fund_list:
-    :param num_workers:
-    :param roll_list:
-    :param multi_process:
-    :return:
+    :param open_price_df: 开盘价数据框，包含多个基金的开盘价信息
+    :param close_price_df: 收盘价数据框，包含多个基金的收盘价信息
+    :param high_price_df: 最高价数据框，包含多个基金的最高价信息
+    :param low_price_df: 最低价数据框，包含多个基金的最低价信息
+    :param volume_df: 成交量数据框，包含多个基金的成交量信息
+    :param save_path: 保存计算结果的路径
+    :param fund_list: 基金代码列表，用于筛选特定基金，默认为None
+    :param num_workers: 并行处理时的进程数量，默认为None，将使用所有可用的CPU核心
+    :param roll_list: 滚动天数列表，用于指定计算哪些滚动指标，默认为None
+    :return: 无返回值，计算结果将保存在指定路径
     """
+    # 计算滚动指标的开始时间
     print("[开始] 计算滚动指标 ")
     s_t_all = time.time()
 
     ''' 1) 数据预处理 '''
+    # 根据fund_list筛选特定基金的数据
     if fund_list is not None:
         open_price_df = open_price_df[fund_list]
         close_price_df = close_price_df[fund_list]
@@ -526,7 +526,7 @@ def compute_all_rolling_metrics(open_price_df,
     # 获取交易日序列
     trading_days_array = pd.to_datetime(np.array(open_price_df.index))
 
-    # 将 dataframe 转换为 numpy 数组
+    # 将 dataframe 转换为 numpy 数组，便于后续计算
     open_price_array = open_price_df.values
     close_price_array = close_price_df.values
     high_price_array = high_price_df.values
@@ -545,43 +545,40 @@ def compute_all_rolling_metrics(open_price_df,
     del open_price_df, close_price_df, high_price_df, low_price_df, volume_df
     gc.collect()
 
-    # 多进程计算
-    if multi_process:
-        pass
-    # 单进程计算
-    else:
-        final_df = None
-        for roll_d in tqdm(roll_list):
-            # print(f"[Start] 计算{roll_d}日滚动的指标 ...")
-            # s_t = time.time()
-            # 创建CalMetrics类的实例，用于计算特定时间段内的基金指标
-            c_m = CalRollingMetrics(
-                funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码
-                open_price_array,  # 开盘价数据，numpy数组格式
-                close_price_array,  # 收盘价数据，numpy数组格式
-                high_price_array,  # 最高价数据，numpy数组格式
-                low_price_array,  # 最低价数据，numpy数组格式
-                volume_array,  # 成交量数据，numpy数组格式
-                roll_d,  # 滚动计算的天数，例如 3, 5, 10等
-                trading_days_array,  # 所有交易日的日期序列
-            )
-            sub_df = c_m.cal_all_metrics(metrics_map[roll_d])
-            if sub_df is not None and not sub_df.empty:
-                # 将计算结果添加到最终的 DataFrame 列表中
-                if final_df is None:
-                    final_df = sub_df
-                else:
-                    final_df = pd.merge(final_df, sub_df, on=["date", "ts_code"], how="inner")
+    ''' 2) 遍历各个滚动天数 '''
+    final_df = None
+    for roll_d in tqdm(roll_list):
+        # 创建CalMetrics类的实例，用于计算特定时间段内的基金指标
+        c_m = CalRollingMetrics(
+            funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码
+            open_price_array,  # 开盘价数据，numpy数组格式
+            close_price_array,  # 收盘价数据，numpy数组格式
+            high_price_array,  # 最高价数据，numpy数组格式
+            low_price_array,  # 最低价数据，numpy数组格式
+            volume_array,  # 成交量数据，numpy数组格式
+            roll_d,  # 滚动计算的天数，例如 3, 5, 10等
+            trading_days_array,  # 所有交易日的日期序列
+        )
+        # 计算特定滚动天数的所有指标
+        sub_df = c_m.cal_all_metrics(metrics_map[roll_d])
+        # 如果计算结果不为空，则合并到最终的结果数据框中
+        if sub_df is not None and not sub_df.empty:
+            # 将计算结果添加到最终的 DataFrame 列表中
+            if final_df is None:
+                final_df = sub_df
             else:
-                print(f"没有计算到{roll_d}日滚动的指标, 请检查数据是否完整")
+                final_df = pd.merge(final_df, sub_df, on=["date", "ts_code"], how="inner")
+        else:
+            # 如果没有计算到指标，提示用户检查数据完整性
+            print(f"没有计算到{roll_d}日滚动的指标, 请检查数据是否完整")
+        # 释放内存
+        del c_m, sub_df
+        gc.collect()
 
-            # print(f"[End] {roll_d}日滚动指标计算完成, 共 {len(sub_df)} 条记录，耗时 {(time.time() - s_t):.2f} 秒")
-            del c_m, sub_df
-            gc.collect()
-
-        # 保存结果
-        final_df.to_parquet(os.path.join(save_path, f"rolling_metrics.parquet"))
-        print(f"[完成] 滚动指标计算完成, 共 {len(final_df)} 条记录，耗时 {(time.time() - s_t_all):.2f} 秒")
+    # 保存结果到指定路径
+    final_df.to_parquet(os.path.join(save_path, f"rolling_metrics.parquet"))
+    # 计算完成后的结束时间
+    print(f"[完成] 滚动指标计算完成, 共 {len(final_df)} 条记录，耗时 {(time.time() - s_t_all):.2f} 秒")
 
 
 if __name__ == '__main__':
