@@ -12,9 +12,6 @@ import numpy as np
 import pandas as pd
 from functools import wraps
 from numba import prange, float64, njit
-from scipy.stats import norm, kurtosis, skew
-from numpy.lib.stride_tricks import sliding_window_view
-from MetricsFactory.metrics_cal_config import return_ann_factor, risk_ann_factor, log_ann_return, log_daily_return
 
 warnings.filterwarnings("ignore")
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -762,7 +759,7 @@ class CalRollingMetrics:
         # 2. 平均
         return (adx + adx_prev) / 2
 
-    @cache_rolling_metric   # 计算 DKX 指标
+    @cache_rolling_metric  # 计算 DKX 指标
     def cal_DKX(self, N=20, **kwargs):
         high = self.high_array
         low = self.low_array
@@ -872,12 +869,13 @@ if __name__ == '__main__':
                             high_price_array=high_df,
                             low_price_array=low_df,
                             volume_array=vol_df,
-                            rolling_days=10,
+                            rolling_days=14,
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['DKX', 'MADKX-10'])
-    print(res[res['ts_code'] == '159980.SZ'])
+    res = cal.cal_all_metrics(['TD9UP', 'TD9DOWN'])
+    res = res[res['ts_code'] == '159915.SZ']
+    print(res)
 
     # from MetricsFactory.metrics_cal_config import create_rolling_metrics_map
     #
