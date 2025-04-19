@@ -5,7 +5,7 @@
 @Author: Kevin-Chen
 @Descriptions: 滚动指标的计算逻辑
 """
-import time
+import gc
 import warnings
 import traceback
 import numpy as np
@@ -278,20 +278,20 @@ def cache_rolling_metric(func):
 
 
 class CalRollingMetrics:
-    def __init__(self, fund_codes,
-                 log_return_array,
-                 close_price_array,
-                 open_price_array,
-                 high_price_array,
-                 low_price_array,
-                 volume_array,
-                 rolling_days,
-                 days_array,
-                 trans_to_cumulative_return=False):
+    def __init__(self,
+                 fund_codes,  # 基金代码数组，一维 ndarray，表示每个基金的唯一标识符。
+                 close_price_array,  # 二维 ndarray，行表示日期，列表示基金，值为基金每日的收盘价。
+                 open_price_array,  # 二维 ndarray，行表示日期，列表示基金，值为基金每日的开盘价。
+                 high_price_array,  # 二维 ndarray，行表示日期，列表示基金，值为基金每日的最高价。
+                 low_price_array,  # 二维 ndarray，行表示日期，列表示基金，值为基金每日的最低价。
+                 volume_array,  # 二维 ndarray，行表示日期，列表示基金，值为基金每日的交易量。
+                 rolling_days,  # 滚动天数，整数类型，用于计算滚动指标的时间窗口大小。
+                 days_array,  # 日期序列，一维 ndarray，表示数据的时间索引。
+                 trans_to_cumulative_return=False  # 布尔值，是否将收益率转换为累计收益率，默认为 False。
+                 ):
+
         # 基金代码数组 (一维ndarray)
         self.fund_codes = fund_codes
-        #  2维ndarray, 行表示日期, 列表示基金, 值为基金的对数收益率
-        self.return_array = log_return_array
         # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日收盘价
         self.price_array = close_price_array
         # 2维ndarray, 行表示日期, 列表示基金, 值为基金的每日开盘价
@@ -309,7 +309,7 @@ class CalRollingMetrics:
         # 存储是否将收益率转换为累计收益率的选项
         self.cum_rtn = trans_to_cumulative_return
         # 原始数据的行数和列数，分别代表天数和基金数量
-        self.n_days, self.n_funds = self.return_array.shape
+        self.n_days, self.n_funds = self.price_array.shape
         # 初始化结果字典，用于存储后续计算的业绩评估指标
         self.res_dict = dict()
 
@@ -405,11 +405,6 @@ class CalRollingMetrics:
         # 平均（忽略 NaN）
         avg_gain = rolling_mean_2d_numba(gain, window)
         avg_loss = rolling_mean_2d_numba(loss, window)
-
-        # 前 window-1 行补 NaN，保持 shape 一致
-        pad = np.full((window - 1, n_assets), np.nan)
-        avg_gain = np.vstack([pad, avg_gain])
-        avg_loss = np.vstack([pad, avg_loss])
 
         # 计算 RS = avg_gain / avg_loss，避免除0
         rs = avg_gain / np.where(avg_loss == 0, 1e-10, avg_loss)
@@ -814,23 +809,31 @@ class CalRollingMetrics:
             print(traceback.format_exc())
 
     def cal_all_metrics(self, metric_name_list, **kwargs):
-        df_list = list()
+        final_df = None
         # 计算各个指标值
         for metric_name in metric_name_list:
             res_array = self.cal_metric(metric_name, **kwargs)
+            # print(f"Calculating {metric_name}...")
             sub_df = pd.DataFrame(
                 data=res_array,  # 二维数组（值）
                 columns=self.fund_codes,  # 列名（日期）
                 index=self.days_array  # 索引（基金代码）
             )
-            long_df = sub_df.stack().reset_index()
-            long_df.columns = ['date', 'ts_code', f'{metric_name}:{self.rolling_days}']
-            df_list.append(long_df)
+            sub_df = sub_df.stack().reset_index()
+            sub_df.columns = ['date', 'ts_code', f'{metric_name}:{self.rolling_days}']
+            if final_df is None:
+                final_df = sub_df
+            else:
+                final_df = pd.merge(
+                    final_df,
+                    sub_df,
+                    on=['date', 'ts_code'],
+                    how='outer'  # 保留所有数据（即使某些行缺少部分指标）
+                )
 
-        # 按关联列合并所有 DataFrame
-        final_df = df_list[0]  # 从第一个 DataFrame 开始
-        for df in df_list[1:]:
-            final_df = pd.merge(final_df, df, on=['date', 'ts_code'], how='outer')
+            del sub_df, res_array  # 释放内存
+            gc.collect()
+
         return final_df
 
 
@@ -863,17 +866,16 @@ if __name__ == '__main__':
     vol_df = vol_df.values
 
     cal = CalRollingMetrics(fund_codes=fund_codes_array,
-                            log_return_array=log_return,
                             close_price_array=close_price,
                             open_price_array=open_price,
                             high_price_array=high_df,
                             low_price_array=low_df,
                             volume_array=vol_df,
-                            rolling_days=14,
+                            rolling_days=5,
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['TD9UP', 'TD9DOWN'])
+    res = cal.cal_all_metrics(['KDJ-K-3', 'KDJ-D-3', 'KDJ-J-3'])
     res = res[res['ts_code'] == '159915.SZ']
     print(res)
 

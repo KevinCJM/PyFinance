@@ -17,7 +17,8 @@ from multiprocessing import Pool, cpu_count, shared_memory
 
 from functools import partial
 from MetricsFactory.period_metrics_cal import CalMetrics
-from MetricsFactory.metrics_cal_config import period_list, create_period_metrics_map
+from MetricsFactory.rolling_metrics_cal import CalRollingMetrics
+from MetricsFactory.metrics_cal_config import period_list, create_period_metrics_map, create_rolling_metrics_map
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -484,6 +485,103 @@ def compute_metrics_for_period_initialize(log_return_df,
             final_df.to_parquet(file_path)
             print(f"[完成] 区间{period}指标计算完成, 保存至 {file_path}，"
                   f"共 {len(final_df)} 条记录，耗时 {(time.time() - s_t):.2f} 秒")
+
+
+def compute_all_rolling_metrics(open_price_df,
+                                close_price_df,
+                                high_price_df,
+                                low_price_df,
+                                volume_df,
+                                save_path,
+                                fund_list=None,
+                                num_workers=None,
+                                roll_list=None,
+                                multi_process=False,
+                                ):
+    """
+    计算所有滚动指标，并将结果保存为 Parquet 文件。
+
+    :param open_price_df:
+    :param close_price_df:
+    :param high_price_df:
+    :param low_price_df:
+    :param volume_df:
+    :param save_path:
+    :param fund_list:
+    :param num_workers:
+    :param roll_list:
+    :param multi_process:
+    :return:
+    """
+    print("[开始] 计算滚动指标 ")
+    s_t_all = time.time()
+
+    ''' 1) 数据预处理 '''
+    if fund_list is not None:
+        open_price_df = open_price_df[fund_list]
+        close_price_df = close_price_df[fund_list]
+        high_price_df = high_price_df[fund_list]
+        low_price_df = low_price_df[fund_list]
+        volume_df = volume_df[fund_list]
+    # 获取交易日序列
+    trading_days_array = pd.to_datetime(np.array(open_price_df.index))
+
+    # 将 dataframe 转换为 numpy 数组
+    open_price_array = open_price_df.values
+    close_price_array = close_price_df.values
+    high_price_array = high_price_df.values
+    low_price_array = low_price_df.values
+    volume_array = volume_df.values
+
+    # 得到基金代码
+    funds_codes = open_price_df.columns.values
+    # 设置进程数
+    num_workers = cpu_count() if num_workers is None else num_workers
+    # 创建指标映射
+    metrics_map = create_rolling_metrics_map()
+    roll_list = roll_list if roll_list else list(metrics_map.keys())
+
+    # 释放内存
+    del open_price_df, close_price_df, high_price_df, low_price_df, volume_df
+    gc.collect()
+
+    # 多进程计算
+    if multi_process:
+        pass
+    # 单进程计算
+    else:
+        final_df = None
+        for roll_d in tqdm(roll_list):
+            # print(f"[Start] 计算{roll_d}日滚动的指标 ...")
+            # s_t = time.time()
+            # 创建CalMetrics类的实例，用于计算特定时间段内的基金指标
+            c_m = CalRollingMetrics(
+                funds_codes,  # 基金代码数组，包含所有需要计算指标的基金代码
+                open_price_array,  # 开盘价数据，numpy数组格式
+                close_price_array,  # 收盘价数据，numpy数组格式
+                high_price_array,  # 最高价数据，numpy数组格式
+                low_price_array,  # 最低价数据，numpy数组格式
+                volume_array,  # 成交量数据，numpy数组格式
+                roll_d,  # 滚动计算的天数，例如 3, 5, 10等
+                trading_days_array,  # 所有交易日的日期序列
+            )
+            sub_df = c_m.cal_all_metrics(metrics_map[roll_d])
+            if sub_df is not None and not sub_df.empty:
+                # 将计算结果添加到最终的 DataFrame 列表中
+                if final_df is None:
+                    final_df = sub_df
+                else:
+                    final_df = pd.merge(final_df, sub_df, on=["date", "ts_code"], how="inner")
+            else:
+                print(f"没有计算到{roll_d}日滚动的指标, 请检查数据是否完整")
+
+            # print(f"[End] {roll_d}日滚动指标计算完成, 共 {len(sub_df)} 条记录，耗时 {(time.time() - s_t):.2f} 秒")
+            del c_m, sub_df
+            gc.collect()
+
+        # 保存结果
+        final_df.to_parquet(os.path.join(save_path, f"rolling_metrics.parquet"))
+        print(f"[完成] 滚动指标计算完成, 共 {len(final_df)} 条记录，耗时 {(time.time() - s_t_all):.2f} 秒")
 
 
 if __name__ == '__main__':

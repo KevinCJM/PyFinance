@@ -949,7 +949,5 @@ def create_rolling_metrics_map():
 if __name__ == '__main__':
     res = create_rolling_metrics_map()
     print(res)
-
-'''
-
-'''
+    r_l = list(res.keys())
+    print(r_l)
