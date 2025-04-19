@@ -236,13 +236,32 @@ def rolling_sum_2d_numba(arr: np.ndarray, window: float) -> np.ndarray:
     return results
 
 
+# 计算滚动加权移动平均
+@njit(float64[:, :](float64[:, :], float64), parallel=True, cache=True)
+def dkx_weighted_ma_numba(B: np.ndarray, N: int) -> np.ndarray:
+    n_days, n_assets = B.shape
+    result = np.full((n_days, n_assets), np.nan)
+    weight_sum = N * (N + 1) / 2.0  # 权重总和
+
+    for j in prange(n_assets):  # 并行每列
+        for t in range(N - 1, n_days):
+            s = 0.0
+            for i in range(N):
+                b = B[t - i, j]
+                if not np.isnan(b):
+                    s += b * (N - i)
+            result[t, j] = s / weight_sum
+
+    return result
+
+
 # 装饰器函数，用于缓存被装饰函数的计算结果
 def cache_rolling_metric(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
 
         # 布林带特殊处理
-        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY', 'cal_MACR', 'cal_ADX']:
+        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY', 'cal_MACR', 'cal_ADX', 'cal_MADKX']:
             metric_name = kwargs['metric_name']
         else:
             # 从函数名中提取指标名称，去掉前缀 "cal_"
@@ -743,6 +762,27 @@ class CalRollingMetrics:
         # 2. 平均
         return (adx + adx_prev) / 2
 
+    @cache_rolling_metric   # 计算 DKX 指标
+    def cal_DKX(self, N=20, **kwargs):
+        high = self.high_array
+        low = self.low_array
+        open_ = self.open_array
+        close = self.price_array
+
+        # 基准价 B_t = (3C + H + L + O) / 6
+        B = (3 * close + high + low + open_) / 6
+
+        # 使用 numba 加权滑动均值
+        dkx = dkx_weighted_ma_numba(B, N)
+        return dkx
+
+    @cache_rolling_metric  # 计算 DKX 指标的移动平均
+    def cal_MADKX(self, metric_name, **kwargs):
+        _, n = metric_name.split('-')
+        # 获取 DKX 值（自动从缓存或重新计算）
+        dkx_array = self.cal_DKX()
+        return rolling_mean_2d_numba(dkx_array, int(n))
+
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
         # 布林带计算处理, 会同时计算上下两个轨道
@@ -764,6 +804,8 @@ class CalRollingMetrics:
             func_name = 'cal_ADX'
         elif metric_name.startswith('ADXR-'):
             func_name = 'cal_ADXR'
+        elif metric_name.startswith('MADKX-'):
+            func_name = 'cal_MADKX'
         else:
             func_name = f'cal_{metric_name}'
         kwargs['metric_name'] = metric_name
@@ -830,11 +872,11 @@ if __name__ == '__main__':
                             high_price_array=high_df,
                             low_price_array=low_df,
                             volume_array=vol_df,
-                            rolling_days=14,
+                            rolling_days=10,
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['ADX-6', 'ADXR-6-6'])
+    res = cal.cal_all_metrics(['DKX', 'MADKX-10'])
     print(res[res['ts_code'] == '159980.SZ'])
 
     # from MetricsFactory.metrics_cal_config import create_rolling_metrics_map
