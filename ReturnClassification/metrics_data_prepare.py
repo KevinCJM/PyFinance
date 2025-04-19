@@ -56,6 +56,53 @@ def get_fund_close_price(selected_fund, data_folder_path):
     return df_selected
 
 
+# 获取指定基金的基本数据 (开盘价、收盘价、最高价、最低价、成交量)
+def get_fund_basic_data(data_folder_path, selected_fund):
+    """
+    获取指定基金的基础数据。
+
+    从给定的数据文件夹中读取所有以'wide'开头且以'.parquet'结尾的文件，
+    并根据selected_fund参数筛选出指定基金的数据，最后将这些数据按交易日期合并。
+
+    :param data_folder_path: 包含基金数据文件的文件夹路径。
+    :param selected_fund: 需要提取的指定基金的代码或名称。
+    :return: 包含指定基金所有合并数据的DataFrame。
+    """
+    # 获取文件列表
+    file_list = os.listdir(data_folder_path)
+    file_list = [f for f in file_list if f.startswith('wide') and f.endswith('.parquet')]
+
+    all_info = None
+    # 读取所有文件
+    for file in file_list:
+        file_path = os.path.join(data_folder_path, file)
+
+        # 跳过 wide_etf_info.parquet 文件
+        if file_path.endswith('wide_etf_info.parquet'):
+            continue
+
+        # 获取文件名中的信息名称
+        _, name, _ = file.split('_')
+        # 构造SQL查询语句
+        query = f"""
+        SELECT "trade_date", "{selected_fund}"
+        FROM '{file_path}'
+        """
+        df = duckdb.query(query).to_df()
+        df.columns = ['date', name]
+        # 合并数据
+        if all_info is None:
+            all_info = df
+        else:
+            all_info = pd.merge(all_info, df, on='date', how='inner')
+
+    # 数据整理
+    all_info['date'] = pd.to_datetime(all_info['date'])
+    all_info = all_info.sort_values('date')
+    all_info = all_info.reset_index(drop=True)
+    return all_info
+
+
 # 计算并添加未来n天的对数收益率到数据框中
 def cal_future_log_return(df_selected, n_days=5):
     """
@@ -81,7 +128,7 @@ def cal_future_log_return(df_selected, n_days=5):
 
 
 # 获取基金指标数据
-def get_fund_metrics_data(selected_fund, metrics_folder_path):
+def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, basic_data_as_metric):
     """
     获取基金指标数据。
 
@@ -92,6 +139,8 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path):
     参数:
     selected_fund (str): 选定的基金代码。
     metrics_folder_path (str): 包含基金指标数据的文件夹路径。
+    data_folder_path (str): 包含基金基本信息的文件夹路径。
+    basic_data_as_metric (bool): 是否将基本数据视为指标数据。
 
     返回:
     pandas.DataFrame: 包含选定基金所有指标数据的干净数据框。
@@ -126,12 +175,22 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path):
             # 将当前数据框与最终数据框按基金代码和日期合并
             df_final = pd.merge(df_final, df, on=['ts_code', 'date'], how='outer')
 
+    if basic_data_as_metric:
+        print(f"[INFO] {selected_fund} 基本数据也作为指标数据")
+        # 获取 对数收益/开盘价/收盘价/最高价/最低价/成交量/成交额 的数据
+        basic_data_df = get_fund_basic_data(data_folder_path, selected_fund)
+        # 合并数据
+        df_final = pd.merge(df_final, basic_data_df, on=['date'], how='outer')
+
     # 删除合并后存在空值的行
     df_final = df_final.dropna()
     # 按日期排序
     df_final = df_final.sort_values('date')
     # 将日期列转换为datetime格式
     df_final['date'] = pd.to_datetime(df_final['date'])
+
+    n, m = df_final.shape
+    print(f"[INFO] {selected_fund} 指标数据获取完成, 共 {n} 条记录, {m} 个指标")
     # 返回清洗后的数据框
     return df_final
 
@@ -202,26 +261,9 @@ def preprocess_data(metrics_data):
 
 
 if __name__ == '__main__':
-    # fund_code = '159919.SZ'  # 沪深300ETF
-    # # 指定原始数据文件夹路径
-    # folder_path = '../Data'
-    # # 指定指标数据文件夹路径
-    # metrics_folder = '../Data/Metrics'
-    # # 预测未来n天的收益率
-    # future_days = 20
-    #
-    # ''' 价格数据预处理 '''
-    # # 获取收盘价数据
-    # df_price = get_fund_close_price(fund_code, folder_path)
-    # # 滚动计算未来5天的对数收益率
-    # df_price = cal_future_log_return(df_price, n_days=future_days)
-    # # 生成目标标签
-    # df_price[f"label_up_{future_days}d"] = (df_price[f"log_return_forward_{future_days}d"] > 0).astype(int)
-    #
-    # ''' 指标数据预处理 '''
-    # # 获取指标数据
-    # metrics_df = get_fund_metrics_data(fund_code, metrics_folder)
-    # # 预处理指标数据
-    # metrics_df = preprocess_data(metrics_df)
+    # df = get_fund_metrics_data('510050.SH', '../Data/Metrics')
+    # print(df)
+    selected_fund = '510050.SH'
 
-    pass
+    # 获取Data文件夹下所有wide开头的文件
+    data_folder_path = '../Data'

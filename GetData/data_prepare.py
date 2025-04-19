@@ -76,7 +76,7 @@ def data_prepare(min_data_req=500,
     ''' 建立宽表数据帧 '''
     # 设置索引并生成宽表数据帧
     etf_df.set_index(["trade_date", "ts_code"], inplace=True)
-    fields = ["open", "high", "low", "close", "change", "pct_chg", "vol", "amount", "log_return"]
+    fields = ["open", "high", "low", "close", "change", "pct", "vol", "amount", "log"]
     pivot_dfs = {
         field + "_df": etf_df[field].unstack(level="ts_code") for field in fields
     }

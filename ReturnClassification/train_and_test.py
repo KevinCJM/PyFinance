@@ -13,7 +13,7 @@ from sklearn.metrics import classification_report
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV
 from ReturnClassification.metrics_data_prepare import (
-    get_fund_close_price, cal_future_log_return, get_fund_metrics_data, preprocess_data)
+    get_fund_close_price, cal_future_log_return, get_fund_metrics_data, preprocess_data, get_fund_basic_data)
 
 warnings.filterwarnings("ignore")
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -57,12 +57,12 @@ def split_train_test_data(fund_code, future_days, df_price, metrics_df,
     train_end = pd.to_datetime(train_end)
     test_start = pd.to_datetime(test_start)
     test_end = pd.to_datetime(test_end)
-    print(f"训练集时间区间: {train_start} ~ {train_end}; 测试集时间区间: {test_start} ~ {test_end}")
+    print(f"[INFO] 训练集时间区间: {train_start} ~ {train_end}; 测试集时间区间: {test_start} ~ {test_end}")
 
     # 根据时间区间划分训练集和测试集
     train_df = df_all[(df_all['date'] >= train_start) & (df_all['date'] <= train_end)]
     test_df = df_all[(df_all['date'] >= test_start) & (df_all['date'] <= test_end)]
-    print(f"训练集数据量: {len(train_df)}, 共 {len(train_df.columns)} 列; "
+    print(f"[INFO] 训练集数据量: {len(train_df)}, 共 {len(train_df.columns)} 列; "
           f"测试集数据量: {len(test_df)}, 共 {len(test_df.columns)} 列")
 
     ''' 准备特征和标签 '''
@@ -86,7 +86,8 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       train_start=None,
                       train_end='2023-12-31',
                       test_start='2024-01-01',
-                      test_end='2025-03-31'
+                      test_end='2025-03-31',
+                      basic_data_as_metric=False
                       ):
     """
     主要数据准备函数，用于准备基金数据以进行后续的机器学习模型训练和测试。
@@ -99,10 +100,11 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param train_end: 训练集结束日期，默认为'2023-12-31'
     :param test_start: 测试集开始日期，默认为'2024-01-01'
     :param test_end: 测试集结束日期，默认为'2025-03-31'
+    :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为False
     :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
     """
     ''' 价格数据预处理 '''
-    # 获取收盘价数据
+    # 获取 收盘价 数据
     close_price = get_fund_close_price(the_fund_code, folder_path)
     # 滚动计算未来5天的对数收益率
     close_price = cal_future_log_return(close_price, n_days=n_days)
@@ -111,7 +113,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
 
     ''' 指标数据预处理 '''
     # 获取指标数据
-    metrics_data = get_fund_metrics_data(the_fund_code, metrics_folder)
+    metrics_data = get_fund_metrics_data(the_fund_code, metrics_folder, folder_path, basic_data_as_metric)
     # 预处理指标数据
     metrics_data = preprocess_data(metrics_data)
 
@@ -174,7 +176,7 @@ def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5):
     rs.fit(x_train, y_train)
 
     # 输出最优参数
-    print("最优参数:", rs.best_params_)
+    print("[INFO] 最优参数:", rs.best_params_)
     return rs.best_params_
 
 
@@ -224,7 +226,7 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
     # 预测测试集
     y_pred = clf.predict(x_test)
     # 输出分类报告
-    print("分类报告:")
+    print("[RESULT] 分类报告:")
     print(classification_report(y_test, y_pred))
     '''
     precision (精确率): 模型预测为某类的样本中，实际属于该类的比例。公式：TP / (TP + FP)
@@ -248,7 +250,7 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
     importance = pd.Series(clf.feature_importances_, index=feature_cols)
     # 排序并选择前10个重要特征
     importance = importance.sort_values(ascending=False).head(10)
-    print("前10大重要因子:")
+    print("[RESULT] 前10大重要因子:")
     print(importance)
 
     # 返回训练好的模型
@@ -259,18 +261,21 @@ def confidence_based_random_forest(x_train, x_test, y_train, y_test,
                                    random_seed=42, n_iter=20, cv=5, threshold=0.7,
                                    parameter_dict=None):
     """
+    基于置信度的随机森林分类器函数。该函数旨在通过自动调整或使用给定的超参数来优化随机森林模型，
+    并仅对模型预测置信度高于给定阈值的测试样本进行评估和报告，以提高预测结果的可信度。
 
-    :param x_train:
-    :param x_test:
-    :param y_train:
-    :param y_test:
-    :param random_seed:
-    :param n_iter:
-    :param cv:
-    :param threshold:
+    :param x_train: 训练集特征数据
+    :param x_test: 测试集特征数据
+    :param y_train: 训练集标签
+    :param y_test: 测试集标签
+    :param random_seed: 随机种子，用于确保结果的可重复性
+    :param n_iter: 随机搜索的迭代次数
+    :param cv: 交叉验证的折数
+    :param threshold: 置信度阈值，仅预测置信度高于此值的样本
     :param parameter_dict: 必须要有: n_estimators, max_depth, min_samples_split, min_samples_leaf
-    :return:
+    :return: 训练好的随机森林分类器模型
     """
+    # 自动调参或使用给定的参数字典
     if parameter_dict is None:
         best_dict = auto_parameter_tuning(x_train, y_train, random_seed=random_seed, n_iter=n_iter, cv=cv)
     else:
@@ -294,6 +299,7 @@ def confidence_based_random_forest(x_train, x_test, y_train, y_test,
     # 训练模型
     clf.fit(x_train, y_train)
 
+    # 预测和计算置信度
     y_pred = clf.predict(x_test)
     y_proba = clf.predict_proba(x_test)
     confidence = np.max(y_proba, axis=1)
@@ -326,7 +332,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                test_start='2024-01-01',
                                test_end='2025-03-31',
                                random_seed=42, n_iter=20, cv=5,
-                               threshold=None
+                               threshold=None, basic_data_as_metric=False
                                ):
     """
     使用随机森林模型预测基金走势。
@@ -342,7 +348,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param random_seed: 随机种子，默认为 42。
     :param n_iter: 随机搜索的迭代次数，默认为 20 次。
     :param cv: 交叉验证的折数，默认为 5 折。
-    :param threshold:
+    :param threshold: 置信度阈值，默认为 None。
+    :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为 False
     :return: 训练完成的随机森林模型。
     """
     ''' 数据准备 '''
@@ -355,7 +362,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         train_start=train_start,
         train_end=train_end,
         test_start=test_start,
-        test_end=test_end
+        test_end=test_end,
+        basic_data_as_metric=basic_data_as_metric,
     )
 
     ''' 训练模型 '''
@@ -375,7 +383,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
-    for d in [2, 5, 10, 15]:
+    for d in [10]:
         print(f"预测未来{d}天的收益率 .....")
         predict_main_random_forest(the_fund_code='510050.SH',
                                    n_days=d,
@@ -386,5 +394,6 @@ if __name__ == '__main__':
                                    test_start='2024-12-01',
                                    test_end='2025-04-30',
                                    random_seed=42, n_iter=20, cv=5,
-                                   threshold=0.5
+                                   threshold=None,
+                                   basic_data_as_metric=True,
                                    )
