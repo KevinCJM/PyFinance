@@ -353,6 +353,7 @@ class CalRollingMetrics:
         sigma = self.cal_PriceSigma()
         self.res_dict[f'BollUp-{k}'] = ma + k * sigma
         self.res_dict[f'BollDo-{k}'] = ma - k * sigma
+        self.res_dict[f'BollUpDo-{k}'] = self.res_dict[f'BollUp-{k}'] - self.res_dict[f'BollDo-{k}']
         self.res_dict[f'BollUpDiff-{k}'] = self.res_dict[f'BollUp-{k}'] - self.price_array
         self.res_dict[f'BollDoDiff-{k}'] = self.res_dict[f'BollDo-{k}'] - self.price_array
         return self.res_dict[metric_name]
