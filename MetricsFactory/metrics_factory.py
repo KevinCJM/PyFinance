@@ -281,6 +281,9 @@ def compute_metrics_for_period_initialize(log_return_df,
     :return: 无返回值。
     """
     ''' 1) 数据预处理 '''
+    print("[开始] 计算区间指标 ... ")
+    s_t = time.time()
+
     if fund_list is not None:
         log_return_df = log_return_df[fund_list]
         close_price_df = close_price_df[fund_list]
@@ -324,7 +327,7 @@ def compute_metrics_for_period_initialize(log_return_df,
     for period in p_list if p_list else period_list:
         if period not in period_metrics_map:
             continue
-        print(f"[开始] 计算区间: {period}")
+        print(f"\t[Start] 计算区间: {period}")
         s_t = time.time()
 
         ''' 3.1) 遍历每一天的结束日期,滚动计算每天的指标 (进程池) '''
@@ -411,7 +414,7 @@ def compute_metrics_for_period_initialize(log_return_df,
             final_df = pd.concat(results, axis=0)
             file_path = os.path.join(save_path, f"{period}.parquet")
             final_df.to_parquet(file_path)
-            print(f"[完成] 区间{period}指标计算完成, 保存至 {file_path}，"
+            print(f"\t[End] 区间{period}指标计算完成, 保存至 {file_path}，"
                   f"共 {len(final_df)} 条记录，耗时 {(time.time() - s_t):.2f} 秒")
 
         else:
@@ -483,8 +486,10 @@ def compute_metrics_for_period_initialize(log_return_df,
             final_df = pd.concat(final_df, axis=0)
             file_path = os.path.join(save_path, f"{period}.parquet")
             final_df.to_parquet(file_path)
-            print(f"[完成] 区间{period}指标计算完成, 保存至 {file_path}，"
+            print(f"\t[End] 区间{period}指标计算完成, 保存至 {file_path}，"
                   f"共 {len(final_df)} 条记录，耗时 {(time.time() - s_t):.2f} 秒")
+
+    print(f"[结束] 所有区间指标计算完成, 耗时: {(time.time() - s_t) / 60:.2f} 分钟")
 
 
 def compute_all_rolling_metrics(open_price_df,

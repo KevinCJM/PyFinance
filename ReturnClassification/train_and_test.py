@@ -87,6 +87,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       train_end='2023-12-31',
                       test_start='2024-01-01',
                       test_end='2025-03-31',
+                      nan_method='drop',
                       basic_data_as_metric=False
                       ):
     """
@@ -100,6 +101,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param train_end: 训练集结束日期，默认为'2023-12-31'
     :param test_start: 测试集开始日期，默认为'2024-01-01'
     :param test_end: 测试集结束日期，默认为'2025-03-31'
+    :param nan_method: 处理缺失值的方法，默认为 'drop'，可选值为 'median' 或 'mean'
     :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为False
     :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
     """
@@ -115,7 +117,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
     # 获取指标数据
     metrics_data = get_fund_metrics_data(the_fund_code, metrics_folder, folder_path, basic_data_as_metric)
     # 预处理指标数据
-    metrics_data = preprocess_data(metrics_data)
+    metrics_data = preprocess_data(metrics_data, nan_method=nan_method)
 
     ''' 测试集训练集划分 '''
     # 划分训练集和测试集数据
@@ -331,6 +333,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                train_end='2023-12-31',
                                test_start='2024-01-01',
                                test_end='2025-03-31',
+                               nan_method='drop',
                                random_seed=42, n_iter=20, cv=5,
                                threshold=None, basic_data_as_metric=False
                                ):
@@ -345,6 +348,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param train_end: 训练数据结束日期，默认为 '2023-12-31'。
     :param test_start: 测试数据开始日期，默认为 '2024-01-01'。
     :param test_end: 测试数据结束日期，默认为 '2025-03-31'。
+    :param nan_method: 训练数据中 nan 的处理方法, 默认为 'drop', 可选 'median' 或 'mean'。
     :param random_seed: 随机种子，默认为 42。
     :param n_iter: 随机搜索的迭代次数，默认为 20 次。
     :param cv: 交叉验证的折数，默认为 5 折。
@@ -363,6 +367,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         train_end=train_end,
         test_start=test_start,
         test_end=test_end,
+        nan_method=nan_method,
         basic_data_as_metric=basic_data_as_metric,
     )
 
@@ -383,7 +388,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
-    for d in [10]:
+    for d in [1, 3, 5, 10, 20]:
         print(f"预测未来{d}天的收益率 .....")
         predict_main_random_forest(the_fund_code='510050.SH',
                                    n_days=d,
@@ -393,6 +398,7 @@ if __name__ == '__main__':
                                    train_end='2024-11-30',
                                    test_start='2024-12-01',
                                    test_end='2025-04-30',
+                                   nan_method='drop',
                                    random_seed=42, n_iter=20, cv=5,
                                    threshold=None,
                                    basic_data_as_metric=True,

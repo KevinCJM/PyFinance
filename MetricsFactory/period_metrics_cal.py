@@ -383,11 +383,13 @@ class CalMetrics:
 
     @cache_metric  # 平均正收益率
     def cal_AvgPositiveReturn(self, **kwargs):
-        return np.nanmean(np.where(self.return_array > 0, self.return_array, 0), axis=0)
+        res = np.nanmean(np.where(self.return_array > 0, self.return_array, 0), axis=0)
+        return np.where(np.isnan(res), 0, res)
 
     @cache_metric  # 平均负收益率
     def cal_AvgNegativeReturn(self, **kwargs):
-        return np.nanmean(np.where(self.return_array < 0, self.return_array, 0), axis=0)
+        res = np.nanmean(np.where(self.return_array < 0, self.return_array, 0), axis=0)
+        return np.where(np.isnan(res), 0, res)
 
     @cache_metric  # 平均盈亏比
     def cal_AvgReturnRatio(self, **kwargs):
@@ -396,11 +398,13 @@ class CalMetrics:
 
     @cache_metric  # 总累计盈利 = 所有正收益的总和
     def cal_TotalPositiveReturn(self, **kwargs):
-        return np.nansum(np.where(self.return_array > 0, self.return_array, 0), axis=0)
+        ratio = np.nansum(np.where(self.return_array > 0, self.return_array, 0), axis=0)
+        return np.where(np.isnan(ratio), 0, ratio)
 
     @cache_metric  # 总累计亏损 = 所有负收益的总和
     def cal_TotalNegativeReturn(self, **kwargs):
-        return np.nansum(np.where(self.return_array < 0, self.return_array, 0), axis=0)
+        ratio = np.nansum(np.where(self.return_array < 0, self.return_array, 0), axis=0)
+        return np.where(np.isnan(ratio), 0, ratio)
 
     @cache_metric  # 盈利总和 / 亏损总和
     def cal_TotalReturnRatio(self, **kwargs):

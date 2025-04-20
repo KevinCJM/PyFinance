@@ -196,7 +196,9 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
 
 
 # 预处理指标数据
-def preprocess_data(metrics_data):
+def preprocess_data(metrics_data,
+                    nan_method='median'
+                    ):
     """
     预处理指标数据。
 
@@ -215,10 +217,19 @@ def preprocess_data(metrics_data):
     ts_code = df_metrics.pop('ts_code')
     date = df_metrics.pop('date')
 
-    # 用每列的中位数填充 NaN、inf、-inf
     df_metrics = df_metrics.replace([np.inf, -np.inf], np.nan)  # 将 inf/-inf 转为 NaN
-    medians = df_metrics.median(numeric_only=True)  # 计算每列中位数
-    df_metrics = df_metrics.fillna(medians)  # 用中位数填充 NaN
+    if nan_method == 'median':
+        # 用每列的中位数填充 NaN
+        medians = df_metrics.median(numeric_only=True)  # 计算每列中位数
+        df_metrics = df_metrics.fillna(medians)  # 用中位数填充 NaN
+    elif nan_method == 'mean':
+        # 用每列的均值填充 NaN
+        means = df_metrics.mean(numeric_only=True)
+        df_metrics = df_metrics.fillna(means)
+    elif nan_method == 'drop':
+        # 删除包含NaN的行
+        df_metrics = df_metrics.dropna()
+    df_metrics = df_metrics.dropna()
 
     # 计算列的最大最小值
     col_min = df_metrics.min(axis=0, skipna=True)
