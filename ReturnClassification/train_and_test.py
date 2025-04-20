@@ -91,7 +91,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       test_end='2025-03-31',
                       nan_method='drop',
                       basic_data_as_metric=False,
-                      label_method='??:'
+                      return_threshold=0.0
                       ):
     """
     主要数据准备函数，用于准备基金数据以进行后续的机器学习模型训练和测试。
@@ -106,7 +106,8 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param test_end: 测试集结束日期，默认为'2025-03-31'
     :param nan_method: 处理缺失值的方法，默认为 'drop'，可选值为 'median' 或 'mean'
     :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为False
-    :param label_method: str, 标签生成方法，默认为???
+    :param return_threshold: float, 标签生成方法，默认为0, 表示使用未来收益率大于0的样本标记为1，否则为0;
+                        如果写0.001, 则表示使用未来收益率大于+0.1%的样本标记为2，在-0.1%~0.1%之间的样本标记为1，否则为0;
 
     :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
     """
@@ -116,7 +117,19 @@ def main_data_prepare(the_fund_code='159919.SZ',
     # 滚动计算未来5天的对数收益率
     close_price = cal_future_log_return(close_price, n_days=n_days)
     # 生成目标标签: 未来收益大于0的样本标记为1，否则为0
-    close_price[f"label_up_{n_days}d"] = (close_price[f"log_return_forward_{n_days}d"] > 0).astype(int)
+    if return_threshold == 0:
+        close_price[f"label_up_{n_days}d"] = (close_price[f"log_return_forward_{n_days}d"] > 0).astype(int)
+    else:
+        def classify_three_way(ret, threshold):
+            if ret > threshold:
+                return 2  # 上涨
+            elif ret < -threshold:
+                return 0  # 下跌
+            else:
+                return 1  # 横盘
+
+        close_price[f"label_up_{n_days}d"] = close_price[f"log_return_forward_{n_days}d"].apply(
+            lambda x: classify_three_way(x, return_threshold))
 
     ''' 指标数据预处理 '''
     # 获取指标数据
@@ -146,7 +159,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
 
 
 # 自动化参数调优函数 (随机森林)
-def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5):
+def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5, return_threshold=0.0):
     """
     自动化参数调优函数。
 
@@ -158,6 +171,7 @@ def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5):
     - random_seed: 随机种子，用于确保结果的可重复性。
     - n_iter: 随机搜索的迭代次数。
     - cv: 交叉验证的折数。
+    - return_threshold: 标签生成方法，默认为 0, 表示使用未来收益率大于 0 的样本标记为 1，否则为 0;
 
     返回:
     - 最优超参数的字典。
@@ -183,7 +197,7 @@ def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5):
         param_distributions=param_dist,  # 超参数分布
         n_iter=n_iter,  # 随机搜索的迭代次数
         cv=cv,  # 交叉验证的折数
-        scoring='f1',  # 评估指标
+        scoring='f1' if return_threshold == 0.0 else 'f1_macro',  # 评估指标
         random_state=random_seed,  # 随机种子，确保结果可重复
         n_jobs=-1  # 使用所有可用的CPU核心进行并行计算
     )
@@ -198,7 +212,7 @@ def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5):
 
 # 使用随机森林分类器进行训练和测试，并进行超参数优化和特征重要性评估
 def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
-                                 random_seed=42, n_iter=20, cv=5):
+                                 random_seed=42, n_iter=20, cv=5, best_dict=None, return_threshold=0.0):
     """
     使用随机森林分类器进行训练和测试，并进行超参数优化和特征重要性评估。
 
@@ -211,6 +225,8 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
     :param random_seed: 随机种子，用于确保结果可重复
     :param n_iter: 随机搜索的迭代次数
     :param cv: 交叉验证的折数
+    :param best_dict: 最优参数字典，如果为None，则自动调参
+
     :return: 训练好的随机森林模型
     """
 
@@ -219,7 +235,11 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
         col for col in metrics_data.columns if col not in ['ts_code', 'date']]
 
     ''' 自动超参数调优 '''
-    best_dict = auto_parameter_tuning(x_train, y_train, random_seed=random_seed, n_iter=n_iter, cv=cv)
+    if best_dict is None:
+        best_dict = auto_parameter_tuning(x_train, y_train,
+                                          random_seed=random_seed, n_iter=n_iter, cv=cv,
+                                          return_threshold=return_threshold
+                                          )
 
     # 从最优参数中提取每个超参数的值
     n_estimators = best_dict['n_estimators']
@@ -275,7 +295,7 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
 
 def confidence_based_random_forest(x_train, x_test, y_train, y_test,
                                    random_seed=42, n_iter=20, cv=5, threshold=0.7,
-                                   parameter_dict=None):
+                                   parameter_dict=None, return_threshold=0.0):
     """
     基于置信度的随机森林分类器函数。该函数旨在通过自动调整或使用给定的超参数来优化随机森林模型，
     并仅对模型预测置信度高于给定阈值的测试样本进行评估和报告，以提高预测结果的可信度。
@@ -289,12 +309,16 @@ def confidence_based_random_forest(x_train, x_test, y_train, y_test,
     :param cv: 交叉验证的折数
     :param threshold: 置信度阈值，仅预测置信度高于此值的样本
     :param parameter_dict: 必须要有: n_estimators, max_depth, min_samples_split, min_samples_leaf
+    :param return_threshold: 标签生成方法，默认为 0, 表示使用未来收益率大于 0 的样本标记为 1，否则为 0;
+
     :return: 训练好的随机森林分类器模型
     """
     print("[INFO] 开始使用 随机森林模型 进行训练...")
     # 自动调参或使用给定的参数字典
     if parameter_dict is None:
-        best_dict = auto_parameter_tuning(x_train, y_train, random_seed=random_seed, n_iter=n_iter, cv=cv)
+        best_dict = auto_parameter_tuning(x_train, y_train,
+                                          random_seed=random_seed, n_iter=n_iter, cv=cv,
+                                          return_threshold=return_threshold)
     else:
         best_dict = parameter_dict
 
@@ -352,6 +376,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                random_seed=42, n_iter=20, cv=5,
                                threshold=None, basic_data_as_metric=False,
                                import_feature_only=False, top_n=200,
+                               return_threshold=0.0, parameter_dict=None,
                                ):
     """
     使用随机森林模型预测基金走势。
@@ -372,6 +397,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为 False
     :param import_feature_only: bool, 是否仅仅使用重要特征进行训练，默认为 False。
     :param top_n: int, 从每个模型中选择的顶级特征数量，默认为 200。
+    :param return_threshold: float, 标签生成方法，默认为 0, 表示使用未来收益率大于 0 的样本标记为 1，否则为 0;
+    :param parameter_dict: dict, 最优参数字典，如果为 None，则自动调参。
 
     :return: 训练完成的随机森林模型。
     """
@@ -390,6 +417,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         test_end=test_end,  # 测试集结束日期，默认为'2025-03-31'。
         nan_method=nan_method,  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'。
         basic_data_as_metric=basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
+        return_threshold=return_threshold,  # 标签生成方法
     )
 
     ''' 特征选择 '''
@@ -430,12 +458,14 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     if threshold:
         trained_model = confidence_based_random_forest(
             x_train, x_test, y_train, y_test,
-            random_seed=random_seed, n_iter=n_iter, cv=cv, threshold=threshold)
+            random_seed=random_seed, n_iter=n_iter, cv=cv, threshold=threshold,
+            parameter_dict=parameter_dict, return_threshold=return_threshold)
     else:
         # 训练随机森林模型
         trained_model = train_and_test_random_forest(
             x_train, x_test, y_train, y_test, metrics_data,
-            random_seed=random_seed, n_iter=n_iter, cv=cv)
+            random_seed=random_seed, n_iter=n_iter, cv=cv, best_dict=parameter_dict,
+            return_threshold=return_threshold)
 
     # 输出模型训练完成的信息
     print("[完成] 模型训练完成")
@@ -444,18 +474,21 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
-    for d in [20]:
-        predict_main_random_forest(the_fund_code='510050.SH',
-                                   n_days=d,
-                                   folder_path='../Data',
-                                   metrics_folder='../Data/Metrics',
-                                   train_start=None,
-                                   train_end='2024-11-30',
-                                   test_start='2024-12-01',
-                                   test_end='2025-04-30',
-                                   nan_method='drop',
-                                   random_seed=42, n_iter=20, cv=5,
-                                   threshold=None,
-                                   basic_data_as_metric=True,
-                                   import_feature_only=True,  # 是否仅使用重要特征
-                                   )
+    for d in [10]:
+        predict_main_random_forest(
+            the_fund_code='510050.SH',
+            n_days=d,
+            folder_path='../Data',
+            metrics_folder='../Data/Metrics',
+            train_start=None,
+            train_end='2024-11-30',
+            test_start='2024-12-01',
+            test_end='2025-04-30',
+            nan_method='drop',
+            random_seed=42, n_iter=20, cv=5,
+            threshold=None,
+            basic_data_as_metric=True,
+            import_feature_only=True,
+            return_threshold=0.01,
+            parameter_dict=None,
+        )
