@@ -90,7 +90,8 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       test_start='2024-01-01',
                       test_end='2025-03-31',
                       nan_method='drop',
-                      basic_data_as_metric=False
+                      basic_data_as_metric=False,
+                      label_method='??:'
                       ):
     """
     主要数据准备函数，用于准备基金数据以进行后续的机器学习模型训练和测试。
@@ -105,6 +106,8 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param test_end: 测试集结束日期，默认为'2025-03-31'
     :param nan_method: 处理缺失值的方法，默认为 'drop'，可选值为 'median' 或 'mean'
     :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为False
+    :param label_method: str, 标签生成方法，默认为???
+
     :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
     """
     ''' 价格数据预处理 '''
@@ -392,10 +395,10 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     ''' 特征选择 '''
     if import_feature_only:  # 是否使用重要特征进行模型训练
         print("[INFO] 仅使用重要特征进行训练")
-        im_path = os.path.join(folder_path, 'selected_features.parquet')
+        im_path = os.path.join(folder_path, f'selected_features_{n_days}.parquet')
         # 判断 '../Data/selected_features_{n_days}.parquet' 是否存在
         if os.path.exists(im_path):
-            print(f"[INFO] selected_features_{n_days}.parquet 文件已经存在")
+            print(f"[INFO] {im_path} 文件已经存在")
             # 读取重要特征
             selected_features = pd.read_parquet(im_path)
             # 将重要特征转换为列表
@@ -404,10 +407,9 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
             x_train = x_train[selected_features]
             # 根据重要特征筛选测试数据
             x_test = x_test[selected_features]
-            # 根据重要特征筛选指标数据
-            metrics_data = metrics_data[selected_features]
+
         else:
-            print(f"[INFO] selected_features_{n_days}.parquet 文件不存在, 开始重要性特征筛查")
+            print(f"[INFO] {im_path} 文件不存在, 开始重要性特征筛查")
             selected_features, x_train, x_test, y_train, y_test, metrics_data = (
                 find_important_features(
                     x_train,  # 训练集特征数据。
@@ -420,7 +422,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                     top_n=top_n,  # 从每个模型中选择的顶级特征数量，默认为200。
                     save_features_name=True,  # 是否保存选定特征的名称，默认为False。
                 ))
-
+        # 根据重要特征筛选指标数据
+        metrics_data = metrics_data[['ts_code', 'date'] + selected_features]
         print(f"[INFO] 重要性特征筛选后, 训练集数据量为: {x_train.shape[1]}列, 测试集数据量为: {x_test.shape[1]}列")
 
     ''' 训练模型 '''
