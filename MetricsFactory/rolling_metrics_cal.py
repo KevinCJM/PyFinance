@@ -258,7 +258,9 @@ def cache_rolling_metric(func):
     def wrapper(self, *args, **kwargs):
 
         # 布林带特殊处理
-        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY', 'cal_MACR', 'cal_ADX', 'cal_MADKX']:
+        if func.__name__ in ['cal_Boll', 'cal_KDJ', 'cal_MTMMA', 'cal_MAPSY', 'cal_MACR', 'cal_ADX', 'cal_MADKX',
+                             'cal_MTMMADiff', 'cal_MATRIXDiff', 'cal_MAPSYDiff', 'cal_MACRDiff', 'cal_MAVRDiff',
+                             'cal_BRDiff', 'cal_ARDiff', 'cal_MABIAS', 'cal_ADXR']:
             metric_name = kwargs['metric_name']
         else:
             # 从函数名中提取指标名称，去掉前缀 "cal_"
@@ -326,9 +328,19 @@ class CalRollingMetrics:
     def cal_CloseMA(self, **kwargs):
         return rolling_mean_2d_numba(self.price_array, self.rolling_days)
 
+    @cache_rolling_metric  # 滚动N日的收益率
+    def cal_CloseMADiff(self, **kwargs):
+        ma = self.cal_CloseMA()
+        return ma - self.price_array
+
     @cache_rolling_metric  # 滚动N日的成交量均值
     def cal_VolMA(self, **kwargs):
         return rolling_mean_2d_numba(self.volume_array, self.rolling_days)
+
+    @cache_rolling_metric  # VolMADiff: VolMA 与 当日成交量之差
+    def cal_VolMADiff(self, **kwargs):
+        ma = self.cal_VolMA()
+        return ma - self.volume_array
 
     @cache_rolling_metric  # 布林带上轨
     def cal_Boll(self, metric_name, **kwargs):
@@ -341,6 +353,8 @@ class CalRollingMetrics:
         sigma = self.cal_PriceSigma()
         self.res_dict[f'BollUp-{k}'] = ma + k * sigma
         self.res_dict[f'BollDo-{k}'] = ma - k * sigma
+        self.res_dict[f'BollUpDiff-{k}'] = self.res_dict[f'BollUp-{k}'] - self.price_array
+        self.res_dict[f'BollDoDiff-{k}'] = self.res_dict[f'BollDo-{k}'] - self.price_array
         return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 滚动N日的最低价
@@ -380,12 +394,20 @@ class CalRollingMetrics:
         self.res_dict[f'KDJ-K-{m}'] = kdj[:, :, 0]
         self.res_dict[f'KDJ-D-{m}'] = kdj[:, :, 1]
         self.res_dict[f'KDJ-J-{m}'] = kdj[:, :, 2]
-
+        # 计算 K 与 D 的差值
+        self.res_dict[f'KDJ-KD-{m}'] = self.res_dict[f'KDJ-K-{m}'] - self.res_dict[f'KDJ-D-{m}']
+        self.res_dict[f'KDJ-KJ-{m}'] = self.res_dict[f'KDJ-K-{m}'] - self.res_dict[f'KDJ-J-{m}']
+        self.res_dict[f'KDJ-DJ-{m}'] = self.res_dict[f'KDJ-D-{m}'] - self.res_dict[f'KDJ-J-{m}']
         return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 滚动N日的数移动平均收盘价
     def cal_EMA(self, **kwargs):
         return rolling_ewm_2d_numba(self.price_array, self.rolling_days)
+
+    @cache_rolling_metric  # 计算 EMADiff 指标
+    def cal_EMADiff(self, **kwargs):
+        ema = self.cal_EMA()
+        return ema - self.price_array
 
     @cache_rolling_metric  # 计算RSI
     def cal_RSI(self, **kwargs):
@@ -432,6 +454,12 @@ class CalRollingMetrics:
         obv = self.cal_OBV()
         return rolling_mean_2d_numba(obv, self.rolling_days)
 
+    @cache_rolling_metric  # 计算 MAOBVDiff 指标
+    def cal_MAOBVDiff(self, **kwargs):
+        maobv = self.cal_MAOBV()
+        obv = self.cal_OBV()
+        return maobv - obv
+
     @cache_rolling_metric  # 计算 PVT 指标
     def cal_PVT(self, **kwargs):
         # 1. 收盘价差与前收（手动右移）
@@ -459,6 +487,12 @@ class CalRollingMetrics:
         pvt = self.cal_PVT()
         return rolling_mean_2d_numba(pvt, self.rolling_days)
 
+    @cache_rolling_metric  # 计算 MAPVTDiff
+    def cal_MAPVTDiff(self, **kwargs):
+        mapvt = self.cal_MAPVT()
+        pvt = self.cal_PVT()
+        return mapvt - pvt
+
     @cache_rolling_metric  # 计算 MTM 动量指标
     def cal_MTM(self, **kwargs):
         out = np.full_like(self.price_array, np.nan, dtype=np.float64)
@@ -471,6 +505,14 @@ class CalRollingMetrics:
         smooth = int(smooth)
         mtm = self.cal_MTM()
         return rolling_mean_2d_numba(mtm, smooth)
+
+    @cache_rolling_metric  # 计算 MTMMADiff
+    def cal_MTMMADiff(self, metric_name, **kwargs):
+        _, m = metric_name.split('-')
+        mtmma = self.cal_MTMMA(metric_name=f"MTMMA-{m}")
+        mtm = self.cal_MTM()
+        self.res_dict[metric_name] = mtmma - mtm
+        return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 三重指数平滑移动平均
     def cal_TRIX(self, **kwargs):
@@ -488,6 +530,14 @@ class CalRollingMetrics:
         # 获取 TRIX 值（自动从缓存或重新计算）
         trix_array = self.cal_TRIX()
         return rolling_mean_2d_numba(trix_array, int(smooth))
+
+    @cache_rolling_metric  # 计算 MATRIXDiff 指标
+    def cal_MATRIXDiff(self, metric_name, **kwargs):
+        _, m = metric_name.split('-')
+        matrix = self.cal_MATRIX(metric_name=f"MATRIX-{m}")
+        trix = self.cal_TRIX()
+        self.res_dict[metric_name] = matrix - trix
+        return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 心理线
     def cal_PSY(self, **kwargs):
@@ -513,6 +563,14 @@ class CalRollingMetrics:
         psy = self.cal_PSY()
         # 对每列做 EMA 平滑
         return rolling_mean_2d_numba(psy, int(smooth))
+
+    @cache_rolling_metric  # 计算 MAPSYDiff
+    def cal_MAPSYDiff(self, metric_name, **kwargs):
+        _, m = metric_name.split('-')
+        map_psy = self.cal_MAPSY(metric_name=f"MAPSY-{m}")
+        psy = self.cal_PSY()
+        self.res_dict[metric_name] = map_psy - psy
+        return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 计算 CCI 顺势指标
     def cal_CCI(self, **kwargs):
@@ -572,6 +630,14 @@ class CalRollingMetrics:
         shifted_ma_cr[int(m):, :] = ma_cr[:-int(m), :]
         return shifted_ma_cr
 
+    @cache_rolling_metric  # 计算 MACRDiff 指标
+    def cal_MACRDiff(self, metric_name, **kwargs):
+        _, n, m = metric_name.split('-')
+        macr = self.cal_MACR(metric_name=f"MACR-{n}-{m}")
+        cr = self.cal_CR()
+        self.res_dict[metric_name] = macr - cr
+        return self.res_dict[metric_name]
+
     @cache_rolling_metric  # 计算 VR 指标
     def cal_VR(self, **kwargs):
         # 1. 计算涨跌状态：相对前一日
@@ -602,6 +668,14 @@ class CalRollingMetrics:
         _, n = metric_name.split('-')
         vr = self.cal_VR()
         return rolling_mean_2d_numba(vr, int(n))
+
+    @cache_rolling_metric  # 计算 MAVRDiff 指标
+    def cal_MAVRDiff(self, metric_name, **kwargs):
+        _, n = metric_name.split('-')
+        mavr = self.cal_MAVR(metric_name=f"MAVR-{n}")
+        vr = self.cal_VR()
+        self.res_dict[metric_name] = mavr - vr
+        return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 计算夏 AR 指标
     def cal_AR(self, **kwargs):
@@ -635,6 +709,24 @@ class CalRollingMetrics:
         br = up_sum / denominator * 100
         return br
 
+    @cache_rolling_metric  # 计算 BRARDiff 指标
+    def cal_BRARDiff(self, **kwargs):
+        br = self.cal_BR()
+        ar = self.cal_AR()
+        return br - ar
+
+    @cache_rolling_metric  # 计算 ARDiff 指标
+    def cal_ARDiff(self, metric_name, **kwargs):
+        _, n = metric_name.split('-')
+        ar = self.cal_AR()
+        return ar - int(n)
+
+    @cache_rolling_metric  # 计算 BRDiff 指标
+    def cal_BRDiff(self, metric_name, **kwargs):
+        _, n = metric_name.split('-')
+        br = self.cal_BR()
+        return br - int(n)
+
     @cache_rolling_metric  # 计算 BIAS 乖离率
     def cal_BIAS(self, **kwargs):
         # 1. 计算 N 日均线
@@ -642,6 +734,14 @@ class CalRollingMetrics:
         # 2. 计算 BIAS = (C - MA) / MA * 100
         bias = (self.price_array - ma) / ma * 100
         return bias
+
+    @cache_rolling_metric  # 计算 N 日移动平均 BIAS
+    def cal_MABIAS(self, metric_name, **kwargs):
+        _, n = metric_name.split('-')
+        bias = self.cal_BIAS()
+        self.res_dict[f'MABIAS-{n}'] = rolling_mean_2d_numba(bias, int(n))
+        self.res_dict[f'MABIASDiff-{n}'] = self.res_dict[f'MABIAS-{n}'] - bias
+        return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 计算 TR 真实波动范围
     def cal_TR(self, **kwargs):
@@ -724,6 +824,13 @@ class CalRollingMetrics:
 
         return mdi
 
+    @cache_rolling_metric  # 计算 PDIMDIDiff
+    def cal_PDIMDIDiff(self, **kwargs):
+        pdi = self.cal_PDI()
+        mdi = self.cal_MDI()
+        # 计算 PDIMDIDiff = PDI - MDI
+        return pdi - mdi
+
     @cache_rolling_metric  # 计算 ADX 指标
     def cal_ADX(self, metric_name, **kwargs):
         _, n = metric_name.split('-')
@@ -746,34 +853,40 @@ class CalRollingMetrics:
         _, m, n = metric_name.split('-')
         n = int(n)
         adx = self.cal_ADX(metric_name=f"ADX-{m}")
-
         # 1. 平移 ADX（前移N天）构造 ADX_{t-N}
         adx_prev = np.full_like(adx, np.nan)
         adx_prev[n:, :] = adx[:-n, :]
-
         # 2. 平均
-        return (adx + adx_prev) / 2
+        adxr = (adx + adx_prev) / 2
+        self.res_dict[f"ADXR-{m}-{n}"] = adxr
+        # 3. 差值
+        adxr_diff = adxr - adx
+        self.res_dict[f"ADXRDiff-{m}-{n}"] = adxr_diff
+        return self.res_dict[metric_name]
 
     @cache_rolling_metric  # 计算 DKX 指标
-    def cal_DKX(self, N=20, **kwargs):
-        high = self.high_array
-        low = self.low_array
-        open_ = self.open_array
-        close = self.price_array
-
+    def cal_DKX(self, n=20, **kwargs):
         # 基准价 B_t = (3C + H + L + O) / 6
-        B = (3 * close + high + low + open_) / 6
+        b = (3 * self.price_array + self.high_array + self.low_array + self.open_array) / 6
 
         # 使用 numba 加权滑动均值
-        dkx = dkx_weighted_ma_numba(B, N)
+        dkx = dkx_weighted_ma_numba(b, n)
         return dkx
+
+    @cache_rolling_metric   # 计算 DKXDiff
+    def cal_DKXDiff(self, **kwargs):
+        dkx = self.cal_DKX()
+        return dkx - self.price_array
 
     @cache_rolling_metric  # 计算 DKX 指标的移动平均
     def cal_MADKX(self, metric_name, **kwargs):
         _, n = metric_name.split('-')
         # 获取 DKX 值（自动从缓存或重新计算）
         dkx_array = self.cal_DKX()
-        return rolling_mean_2d_numba(dkx_array, int(n))
+        self.res_dict[f'MADKX-{n}'] = rolling_mean_2d_numba(dkx_array, int(n))
+        # 计算 MADKXDiff
+        self.res_dict[f'MADKXDiff-{n}'] = self.res_dict[f'MADKX-{n}'] - dkx_array
+        return self.res_dict[metric_name]
 
     # 根据指标名 计算相应的指标值
     def cal_metric(self, metric_name, **kwargs):
@@ -784,19 +897,35 @@ class CalRollingMetrics:
             func_name = 'cal_KDJ'
         elif metric_name.startswith('MTMMA-'):
             func_name = 'cal_MTMMA'
+        elif metric_name.startswith('MTMMADiff-'):
+            func_name = 'cal_MTMMADiff'
         elif metric_name.startswith('MATRIX-'):
             func_name = 'cal_MATRIX'
+        elif metric_name.startswith('MATRIXDiff-'):
+            func_name = 'cal_MATRIXDiff'
         elif metric_name.startswith('MAPSY-'):
             func_name = 'cal_MAPSY'
+        elif metric_name.startswith('MAPSYDiff-'):
+            func_name = 'cal_MAPSYDiff'
         elif metric_name.startswith('MACR-'):
             func_name = 'cal_MACR'
+        elif metric_name.startswith('MACRDiff-'):
+            func_name = 'cal_MACRDiff'
         elif metric_name.startswith('MAVR-'):
             func_name = 'cal_MAVR'
+        elif metric_name.startswith('MAVRDiff-'):
+            func_name = 'cal_MAVRDiff'
+        elif metric_name.startswith('ARDiff-'):
+            func_name = 'cal_ARDiff'
+        elif metric_name.startswith('BRDiff-'):
+            func_name = 'cal_BRDiff'
+        elif metric_name.startswith('MABIAS'):
+            func_name = 'cal_MABIAS'
         elif metric_name.startswith('ADX-'):
             func_name = 'cal_ADX'
-        elif metric_name.startswith('ADXR-'):
+        elif metric_name.startswith('ADXR'):
             func_name = 'cal_ADXR'
-        elif metric_name.startswith('MADKX-'):
+        elif metric_name.startswith('MADKX'):
             func_name = 'cal_MADKX'
         else:
             func_name = f'cal_{metric_name}'
@@ -840,7 +969,7 @@ class CalRollingMetrics:
 if __name__ == '__main__':
     price_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_close_df.parquet')
     open_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_open_df.parquet')
-    return_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_log_return_df.parquet')
+    return_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_log_df.parquet')
     high_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_high_df.parquet')
     low_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_low_df.parquet')
     vol_df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/wide_vol_df.parquet')
@@ -875,7 +1004,7 @@ if __name__ == '__main__':
                             days_array=days,
                             )
     # 计算所有指标
-    res = cal.cal_all_metrics(['KDJ-K-3', 'KDJ-D-3', 'KDJ-J-3'])
+    res = cal.cal_all_metrics(['MADKX-10', 'MADKXDiff-10'])
     res = res[res['ts_code'] == '159915.SZ']
     print(res)
 

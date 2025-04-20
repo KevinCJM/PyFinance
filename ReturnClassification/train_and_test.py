@@ -475,20 +475,23 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 if __name__ == '__main__':
     for d in [10]:
+        # 调用预测主函数 predict_main_random_forest，用于执行基金数据预处理、模型训练和测试等任务
         predict_main_random_forest(
-            the_fund_code='510050.SH',
-            n_days=d,
-            folder_path='../Data',
-            metrics_folder='../Data/Metrics',
-            train_start=None,
-            train_end='2024-11-30',
-            test_start='2024-12-01',
-            test_end='2025-04-30',
-            nan_method='drop',
-            random_seed=42, n_iter=20, cv=5,
-            threshold=None,
-            basic_data_as_metric=True,
-            import_feature_only=True,
-            return_threshold=0.01,
-            parameter_dict=None,
+            the_fund_code='510050.SH',  # 指定基金代码，此处为 '510050.SH'
+            n_days=d,  # 预测未来收益的天数，变量 d 在循环中定义，表示不同的预测周期
+            folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
+            metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'
+            train_start=None,  # 训练集开始日期，如果为 None，则从数据的最早日期开始
+            train_end='2024-11-30',  # 训练集结束日期，指定为 '2024-11-30'
+            test_start='2024-12-01',  # 测试集开始日期，指定为 '2024-12-01'
+            test_end='2025-04-30',  # 测试集结束日期，指定为 '2025-04-30'
+            nan_method='drop',  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'
+            random_seed=42,  # 随机种子，确保结果可重复，默认为 42
+            n_iter=20,  # 随机搜索的迭代次数，默认为 20 次
+            cv=5,  # 交叉验证的折数，默认为 5 折
+            threshold=None,  # 置信度阈值，如果为 None，则不使用置信度筛选
+            basic_data_as_metric=True,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为 True
+            import_feature_only=False,  # 是否仅使用重要特征进行训练，默认为 True
+            return_threshold=0.0025,  # 标签生成方法，未来收益率大于 0.01 的样本标记为 1，否则为 0
+            parameter_dict=None,  # 最优参数字典，如果为 None，则自动调参
         )
