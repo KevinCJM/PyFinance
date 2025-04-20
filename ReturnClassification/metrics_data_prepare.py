@@ -145,6 +145,7 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
     返回:
     pandas.DataFrame: 包含选定基金所有指标数据的干净数据框。
     """
+    print(f"[INFO] 获取指标数据 ...")
     # 初始化最终的数据框为None
     df_final = None
     # 遍历指标数据文件夹中的所有文件
@@ -176,7 +177,7 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
             df_final = pd.merge(df_final, df, on=['ts_code', 'date'], how='outer')
 
     if basic_data_as_metric:
-        print(f"[INFO] {selected_fund} 基本数据也作为指标数据")
+        print(f"[INFO] 基本数据也作为指标数据")
         # 获取 对数收益/开盘价/收盘价/最高价/最低价/成交量/成交额 的数据
         basic_data_df = get_fund_basic_data(data_folder_path, selected_fund)
         # 合并数据
@@ -190,7 +191,7 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
     df_final['date'] = pd.to_datetime(df_final['date'])
 
     n, m = df_final.shape
-    print(f"[INFO] {selected_fund} 指标数据获取完成, 共 {n} 条记录, {m} 个指标")
+    print(f"[INFO] 所有特征数据获取完成, 共 {n} 条记录, {m} 个指标")
     # 返回清洗后的数据框
     return df_final
 

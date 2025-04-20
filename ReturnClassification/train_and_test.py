@@ -5,6 +5,7 @@
 @Author: Kevin-Chen
 @Descriptions: 
 """
+import os
 import warnings
 import numpy as np
 import pandas as pd
@@ -14,6 +15,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV
 from ReturnClassification.metrics_data_prepare import (
     get_fund_close_price, cal_future_log_return, get_fund_metrics_data, preprocess_data, get_fund_basic_data)
+from ReturnClassification.select_import_features import find_important_features
 
 warnings.filterwarnings("ignore")
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -115,9 +117,17 @@ def main_data_prepare(the_fund_code='159919.SZ',
 
     ''' 指标数据预处理 '''
     # 获取指标数据
-    metrics_data = get_fund_metrics_data(the_fund_code, metrics_folder, folder_path, basic_data_as_metric)
+    metrics_data = get_fund_metrics_data(
+        the_fund_code,  # 基金代码，用于指定需要处理的基金（如'510050.SH'）。
+        metrics_folder,  # 指标数据文件夹路径，包含用于训练模型的特征数据。
+        folder_path,  # 数据文件夹路径，通常包含基金的价格数据和其他相关信息。
+        basic_data_as_metric  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
+    )
     # 预处理指标数据
-    metrics_data = preprocess_data(metrics_data, nan_method=nan_method)
+    metrics_data = preprocess_data(
+        metrics_data=metrics_data,  # 获取到的原始指标数据，需要进行预处理。
+        nan_method=nan_method  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'。
+    )
 
     ''' 测试集训练集划分 '''
     # 划分训练集和测试集数据
@@ -149,6 +159,7 @@ def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5):
     返回:
     - 最优超参数的字典。
     """
+    print("[INFO] 开始参数调优...")
     # 定义随机搜索的超参数空间
     param_dist = {
         'n_estimators': randint(100, 1000),
@@ -277,6 +288,7 @@ def confidence_based_random_forest(x_train, x_test, y_train, y_test,
     :param parameter_dict: 必须要有: n_estimators, max_depth, min_samples_split, min_samples_leaf
     :return: 训练好的随机森林分类器模型
     """
+    print("[INFO] 开始使用 随机森林模型 进行训练...")
     # 自动调参或使用给定的参数字典
     if parameter_dict is None:
         best_dict = auto_parameter_tuning(x_train, y_train, random_seed=random_seed, n_iter=n_iter, cv=cv)
@@ -335,7 +347,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                test_end='2025-03-31',
                                nan_method='drop',
                                random_seed=42, n_iter=20, cv=5,
-                               threshold=None, basic_data_as_metric=False
+                               threshold=None, basic_data_as_metric=False,
+                               import_feature_only=False, top_n=200,
                                ):
     """
     使用随机森林模型预测基金走势。
@@ -344,7 +357,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param n_days: 用于预测的天数，默认为 20 天。
     :param folder_path: 数据文件夹路径，默认为 '../Data'。
     :param metrics_folder: 评价指标文件夹路径，默认为 '../Data/Metrics'。
-    :param train_start: 训练数据开始日期，默认为 None。
+    :param train_start: 训练数据开始日期，默认为 None 表示从数据的开始日期开始。
     :param train_end: 训练数据结束日期，默认为 '2023-12-31'。
     :param test_start: 测试数据开始日期，默认为 '2024-01-01'。
     :param test_end: 测试数据结束日期，默认为 '2025-03-31'。
@@ -354,10 +367,15 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param cv: 交叉验证的折数，默认为 5 折。
     :param threshold: 置信度阈值，默认为 None。
     :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为 False
+    :param import_feature_only: bool, 是否仅仅使用重要特征进行训练，默认为 False。
+    :param top_n: int, 从每个模型中选择的顶级特征数量，默认为 200。
+
     :return: 训练完成的随机森林模型。
     """
     ''' 数据准备 '''
-    # 准备数据，包括训练集和测试集，以及 原始指标数据
+    print(f"[开始] 预测 {the_fund_code}, 未来{d}天的收益率 .....")
+
+    # 数据读取，包括训练集和测试集，以及 原始指标数据
     x_train, y_train, x_test, y_test, metrics_data = main_data_prepare(
         the_fund_code=the_fund_code,  # 基金代码，指定需要处理的基金（如'510050.SH'）。
         n_days=n_days,  # 预测未来收益的天数，用于计算未来对数收益率和生成目标标签。
@@ -371,6 +389,40 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         basic_data_as_metric=basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
     )
 
+    ''' 特征选择 '''
+    if import_feature_only:  # 是否使用重要特征进行模型训练
+        print("[INFO] 仅使用重要特征进行训练")
+        im_path = os.path.join(folder_path, 'selected_features.parquet')
+        # 判断 '../Data/selected_features_{n_days}.parquet' 是否存在
+        if os.path.exists(im_path):
+            print(f"[INFO] selected_features_{n_days}.parquet 文件已经存在")
+            # 读取重要特征
+            selected_features = pd.read_parquet(im_path)
+            # 将重要特征转换为列表
+            selected_features = selected_features['feature_name'].tolist()
+            # 根据重要特征筛选训练数据
+            x_train = x_train[selected_features]
+            # 根据重要特征筛选测试数据
+            x_test = x_test[selected_features]
+            # 根据重要特征筛选指标数据
+            metrics_data = metrics_data[selected_features]
+        else:
+            print(f"[INFO] selected_features_{n_days}.parquet 文件不存在, 开始重要性特征筛查")
+            selected_features, x_train, x_test, y_train, y_test, metrics_data = (
+                find_important_features(
+                    x_train,  # 训练集特征数据。
+                    y_train,  # 训练集标签数据。
+                    x_test,  # 测试集特征数据。
+                    y_test,  # 测试集标签数据。
+                    metrics_data,
+                    folder_path=folder_path,  # 保存输出文件的文件夹路径。
+                    n_days=n_days,  # 用于训练和测试的天数，默认为10。
+                    top_n=top_n,  # 从每个模型中选择的顶级特征数量，默认为200。
+                    save_features_name=True,  # 是否保存选定特征的名称，默认为False。
+                ))
+
+        print(f"[INFO] 重要性特征筛选后, 训练集数据量为: {x_train.shape[1]}列, 测试集数据量为: {x_test.shape[1]}列")
+
     ''' 训练模型 '''
     if threshold:
         trained_model = confidence_based_random_forest(
@@ -381,15 +433,15 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         trained_model = train_and_test_random_forest(
             x_train, x_test, y_train, y_test, metrics_data,
             random_seed=random_seed, n_iter=n_iter, cv=cv)
+
     # 输出模型训练完成的信息
-    print("模型训练完成")
+    print("[完成] 模型训练完成")
     # 返回训练完成的模型
     return trained_model
 
 
 if __name__ == '__main__':
-    for d in [1, 3, 5, 10, 20]:
-        print(f"预测未来{d}天的收益率 .....")
+    for d in [20]:
         predict_main_random_forest(the_fund_code='510050.SH',
                                    n_days=d,
                                    folder_path='../Data',
@@ -402,4 +454,5 @@ if __name__ == '__main__':
                                    random_seed=42, n_iter=20, cv=5,
                                    threshold=None,
                                    basic_data_as_metric=True,
+                                   import_feature_only=True,  # 是否仅使用重要特征
                                    )
