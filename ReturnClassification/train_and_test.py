@@ -357,18 +357,18 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :return: 训练完成的随机森林模型。
     """
     ''' 数据准备 '''
-    # 准备数据，包括训练集和测试集，以及评价指标数据
+    # 准备数据，包括训练集和测试集，以及 原始指标数据
     x_train, y_train, x_test, y_test, metrics_data = main_data_prepare(
-        the_fund_code=the_fund_code,
-        n_days=n_days,
-        folder_path=folder_path,
-        metrics_folder=metrics_folder,
-        train_start=train_start,
-        train_end=train_end,
-        test_start=test_start,
-        test_end=test_end,
-        nan_method=nan_method,
-        basic_data_as_metric=basic_data_as_metric,
+        the_fund_code=the_fund_code,  # 基金代码，指定需要处理的基金（如'510050.SH'）。
+        n_days=n_days,  # 预测未来收益的天数，用于计算未来对数收益率和生成目标标签。
+        folder_path=folder_path,  # 基金价格数据的文件夹路径，包含基金的日频价格数据。
+        metrics_folder=metrics_folder,  # 基金指标数据的文件夹路径，包含用于训练模型的特征数据。
+        train_start=train_start,  # 训练集开始日期，如果为None，则从数据的最早日期开始。
+        train_end=train_end,  # 训练集结束日期，默认为'2023-12-31'。
+        test_start=test_start,  # 测试集开始日期，默认为'2024-01-01'。
+        test_end=test_end,  # 测试集结束日期，默认为'2025-03-31'。
+        nan_method=nan_method,  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'。
+        basic_data_as_metric=basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
     )
 
     ''' 训练模型 '''
