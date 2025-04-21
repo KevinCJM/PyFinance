@@ -92,6 +92,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       test_start='2024-01-01',
                       test_end='2025-03-31',
                       nan_method='drop',
+                      standardize_method='both',
                       basic_data_as_metric=False,
                       return_threshold=0.0
                       ):
@@ -107,6 +108,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param test_start: 测试集开始日期，默认为'2024-01-01'
     :param test_end: 测试集结束日期，默认为'2025-03-31'
     :param nan_method: 处理缺失值的方法，默认为 'drop'，可选值为 'median' 或 'mean'
+    :param standardize_method: 数据标准化/归一化的方法，默认为 'both'，可选['both', 'minmax', 'zscore', 'none']。
     :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为False
     :param return_threshold: float, 标签生成方法，默认为0, 表示使用未来收益率大于0的样本标记为1，否则为0;
                         如果写0.001, 则表示使用未来收益率大于+0.1%的样本标记为2，在-0.1%~0.1%之间的样本标记为1，否则为0;
@@ -144,7 +146,8 @@ def main_data_prepare(the_fund_code='159919.SZ',
     # 预处理指标数据
     metrics_data = preprocess_data(
         metrics_data=metrics_data,  # 获取到的原始指标数据，需要进行预处理。
-        nan_method=nan_method  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'。
+        nan_method=nan_method,  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'。
+        standardize_method=standardize_method  # 数据标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'
     )
 
     ''' 测试集训练集划分 '''
@@ -375,6 +378,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                test_start='2024-01-01',
                                test_end='2025-03-31',
                                nan_method='drop',
+                               standardize_method='both',
                                random_seed=42, n_iter=20, cv=5,
                                threshold=None, basic_data_as_metric=False,
                                import_feature_only=False, top_n=200,
@@ -392,6 +396,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param test_start: 测试数据开始日期，默认为 '2024-01-01'。
     :param test_end: 测试数据结束日期，默认为 '2025-03-31'。
     :param nan_method: 训练数据中 nan 的处理方法, 默认为 'drop', 可选 'median' 或 'mean'。
+    :param standardize_method: 数据标准化/归一化的方法，默认为 'both'，可选['both', 'minmax', 'zscore', 'none']。
     :param random_seed: 随机种子，默认为 42。
     :param n_iter: 随机搜索的迭代次数，默认为 20 次。
     :param cv: 交叉验证的折数，默认为 5 折。
@@ -418,6 +423,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         test_start=test_start,  # 测试集开始日期，默认为'2024-01-01'。
         test_end=test_end,  # 测试集结束日期，默认为'2025-03-31'。
         nan_method=nan_method,  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'。
+        standardize_method=standardize_method,  # 数据标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
         basic_data_as_metric=basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
         return_threshold=return_threshold,  # 标签生成方法
     )
@@ -479,7 +485,7 @@ if __name__ == '__main__':
     for d in [10]:
         # 调用预测主函数 predict_main_random_forest，用于执行基金数据预处理、模型训练和测试等任务
         predict_main_random_forest(
-            the_fund_code='159985.SZ',  # 指定基金代码，此处为 '510050.SH'
+            the_fund_code='518880.SH',  # 指定基金代码，此处为 '510050.SH'
             n_days=d,  # 预测未来收益的天数，变量 d 在循环中定义，表示不同的预测周期
             folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
             metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'
@@ -488,6 +494,7 @@ if __name__ == '__main__':
             test_start='2024-12-01',  # 测试集开始日期，指定为 '2024-12-01'
             test_end='2025-04-30',  # 测试集结束日期，指定为 '2025-04-30'
             nan_method='drop',  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'
+            standardize_method='none',  # 指标标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
             random_seed=42,  # 随机种子，确保结果可重复，默认为 42
             n_iter=20,  # 随机搜索的迭代次数，默认为 20 次
             cv=5,  # 交叉验证的折数，默认为 5 折

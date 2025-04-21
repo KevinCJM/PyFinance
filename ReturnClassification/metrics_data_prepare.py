@@ -203,7 +203,8 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
 
 # 预处理指标数据
 def preprocess_data(metrics_data,
-                    nan_method='median'
+                    nan_method='median',
+                    standardize_method='both'  # 'both'、'minmax'、'zscore'、'none',
                     ):
     """
     预处理指标数据。
@@ -212,6 +213,8 @@ def preprocess_data(metrics_data,
 
     参数:
     metrics_data: DataFrame, 包含指标数据的DataFrame，必须包含 'ts_code' 和 'date' 列。
+    nan_method: str, 处理NaN值的方法，默认为 'median'，可选['median', 'mean', 'drop']。
+    standardize_method: str, 数据标准化/归一化的方法，默认为 'both'，可选['both', 'minmax', 'zscore', 'none']。
 
     返回:
     DataFrame, 预处理后的DataFrame，包含归一化/标准化后的指标数据。
@@ -223,10 +226,13 @@ def preprocess_data(metrics_data,
     ts_code = df_metrics.pop('ts_code')
     date = df_metrics.pop('date')
 
-    df_metrics = df_metrics.replace([np.inf, -np.inf], np.nan)  # 将 inf/-inf 转为 NaN
+    # 将无穷大和无穷小的值替换为NaN
+    df_metrics = df_metrics.replace([np.inf, -np.inf], np.nan)
+
     # 删除全是nan的列
     df_metrics = df_metrics.dropna(axis=1, how='all')
 
+    # 根据nan_method参数处理NaN值
     if nan_method == 'median':
         # 用每列的中位数填充 NaN
         medians = df_metrics.median(numeric_only=True)  # 计算每列中位数
@@ -238,46 +244,72 @@ def preprocess_data(metrics_data,
     elif nan_method == 'drop':
         # 删除包含NaN的行
         df_metrics = df_metrics.dropna()
-    df_metrics = df_metrics.dropna()
+
+    # 再次删除全是nan的列，以防上一步产生新的全nan列
+    df_metrics = df_metrics.dropna(axis=1, how='all')
 
     # 计算列的最大最小值
     col_min = df_metrics.min(axis=0, skipna=True)
     col_max = df_metrics.max(axis=0, skipna=True)
 
-    # 判断每一列属于哪类变量
-    pos_mask = (col_min >= 0)  # 全正值 → 最大最小归一化
-    neg_mask = (col_max <= 0)  # 全负值 → 取绝对值后最大最小归一化
-    mixed_mask = ~(pos_mask | neg_mask)  # 有正有负 → 标准化
+    # 根据standardize_method参数进行数据标准化/归一化
+    if standardize_method == 'both':
+        # 判断每一列属于哪类变量
+        pos_mask = (col_min >= 0)  # 全正值 → 最大最小归一化
+        neg_mask = (col_max <= 0)  # 全负值 → 取绝对值后最大最小归一化
+        mixed_mask = ~(pos_mask | neg_mask)  # 有正有负 → 标准化
 
-    # 三类列名
-    pos_cols = df_metrics.columns[pos_mask]
-    neg_cols = df_metrics.columns[neg_mask]
-    mixed_cols = df_metrics.columns[mixed_mask]
+        # 三类列名
+        pos_cols = df_metrics.columns[pos_mask]
+        neg_cols = df_metrics.columns[neg_mask]
+        mixed_cols = df_metrics.columns[mixed_mask]
 
-    # Z-score 标准化（有正有负）
-    df_mixed = pd.DataFrame(
-        StandardScaler().fit_transform(df_metrics[mixed_cols]),
-        columns=mixed_cols,
-        index=df_metrics.index) if len(mixed_cols) > 0 else pd.DataFrame(index=df_metrics.index)
+        # Z-score 标准化（有正有负）
+        df_mixed = pd.DataFrame(
+            StandardScaler().fit_transform(df_metrics[mixed_cols]),
+            columns=mixed_cols,
+            index=df_metrics.index) if len(mixed_cols) > 0 else pd.DataFrame(index=df_metrics.index)
 
-    # Min-Max 归一化（全正）
-    df_pos = pd.DataFrame(
-        MinMaxScaler().fit_transform(df_metrics[pos_cols]),
-        columns=pos_cols,
-        index=df_metrics.index) if len(pos_cols) > 0 else pd.DataFrame(index=df_metrics.index)
+        # Min-Max 归一化（全正）
+        df_pos = pd.DataFrame(
+            MinMaxScaler().fit_transform(df_metrics[pos_cols]),
+            columns=pos_cols,
+            index=df_metrics.index) if len(pos_cols) > 0 else pd.DataFrame(index=df_metrics.index)
 
-    # Min-Max 归一化（全负 → 取绝对值）
-    abs_data = df_metrics[neg_cols].abs() if len(neg_cols) > 0 else pd.DataFrame(index=df_metrics.index)
-    df_neg = pd.DataFrame(
-        MinMaxScaler().fit_transform(abs_data),
-        columns=neg_cols,
-        index=df_metrics.index) if len(neg_cols) > 0 else pd.DataFrame(index=df_metrics.index)
+        # Min-Max 归一化（全负 → 取绝对值）
+        abs_data = df_metrics[neg_cols].abs() if len(neg_cols) > 0 else pd.DataFrame(index=df_metrics.index)
+        df_neg = pd.DataFrame(
+            MinMaxScaler().fit_transform(abs_data),
+            columns=neg_cols,
+            index=df_metrics.index) if len(neg_cols) > 0 else pd.DataFrame(index=df_metrics.index)
 
-    # 合并结果
-    df_processed = pd.concat([df_mixed, df_pos, df_neg], axis=1)[df_metrics.columns]
+        # 合并结果
+        df_processed = pd.concat([df_mixed, df_pos, df_neg], axis=1)[df_metrics.columns]
+    elif standardize_method == 'minmax':
+        # Min-Max 归一化
+        df_processed = pd.DataFrame(
+            MinMaxScaler().fit_transform(df_metrics),
+            columns=df_metrics.columns,
+            index=df_metrics.index
+        )
+    elif standardize_method == 'zscore':
+        # Z-score 标准化
+        df_processed = pd.DataFrame(
+            StandardScaler().fit_transform(df_metrics),
+            columns=df_metrics.columns,
+            index=df_metrics.index
+        )
+    else:
+        # 不进行标准化/归一化
+        df_processed = df_metrics.copy()
+
+    # 将之前移除的 'ts_code' 和 'date' 列重新插入到DataFrame中
     df_processed.insert(0, 'date', date)
     df_processed.insert(0, 'ts_code', ts_code)
+
+    # 返回预处理后的DataFrame
     return df_processed
+
 
 
 if __name__ == '__main__':
