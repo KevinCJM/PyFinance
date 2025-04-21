@@ -181,7 +181,12 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
         # 获取 对数收益/开盘价/收盘价/最高价/最低价/成交量/成交额 的数据
         basic_data_df = get_fund_basic_data(data_folder_path, selected_fund)
         # 合并数据
-        df_final = pd.merge(df_final, basic_data_df, on=['date'], how='outer')
+        if df_final is None:
+            df_final = basic_data_df
+            df_final['ts_code'] = selected_fund
+        else:
+            # 将当前数据框与最终数据框按基金代码和日期合并
+            df_final = pd.merge(df_final, basic_data_df, on=['date'], how='outer')
 
     # 删除合并后存在空值的行
     df_final = df_final.dropna()
@@ -219,6 +224,9 @@ def preprocess_data(metrics_data,
     date = df_metrics.pop('date')
 
     df_metrics = df_metrics.replace([np.inf, -np.inf], np.nan)  # 将 inf/-inf 转为 NaN
+    # 删除全是nan的列
+    df_metrics = df_metrics.dropna(axis=1, how='all')
+
     if nan_method == 'median':
         # 用每列的中位数填充 NaN
         medians = df_metrics.median(numeric_only=True)  # 计算每列中位数

@@ -64,12 +64,10 @@ def split_train_test_data(fund_code, future_days, df_price, metrics_df,
     # 根据时间区间划分训练集和测试集
     train_df = df_all[(df_all['date'] >= train_start) & (df_all['date'] <= train_end)]
     test_df = df_all[(df_all['date'] >= test_start) & (df_all['date'] <= test_end)]
-    print(f"[INFO] 训练集数据量: {len(train_df)}, 共 {len(train_df.columns)} 列; "
-          f"测试集数据量: {len(test_df)}, 共 {len(test_df.columns)} 列")
 
     ''' 准备特征和标签 '''
     # 选取特征列和目标列
-    feature_cols = [col for col in metrics_df.columns if col not in ['ts_code', 'date']]
+    feature_cols = list(set([col for col in metrics_df.columns if col not in ['ts_code', 'date']]))
     target_col = f"label_up_{future_days}d"
 
     # 分离训练集和测试集的特征和标签
@@ -78,6 +76,10 @@ def split_train_test_data(fund_code, future_days, df_price, metrics_df,
 
     x_test = test_df[feature_cols]
     y_test = test_df[target_col]
+
+    print(f"[INFO] "
+          f"训练集数据量: {len(x_train)}条参数&{len(y_train)}条标签; 参数共{len(x_train.columns)}列; "
+          f"测试集数据量: {len(x_test)}条参数&{len(y_test)}条标签; 参数共{len(x_test.columns)}列.")
     return x_train, y_train, x_test, y_test
 
 
@@ -474,10 +476,10 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
-    for d in [10]:
+    for d in [1, 3, 5, 10, 15, 20, 25, 30]:
         # 调用预测主函数 predict_main_random_forest，用于执行基金数据预处理、模型训练和测试等任务
         predict_main_random_forest(
-            the_fund_code='510050.SH',  # 指定基金代码，此处为 '510050.SH'
+            the_fund_code='164701.SZ',  # 指定基金代码，此处为 '510050.SH'
             n_days=d,  # 预测未来收益的天数，变量 d 在循环中定义，表示不同的预测周期
             folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
             metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'
@@ -492,6 +494,6 @@ if __name__ == '__main__':
             threshold=None,  # 置信度阈值，如果为 None，则不使用置信度筛选
             basic_data_as_metric=True,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为 True
             import_feature_only=False,  # 是否仅使用重要特征进行训练，默认为 True
-            return_threshold=0.0025,  # 标签生成方法，未来收益率大于 0.01 的样本标记为 1，否则为 0
+            return_threshold=0.0,  # 标签生成方法，未来收益率大于 0.01 的样本标记为 1，否则为 0
             parameter_dict=None,  # 最优参数字典，如果为 None，则自动调参
         )
