@@ -476,10 +476,10 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
-    for d in [1, 3, 5, 10, 15, 20, 25, 30]:
+    for d in [10]:
         # 调用预测主函数 predict_main_random_forest，用于执行基金数据预处理、模型训练和测试等任务
         predict_main_random_forest(
-            the_fund_code='164701.SZ',  # 指定基金代码，此处为 '510050.SH'
+            the_fund_code='159985.SZ',  # 指定基金代码，此处为 '510050.SH'
             n_days=d,  # 预测未来收益的天数，变量 d 在循环中定义，表示不同的预测周期
             folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
             metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'

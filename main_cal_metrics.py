@@ -52,20 +52,20 @@ fund = ['510050.SH',    # 上证50ETF
         ]
 
 if __name__ == '__main__':
-    # # 计算区间指标
-    # compute_metrics_for_period_initialize(
-    #     log_return_df,  # 对数收益率数据
-    #     close_price_df,  # 收盘价数据
-    #     high_price_df,  # 收盘价数据
-    #     low_price_df,  # 收盘价数据
-    #     volume_df,  # 收盘价数据
-    #     save_path,  # 指标的保存文件路径
-    #     p_list=None,  # 可以计算指定的区间列表, list格式
-    #     metrics_list=None,  # 可以计算指定的指标列表, list格式
-    #     fund_list=fund,  # 可以指定要计算的ETF列表, list格式
-    #     spec_end_date=None,  # 可以指定的区间结束日期
-    #     multi_process=True  # 是否使用多进程计算, True为使用多进程, False为单进程
-    # )
+    # 计算区间指标
+    compute_metrics_for_period_initialize(
+        log_return_df,  # 对数收益率数据
+        close_price_df,  # 收盘价数据
+        high_price_df,  # 收盘价数据
+        low_price_df,  # 收盘价数据
+        volume_df,  # 收盘价数据
+        save_path,  # 指标的保存文件路径
+        p_list=None,  # 可以计算指定的区间列表, list格式
+        metrics_list=None,  # 可以计算指定的指标列表, list格式
+        fund_list=fund,  # 可以指定要计算的ETF列表, list格式
+        spec_end_date=None,  # 可以指定的区间结束日期
+        multi_process=True  # 是否使用多进程计算, True为使用多进程, False为单进程
+    )
 
     # 计算滚动指标
     compute_all_rolling_metrics(
