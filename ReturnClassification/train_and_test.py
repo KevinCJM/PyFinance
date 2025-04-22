@@ -13,6 +13,9 @@ from scipy.stats import randint
 from sklearn.metrics import classification_report
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.decomposition import PCA
+
 from ReturnClassification.metrics_data_prepare import (
     get_fund_close_price, cal_future_log_return, get_fund_metrics_data, preprocess_data, get_fund_basic_data)
 from ReturnClassification.select_import_features import find_important_features
@@ -94,7 +97,9 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       nan_method='drop',
                       standardize_method='both',
                       basic_data_as_metric=False,
-                      return_threshold=0.0
+                      return_threshold=0.0,
+                      dim_reduction=False,
+                      n_components=None
                       ):
     """
     主要数据准备函数，用于准备基金数据以进行后续的机器学习模型训练和测试。
@@ -112,9 +117,15 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为False
     :param return_threshold: float, 标签生成方法，默认为0, 表示使用未来收益率大于0的样本标记为1，否则为0;
                         如果写0.001, 则表示使用未来收益率大于+0.1%的样本标记为2，在-0.1%~0.1%之间的样本标记为1，否则为0;
+    :param dim_reduction: bool, 是否做PCA数据降维，默认为 False
+    :param n_components: int, PCA数据降维到多少数量
 
     :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
     """
+    # 如果要做PCA, 数据预处理阶段不做标准化操作, 而是留到PCA的时候统一来做
+    if dim_reduction:
+        standardize_method = 'none'
+
     ''' 价格数据预处理 '''
     # 获取 收盘价 数据
     close_price = get_fund_close_price(the_fund_code, folder_path)
@@ -159,6 +170,29 @@ def main_data_prepare(the_fund_code='159919.SZ',
         test_start=test_start,
         test_end=test_end
     )
+
+    if dim_reduction:
+        print("[INFO] 数据降维中...")
+        # 数据归一化
+        scaler = MinMaxScaler()
+        x_train_scaled = scaler.fit_transform(x_train)
+        x_test_scaled = scaler.transform(x_test)
+
+        if n_components is None:
+            limit = 0.99
+            pca_full = PCA().fit(x_train_scaled)
+            explained_var_ratio_cum_sum = np.cumsum(pca_full.explained_variance_ratio_)
+            n_components = np.argmax(explained_var_ratio_cum_sum >= limit) + 1
+            print(f"[INFO] PCA降维到 {n_components} 维, 解释方差比率达到{limit * 100}%")
+
+        # 使用 PCA 降维
+        pca = PCA(n_components=n_components)
+        x_train = pca.fit_transform(x_train_scaled)
+        x_test = pca.transform(x_test_scaled)
+        print(f"[INFO] PCA降维完成, "
+              f"训练集数据量: {len(x_train)}条参数&{len(y_train)}条标签; 参数共{x_train.shape[1]}列; "
+              f"测试集数据量: {len(x_test)}条参数&{len(y_test)}条标签; 参数共{x_test.shape[1]}列.")
+
     # 返回划分好的数据集和原始指标数据
     return x_train, y_train, x_test, y_test, metrics_data
 
@@ -217,7 +251,9 @@ def auto_parameter_tuning(x_train, y_train, random_seed=42, n_iter=20, cv=5, ret
 
 # 使用随机森林分类器进行训练和测试，并进行超参数优化和特征重要性评估
 def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
-                                 random_seed=42, n_iter=20, cv=5, best_dict=None, return_threshold=0.0):
+                                 random_seed=42, n_iter=20, cv=5, best_dict=None,
+                                 return_threshold=0.0, dim_reduction=False
+                                 ):
     """
     使用随机森林分类器进行训练和测试，并进行超参数优化和特征重要性评估。
 
@@ -231,6 +267,7 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
     :param n_iter: 随机搜索的迭代次数
     :param cv: 交叉验证的折数
     :param best_dict: 最优参数字典，如果为None，则自动调参
+    :param dim_reduction: bool, 是否做了PCA
 
     :return: 训练好的随机森林模型
     """
@@ -287,6 +324,10 @@ def train_and_test_random_forest(x_train, x_test, y_train, y_test, metrics_data,
     '''
 
     ''' 查看重要因子 '''
+    if dim_reduction:
+        # 如果做了PCA, 需要将x_test也做PCA
+        print("[INFO] 数据做了PCA, 不再查看重要因子 ... ")
+        return clf
     # 获取并输出特征重要性
     importance = pd.Series(clf.feature_importances_, index=feature_cols)
     # 排序并选择前10个重要特征
@@ -383,6 +424,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                threshold=None, basic_data_as_metric=False,
                                import_feature_only=False, top_n=200,
                                return_threshold=0.0, parameter_dict=None,
+                               dim_reduction=False, n_components=None,
                                ):
     """
     使用随机森林模型预测基金走势。
@@ -406,6 +448,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param top_n: int, 从每个模型中选择的顶级特征数量，默认为 200。
     :param return_threshold: float, 标签生成方法，默认为 0, 表示使用未来收益率大于 0 的样本标记为 1，否则为 0;
     :param parameter_dict: dict, 最优参数字典，如果为 None，则自动调参。
+    :param dim_reduction: bool, 是否做PCA降维
+    :param n_components: int, PCA维度
 
     :return: 训练完成的随机森林模型。
     """
@@ -426,6 +470,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         standardize_method=standardize_method,  # 数据标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
         basic_data_as_metric=basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
         return_threshold=return_threshold,  # 标签生成方法
+        dim_reduction=dim_reduction,  # 是否PCA
+        n_components=n_components,  # PCA维度
     )
 
     ''' 特征选择 '''
@@ -473,7 +519,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         trained_model = train_and_test_random_forest(
             x_train, x_test, y_train, y_test, metrics_data,
             random_seed=random_seed, n_iter=n_iter, cv=cv, best_dict=parameter_dict,
-            return_threshold=return_threshold)
+            return_threshold=return_threshold, dim_reduction=dim_reduction)
 
     # 输出模型训练完成的信息
     print("[完成] 模型训练完成")
@@ -485,7 +531,7 @@ if __name__ == '__main__':
     for d in [10]:
         # 调用预测主函数 predict_main_random_forest，用于执行基金数据预处理、模型训练和测试等任务
         predict_main_random_forest(
-            the_fund_code='518880.SH',  # 指定基金代码，此处为 '510050.SH'
+            the_fund_code='510050.SH',  # 指定基金代码，此处为 '510050.SH'
             n_days=d,  # 预测未来收益的天数，变量 d 在循环中定义，表示不同的预测周期
             folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
             metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'
@@ -494,7 +540,7 @@ if __name__ == '__main__':
             test_start='2024-12-01',  # 测试集开始日期，指定为 '2024-12-01'
             test_end='2025-04-30',  # 测试集结束日期，指定为 '2025-04-30'
             nan_method='drop',  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'
-            standardize_method='none',  # 指标标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
+            standardize_method='zscore',  # 指标标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
             random_seed=42,  # 随机种子，确保结果可重复，默认为 42
             n_iter=20,  # 随机搜索的迭代次数，默认为 20 次
             cv=5,  # 交叉验证的折数，默认为 5 折
@@ -503,4 +549,6 @@ if __name__ == '__main__':
             import_feature_only=False,  # 是否仅使用重要特征进行训练，默认为 True
             return_threshold=0.0,  # 标签生成方法，未来收益率大于 0.01 的样本标记为 1，否则为 0
             parameter_dict=None,  # 最优参数字典，如果为 None，则自动调参
+            dim_reduction=True,  # 是否PCA
+            n_components=None,  # PCA维度, 写None表示自动选择, 保留90%方差解释比率
         )
