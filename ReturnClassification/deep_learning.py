@@ -633,15 +633,15 @@ if __name__ == '__main__':
     ''' 1) DeepFM 模型 '''
     print(" --- " * 20)
     print("Training DeepFM...")
-    # # 使用Optuna进行超参数优化
-    # study = optuna.create_study(direction='maximize')
-    # study.optimize(
-    #     lambda trial: objective_deep_fm(trial, validation_mode='kfold'),
-    #     n_trials=30
-    # )
-    # print("Best trial:", study.best_trial.params)  # 输出最优超参数
-    # best_trial = study.best_trial.params
-    best_trial = {'embed_dim': 32, 'dropout_rate': 0.4152850750188673, 'learning_rate': 0.001492202547205302, 'activation': 'relu', 'use_batch_norm': False, 'dnn_units': [64, 32, 16, 8]}
+    # 使用Optuna进行超参数优化
+    study = optuna.create_study(direction='maximize')
+    study.optimize(
+        lambda trial: objective_deep_fm(trial, validation_mode='kfold'),
+        n_trials=15
+    )
+    print("Best trial:", study.best_trial.params)  # 输出最优超参数
+    best_trial = study.best_trial.params
+    # best_trial = {'embed_dim': 32, 'dropout_rate': 0.4152850750188673, 'learning_rate': 0.001492202547205302, 'activation': 'relu', 'use_batch_norm': False, 'dnn_units': [64, 32, 16, 8]}
 
     # 使用最优超参数训练最终模型
     deep_fm_model = build_deep_fm(
@@ -666,16 +666,16 @@ if __name__ == '__main__':
     )
 
     # ''' 2) Wide & Deep 模型 '''
-    # print(" --- " * 20)
-    # print("\nTraining Wide & Deep...")
-    # # 使用Optuna进行超参数优化
-    # study = optuna.create_study(direction='maximize')
-    # study.optimize(objective_wide_deep,
-    #                n_trials=150  # 设置试验次数
-    #                )
-    # print("Best trial:", study.best_trial.params)  # 输出最优超参数
-    # best_trial = study.best_trial.params
-    best_trial = {'dropout_rate': 0.3611156413233256, 'use_batch_norm': True, 'wide_activation': 'sigmoid', 'activation': 'relu', 'learning_rate': 0.0015255087830830473, 'deep_units': [128, 64]}
+    print(" --- " * 20)
+    print("\nTraining Wide & Deep...")
+    # 使用Optuna进行超参数优化
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective_wide_deep,
+                   n_trials=15  # 设置试验次数
+                   )
+    print("Best trial:", study.best_trial.params)  # 输出最优超参数
+    best_trial = study.best_trial.params
+    # best_trial = {'dropout_rate': 0.31110760370578694, 'use_batch_norm': True, 'wide_activation': 'linear', 'activation': 'relu', 'learning_rate': 0.0020187999563270574, 'deep_units': [64, 32]}
 
     # 使用最优超参数训练最终模型
     wd_model = build_wide_deep(
@@ -697,18 +697,18 @@ if __name__ == '__main__':
                        batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
                        )
 
-    # ''' 3) NCD 模型 '''
-    # print(" --- " * 20)
-    # print("\nTraining DCN...")
-    # # 使用Optuna进行超参数优化
-    # study = optuna.create_study(direction='maximize')
-    # study.optimize(
-    #     lambda trial: objective_dcn(trial, validation_mode='kfold'),
-    #     n_trials=30
-    # )
-    # print("Best trial:", study.best_trial.params)  # 输出最优超参数
-    # best_trial = study.best_trial.params
-    best_trial = {'cross_layers': 2, 'dropout_rate': 0.2043031648581299, 'learning_rate': 0.0009367655839776305, 'use_batch_norm': False, 'deep_units': [128, 64]}
+    ''' 3) NCD 模型 '''
+    print(" --- " * 20)
+    print("\nTraining DCN...")
+    # 使用Optuna进行超参数优化
+    study = optuna.create_study(direction='maximize')
+    study.optimize(
+        lambda trial: objective_dcn(trial, validation_mode='kfold'),
+        n_trials=15
+    )
+    print("Best trial:", study.best_trial.params)  # 输出最优超参数
+    best_trial = study.best_trial.params
+    # best_trial = {'cross_layers': 2, 'dropout_rate': 0.2043031648581299, 'learning_rate': 0.0009367655839776305, 'use_batch_norm': False, 'deep_units': [128, 64]}
 
     # 使用最优超参数训练最终模型
     dcn_model = build_dcn(
