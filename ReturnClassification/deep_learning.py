@@ -24,38 +24,208 @@ import tensorflow as tf
 
 # 自定义FM层（使用Lambda封装tf操作）
 def fm_cross_layer(embed):
-    summed_features_emb = tf.reduce_sum(embed, axis=1)
-    summed_features_emb_square = tf.square(summed_features_emb)
+    """
+    实现FM（Factorization Machine）模型的交叉层计算。
 
-    squared_features_emb = tf.square(embed)
-    squared_sum_features_emb = tf.reduce_sum(squared_features_emb, axis=1)
+    参数:
+    embed: 输入的特征嵌入张量，形状为(batch_size, num_features, embedding_size)。
 
+    返回:
+    fm_output: 计算得到的FM交叉项输出张量，形状为(batch_size, embedding_size)。
+    """
+    # 计算所有特征嵌入向量的和
+    summed_features_emb = tf.reduce_sum(embed, axis=1)  # ∑v_i
+    # 计算上述和向量的平方
+    summed_features_emb_square = tf.square(summed_features_emb)  # (∑v_i)^2
+
+    # 计算每个特征嵌入向量的平方
+    squared_features_emb = tf.square(embed)  # v_i^2
+    # 计算上述平方向量的和
+    squared_sum_features_emb = tf.reduce_sum(squared_features_emb, axis=1)  # ∑v_i^2
+
+    # 根据FM模型的交叉项公式，计算输出
     fm_output = 0.5 * (summed_features_emb_square - squared_sum_features_emb)
     return fm_output
 
 
-def build_deep_fm(input_dim, embed_dim=8):
+# 构建 DeepFM 模型
+def build_deep_fm(input_dim,
+                  embed_dim=8,
+                  dnn_units=None,
+                  dropout_rate=0.5,
+                  activation='relu',
+                  use_batch_norm=False,
+                  learning_rate=0.001
+                  ):
+    """
+    构建DeepFM模型。
+
+    DeepFM是一种深度学习特征选择模型，它结合了因子分解机（FM）和深度神经网络（DNN），
+    用于同时捕捉线性和非线性的特征交互。
+
+    参数:
+    - input_dim (int): 输入特征的维度。
+    - embed_dim (int): 特征嵌入的维度。默认为8。
+    - dnn_units (list of int): DNN部分每层的单元数。默认为[128, 64, 32]。
+    - dropout_rate (float): Dropout层的比例。默认为0.5。
+    - activation (str): DNN部分使用的激活函数。默认为'relu'。
+    - use_batch_norm (bool): 是否在DNN部分使用批量归一化。默认为False。
+    - learning_rate (float): 优化器的学习率。默认为0.001。
+
+    返回:
+    - tf.keras.Model: 构建的DeepFM模型。
+    """
+    # 输入层
     inputs = Input(shape=(input_dim,))
 
-    # Embedding
+    # 如果未指定DNN层的单元数，使用默认值
+    if dnn_units is None:
+        dnn_units = [128, 64, 32]
+
+    # Embedding层 👉 把每个离散特征转换为一个连续的低维向量表示
     embed = Dense(input_dim * embed_dim, activation='linear')(inputs)
     embed = Reshape((input_dim, embed_dim))(embed)
 
-    # FM交叉项 (使用Lambda层)
+    # FM交叉项部分 👉 显式建模低阶特征交叉关系
     fm_output = Lambda(fm_cross_layer)(embed)
 
-    # DNN
-    dnn_input = Flatten()(embed)
-    dnn_output = Dense(128, activation='relu')(dnn_input)
-    dnn_output = Dense(64, activation='relu')(dnn_output)
+    # DNN部分 👉 学习高阶组合和非线性变换
+    x = Flatten()(embed)
+    for units in dnn_units:
+        x = Dense(units)(x)
+        # 如果使用批量归一化
+        if use_batch_norm:
+            x = BatchNormalization()(x)
+        x = Activation(activation)(x)
+        # 如果Dropout率大于0
+        if dropout_rate > 0:
+            x = Dropout(dropout_rate)(x)
 
-    # 组合FM和DNN
-    concat = Concatenate()([fm_output, dnn_output])
+    # 合并FM和DNN部分的输出
+    concat = Concatenate()([fm_output, x])
+    # 输出层
     output = Dense(1, activation='sigmoid')(concat)
 
+    # 构建模型
+    if learning_rate is None:  # 如果没有提供学习率，则使用默认的动态学习率
+        lr_schedule = ExponentialDecay(
+            initial_learning_rate=0.0001,
+            decay_steps=10000,
+            decay_rate=0.1,
+            staircase=True
+        )
+        optimizer = Adam(learning_rate=lr_schedule)
+    else:  # 如果提供了学习率，则使用指定的学习率
+        optimizer = Adam(learning_rate=learning_rate)
+
+    # 定义模型并编译
     model = Model(inputs=inputs, outputs=output)
-    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+    model.compile(
+        loss='binary_crossentropy',
+        optimizer=optimizer,
+        metrics=['accuracy']
+    )
     return model
+
+
+# DeepFM 模型自动调参
+def objective_deep_fm(trial,
+                      validation_mode='kfold',
+                      n_splits=5
+                      ):
+    """
+    Optuna试验的目标函数，用于优化DeepFM模型的超参数。
+
+    参数:
+    - trial: Optuna的试验对象。
+    - validation_mode: 'split' 或 'kfold'。
+    - n_splits: KFold的折数，默认5折。
+
+    返回:
+    - 平均F1分数，作为评估指标。
+    """
+
+    # 超参数空间定义
+    embed_dim = trial.suggest_categorical('embed_dim', [4, 8, 16, 32])
+    dropout_rate = trial.suggest_float('dropout_rate', 0.3, 0.6)
+    learning_rate = trial.suggest_float('learning_rate', 1e-4, 5e-3, log=True)
+    activation = trial.suggest_categorical('activation', ['relu', 'tanh'])
+    use_batch_norm = trial.suggest_categorical('use_batch_norm', [True, False])
+    dnn_units = trial.suggest_categorical("dnn_units", [
+        [128, 64],
+        [128, 64, 32],
+        [128, 64, 32, 16],
+        [64, 32],
+        [64, 32, 16],
+        [64, 32, 16, 8],
+        [32, 16],
+        [32, 16, 8],
+    ])
+
+    early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=0)
+
+    if validation_mode == 'split':
+        x_subtrain, x_val, y_subtrain, y_val = train_test_split(
+            x_train, y_train, test_size=0.1, shuffle=False
+        )
+
+        model = build_deep_fm(
+            input_dim=x_train.shape[1],
+            embed_dim=embed_dim,
+            dnn_units=dnn_units,
+            dropout_rate=dropout_rate,
+            activation=activation,
+            use_batch_norm=use_batch_norm,
+            learning_rate=learning_rate
+        )
+
+        model.fit(
+            x_subtrain, y_subtrain,
+            validation_data=(x_val, y_val),
+            epochs=30,
+            batch_size=32,
+            verbose=0,
+            callbacks=[early_stop]
+        )
+
+        y_val_pred = (model.predict(x_val) > 0.5).astype(int)
+        return f1_score(y_val, y_val_pred)
+
+    elif validation_mode == 'kfold':
+        kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+        f1_scores = []
+
+        for train_idx, val_idx in kf.split(x_train):
+            x_subtrain, x_val = x_train[train_idx], x_train[val_idx]
+            y_subtrain, y_val = y_train[train_idx], y_train[val_idx]
+
+            model = build_deep_fm(
+                input_dim=x_train.shape[1],
+                embed_dim=embed_dim,
+                dnn_units=dnn_units,
+                dropout_rate=dropout_rate,
+                activation=activation,
+                use_batch_norm=use_batch_norm,
+                learning_rate=learning_rate
+            )
+
+            model.fit(
+                x_subtrain, y_subtrain,
+                validation_data=(x_val, y_val),
+                epochs=30,
+                batch_size=32,
+                verbose=0,
+                callbacks=[early_stop]
+            )
+
+            y_val_pred = (model.predict(x_val) > 0.5).astype(int)
+            f1 = f1_score(y_val, y_val_pred)
+            f1_scores.append(f1)
+
+        return np.mean(f1_scores)
+
+    else:
+        raise ValueError("validation_mode must be either 'split' or 'kfold'")
 
 
 # Wide&Deep 模型
@@ -146,81 +316,8 @@ def build_wide_deep(
     )
     return model
 
-    # # 定义模型
-    # model = Model(inputs=inputs, outputs=output)
-    # # 编译模型，使用二元交叉熵损失函数和Adam优化器
-    # model.compile(loss='binary_crossentropy', optimizer=Adam(learning_rate=learning_rate), metrics=['accuracy'])
-    #
-    # return model
 
-
-# # Optuna试验的目标函数, 用于优化Wide&Deep模型的超参数
-# def objective_wide_deep(trial):
-#     """
-#     定义Wide&Deep模型的超参数优化目标函数。
-#
-#     参数:
-#     - trial: Optuna的试验对象，用于选择超参数。
-#
-#     返回:
-#     - 验证集上的F1分数，用于评估模型性能。
-#     """
-#
-#     # 超参数搜索空间定义
-#     dropout_rate = trial.suggest_float("dropout_rate", 0.3, 0.6)
-#     use_batch_norm = trial.suggest_categorical("use_batch_norm", [True, False])
-#     wide_activation = trial.suggest_categorical("wide_activation", ['linear', 'sigmoid'])
-#     activation = trial.suggest_categorical("activation", ['relu', 'tanh'])
-#     learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
-#     deep_units = trial.suggest_categorical("deep_units", [
-#         [128, 64],
-#         [128, 64, 32],
-#         [64, 32],
-#         [64, 32, 16],
-#         [64, 32, 16, 8],
-#         [32, 16],
-#         [32, 16, 8],
-#     ])
-#
-#     # 构建模型
-#     model = build_wide_deep(
-#         input_dim=x_train.shape[1],
-#         deep_units=deep_units,
-#         dropout_rate=dropout_rate,
-#         use_batch_norm=use_batch_norm,
-#         wide_activation=wide_activation,
-#         activation=activation,
-#         learning_rate=learning_rate
-#     )
-#
-#     # 早停回调（防止过拟合）
-#     early_stop = EarlyStopping(
-#         monitor='val_loss',  # 监控的指标，此处为验证集的损失值（val_loss），用于判断模型是否停止训练。
-#         patience=6,          # 容忍轮数，当验证集损失值在连续3个epoch内没有改善时，训练将提前终止。
-#         restore_best_weights=True,  # 当训练停止时，恢复到验证集表现最好的模型权重。
-#         verbose=0            # 日志显示模式，0表示不输出日志信息。
-#     )
-#
-#     # 划分训练/验证集（固定不打乱）
-#     x_subtrain, x_val, y_subtrain, y_val = train_test_split(
-#         x_train, y_train, test_size=0.1, shuffle=False
-#     )
-#
-#     # 训练模型
-#     model.fit(
-#         x_subtrain, y_subtrain,
-#         validation_data=(x_val, y_val),
-#         epochs=30,
-#         batch_size=32,
-#         verbose=0,
-#         callbacks=[early_stop]
-#     )
-#
-#     # 验证集上评估指标
-#     y_val_pred = (model.predict(x_val) > 0.5).astype(int)
-#     return f1_score(y_val, y_val_pred)
-
-
+# Optuna试验的目标函数, 用于优化Wide&Deep模型的超参数
 def objective_wide_deep(trial, n_splits=5):
     """
     使用 K 折交叉验证评估 Wide&Deep 模型的性能（f1-score）。
@@ -381,67 +478,7 @@ def build_dcn(input_dim,
     return model
 
 
-# # Optuna试验的目标函数, 用于优化DCN模型的超参数
-# def objective_dcn(trial):
-#     """
-#     Optuna试验的目标函数，用于优化DCN模型的超参数。
-#
-#     参数:
-#     - trial: Optuna的试验对象，用于选择最佳的超参数组合。
-#
-#     返回:
-#     - 返回模型在测试集上的F1分数，用于评估模型的性能。
-#     """
-#
-#     ''' 定义模型的超参数搜索空间 '''
-#     # 建议交叉层的数量，用于控制模型的复杂度
-#     cross_layers = trial.suggest_int('cross_layers', 2, 6)
-#
-#     # 建议dropout率，用于防止过拟合
-#     dropout_rate = trial.suggest_float('dropout_rate', 0.2, 0.7)
-#
-#     # 建议学习率，采用对数刻度以探索广泛的可能性
-#     learning_rate = trial.suggest_float('learning_rate', 0.00001, 0.001, log=True)
-#
-#     # 建议是否使用批归一化，以提高模型的泛化能力
-#     use_batch_norm = trial.suggest_categorical('use_batch_norm', [True, False])
-#
-#     # 建议深度网络的单元配置，选择不同的网络结构以寻找最优解
-#     deep_units = trial.suggest_categorical('deep_units', [
-#         [128, 64],
-#         [128, 64, 32],
-#         [128, 64, 32, 16],
-#         [64, 32],
-#         [64, 32, 16],
-#         [64, 32, 16, 8],
-#         [32, 16],
-#         [32, 16, 8],
-#     ])
-#
-#     ''' 构建具有选定超参数的DCN模型 '''
-#     model = build_dcn(
-#         input_dim=x_train.shape[1],
-#         cross_layers=cross_layers,
-#         deep_units=deep_units,
-#         dropout_rate=dropout_rate,
-#         learning_rate=learning_rate,
-#         use_batch_norm=use_batch_norm
-#     )
-#
-#     # 训练模型
-#     model.fit(
-#         x_train, y_train,  # 输入训练数据和标签
-#         epochs=15,  # 设置训练的轮数为15轮
-#         batch_size=32,  # 指定每个批次的大小为32个样本
-#         validation_split=0.1,  # 将10%的训练数据用作验证数据
-#         verbose=0  # 设置训练过程不输出日志信息
-#     )
-#
-#     ''' 使用F1分数评估模型性能 '''
-#     y_pred = (model.predict(x_test) > 0.5).astype(int)
-#     return f1_score(y_test, y_pred)
-
-
+# Optuna试验的目标函数, 用于优化DCN模型的超参数
 def objective_dcn(trial, validation_mode='kfold', n_splits=5):
     """
     Optuna试验的目标函数，用于优化DCN模型的超参数。
@@ -596,9 +633,37 @@ if __name__ == '__main__':
     ''' 1) DeepFM 模型 '''
     print(" --- " * 20)
     print("Training DeepFM...")
-    embed_dim = 8
-    deep_fm_model = build_deep_fm(input_dim, embed_dim)
-    train_and_evaluate(deep_fm_model, x_train_scaled, y_train_values, x_test_scaled, y_test_values)
+    # # 使用Optuna进行超参数优化
+    # study = optuna.create_study(direction='maximize')
+    # study.optimize(
+    #     lambda trial: objective_deep_fm(trial, validation_mode='kfold'),
+    #     n_trials=30
+    # )
+    # print("Best trial:", study.best_trial.params)  # 输出最优超参数
+    # best_trial = study.best_trial.params
+    best_trial = {'embed_dim': 32, 'dropout_rate': 0.4152850750188673, 'learning_rate': 0.001492202547205302, 'activation': 'relu', 'use_batch_norm': False, 'dnn_units': [64, 32, 16, 8]}
+
+    # 使用最优超参数训练最终模型
+    deep_fm_model = build_deep_fm(
+        input_dim,
+        embed_dim=best_trial['embed_dim'],
+        dnn_units=best_trial['dnn_units'],
+        dropout_rate=best_trial['dropout_rate'],
+        activation=best_trial['activation'],
+        use_batch_norm=best_trial['use_batch_norm'],
+        learning_rate=best_trial['learning_rate'],
+    )
+
+    # 训练并评估DCN模型
+    train_and_evaluate(
+        deep_fm_model,  # 要训练和评估的DCN模型，由 `build_dcn` 函数构建，使用了 Optuna 优化后的超参数。
+        x_train_scaled,  # 训练数据特征，经过预处理（如归一化）后的特征矩阵，确保输入数据具有相同的尺度。
+        y_train_values,  # 训练数据标签，对应于训练特征的真实值，用于监督学习过程。
+        x_test_scaled,  # 测试数据特征，经过预处理后的特征矩阵，用于评估模型在未见数据上的表现。
+        y_test_values,  # 测试数据标签，对应于测试特征的真实值，用于计算模型的预测性能指标。
+        epochs=10,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
+        batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
+    )
 
     # ''' 2) Wide & Deep 模型 '''
     # print(" --- " * 20)
@@ -609,27 +674,28 @@ if __name__ == '__main__':
     #                n_trials=150  # 设置试验次数
     #                )
     # print("Best trial:", study.best_trial.params)  # 输出最优超参数
-    # # Best trial: {'dropout_rate': 0.3611156413233256, 'use_batch_norm': True, 'wide_activation': 'sigmoid', 'activation': 'relu', 'learning_rate': 0.0015255087830830473, 'deep_units': [128, 64]}
-    #
-    # # 使用最优超参数训练最终模型
-    # wd_model = build_wide_deep(
-    #     input_dim=input_dim,  # 输入特征的维度，即模型输入的大小。
-    #     deep_units=study.best_trial.params['deep_units'],
-    #     dropout_rate=study.best_trial.params['dropout_rate'],
-    #     use_batch_norm=study.best_trial.params['use_batch_norm'],
-    #     wide_activation=study.best_trial.params['wide_activation'],
-    #     activation=study.best_trial.params['activation'],
-    #     learning_rate=study.best_trial.params['learning_rate'],
-    # )
-    # # 训练并评估Wide&Deep模型
-    # train_and_evaluate(wd_model,  # 要训练和评估的Wide&Deep模型，由 `build_wide_deep` 函数构建，使用了 Optuna 优化后的超参数。
-    #                    x_train_scaled,  # 训练数据特征，经过预处理（如归一化）后的特征矩阵，确保输入数据具有相同的尺度。
-    #                    y_train_values,  # 训练数据标签，对应于训练特征的真实值，用于监督学习过程。
-    #                    x_test_scaled,  # 测试数据特征，经过预处理后的特征矩阵，用于评估模型在未见数据上的表现。
-    #                    y_test_values,  # 测试数据标签，对应于测试特征的真实值，用于计算模型的预测性能指标。
-    #                    epochs=10,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
-    #                    batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
-    #                    )
+    # best_trial = study.best_trial.params
+    best_trial = {'dropout_rate': 0.3611156413233256, 'use_batch_norm': True, 'wide_activation': 'sigmoid', 'activation': 'relu', 'learning_rate': 0.0015255087830830473, 'deep_units': [128, 64]}
+
+    # 使用最优超参数训练最终模型
+    wd_model = build_wide_deep(
+        input_dim=input_dim,  # 输入特征的维度，即模型输入的大小。
+        deep_units=best_trial['deep_units'],
+        dropout_rate=best_trial['dropout_rate'],
+        use_batch_norm=best_trial['use_batch_norm'],
+        wide_activation=best_trial['wide_activation'],
+        activation=best_trial['activation'],
+        learning_rate=best_trial['learning_rate'],
+    )
+    # 训练并评估Wide&Deep模型
+    train_and_evaluate(wd_model,  # 要训练和评估的Wide&Deep模型，由 `build_wide_deep` 函数构建，使用了 Optuna 优化后的超参数。
+                       x_train_scaled,  # 训练数据特征，经过预处理（如归一化）后的特征矩阵，确保输入数据具有相同的尺度。
+                       y_train_values,  # 训练数据标签，对应于训练特征的真实值，用于监督学习过程。
+                       x_test_scaled,  # 测试数据特征，经过预处理后的特征矩阵，用于评估模型在未见数据上的表现。
+                       y_test_values,  # 测试数据标签，对应于测试特征的真实值，用于计算模型的预测性能指标。
+                       epochs=10,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
+                       batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
+                       )
 
     # ''' 3) NCD 模型 '''
     # print(" --- " * 20)
@@ -641,25 +707,26 @@ if __name__ == '__main__':
     #     n_trials=30
     # )
     # print("Best trial:", study.best_trial.params)  # 输出最优超参数
-    # # Best trial: {'cross_layers': 2, 'dropout_rate': 0.2043031648581299, 'learning_rate': 0.0009367655839776305, 'use_batch_norm': False, 'deep_units': [128, 64]}
-    #
-    # # 使用最优超参数训练最终模型
-    # dcn_model = build_dcn(
-    #     input_dim=input_dim,  # 输入特征的维度，即模型输入的大小。
-    #     cross_layers=study.best_trial.params['cross_layers'],  # 交叉层的数量，控制模型中显式建模特征交叉组合的层数。
-    #     deep_units=study.best_trial.params['deep_units'],  # 深度部分每层的单元数列表，定义深度网络的结构。
-    #     dropout_rate=study.best_trial.params['dropout_rate'],  # Dropout比率，用于防止过拟合，随机丢弃神经元的比例。
-    #     learning_rate=study.best_trial.params['learning_rate'],  # 学习率，控制优化器更新模型参数的速度。
-    #     use_batch_norm=study.best_trial.params['use_batch_norm'],  # 是否使用批量归一化（Batch Normalization），用于加速训练和提高模型稳定性。
-    # )
-    #
-    # # 训练并评估DCN模型
-    # train_and_evaluate(
-    #     dcn_model,  # 要训练和评估的DCN模型，由 `build_dcn` 函数构建，使用了 Optuna 优化后的超参数。
-    #     x_train_scaled,  # 训练数据特征，经过预处理（如归一化）后的特征矩阵，确保输入数据具有相同的尺度。
-    #     y_train_values,  # 训练数据标签，对应于训练特征的真实值，用于监督学习过程。
-    #     x_test_scaled,  # 测试数据特征，经过预处理后的特征矩阵，用于评估模型在未见数据上的表现。
-    #     y_test_values,  # 测试数据标签，对应于测试特征的真实值，用于计算模型的预测性能指标。
-    #     epochs=10,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
-    #     batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
-    # )
+    # best_trial = study.best_trial.params
+    best_trial = {'cross_layers': 2, 'dropout_rate': 0.2043031648581299, 'learning_rate': 0.0009367655839776305, 'use_batch_norm': False, 'deep_units': [128, 64]}
+
+    # 使用最优超参数训练最终模型
+    dcn_model = build_dcn(
+        input_dim=input_dim,  # 输入特征的维度，即模型输入的大小。
+        cross_layers=best_trial['cross_layers'],  # 交叉层的数量，控制模型中显式建模特征交叉组合的层数。
+        deep_units=best_trial['deep_units'],  # 深度部分每层的单元数列表，定义深度网络的结构。
+        dropout_rate=best_trial['dropout_rate'],  # Dropout比率，用于防止过拟合，随机丢弃神经元的比例。
+        learning_rate=best_trial['learning_rate'],  # 学习率，控制优化器更新模型参数的速度。
+        use_batch_norm=best_trial['use_batch_norm'],  # 是否使用批量归一化（Batch Normalization），用于加速训练和提高模型稳定性。
+    )
+
+    # 训练并评估DCN模型
+    train_and_evaluate(
+        dcn_model,  # 要训练和评估的DCN模型，由 `build_dcn` 函数构建，使用了 Optuna 优化后的超参数。
+        x_train_scaled,  # 训练数据特征，经过预处理（如归一化）后的特征矩阵，确保输入数据具有相同的尺度。
+        y_train_values,  # 训练数据标签，对应于训练特征的真实值，用于监督学习过程。
+        x_test_scaled,  # 测试数据特征，经过预处理后的特征矩阵，用于评估模型在未见数据上的表现。
+        y_test_values,  # 测试数据标签，对应于测试特征的真实值，用于计算模型的预测性能指标。
+        epochs=10,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
+        batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
+    )
