@@ -6,6 +6,7 @@
 @Descriptions: 
 """
 import os
+import joblib
 import warnings
 import numpy as np
 import pandas as pd
@@ -98,7 +99,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       standardize_method='both',
                       basic_data_as_metric=False,
                       return_threshold=0.0,
-                      dim_reduction=False,
+                      dim_reduction=False, dim_reduction_limit=0.9,
                       n_components=None
                       ):
     """
@@ -118,6 +119,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param return_threshold: float, 标签生成方法，默认为0, 表示使用未来收益率大于0的样本标记为1，否则为0;
                         如果写0.001, 则表示使用未来收益率大于+0.1%的样本标记为2，在-0.1%~0.1%之间的样本标记为1，否则为0;
     :param dim_reduction: bool, 是否做PCA数据降维，默认为 False
+    :param dim_reduction_limit: float, PCA数据降维保留的解释方差比率，默认为0.9
     :param n_components: int, PCA数据降维到多少数量
 
     :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
@@ -129,7 +131,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
     ''' 价格数据预处理 '''
     # 获取 收盘价 数据
     close_price = get_fund_close_price(the_fund_code, folder_path)
-    # 滚动计算未来5天的对数收益率
+    # 滚动计算未来N天的对数收益率
     close_price = cal_future_log_return(close_price, n_days=n_days)
     # 生成目标标签: 未来收益大于0的样本标记为1，否则为0
     if return_threshold == 0:
@@ -152,7 +154,7 @@ def main_data_prepare(the_fund_code='159919.SZ',
         the_fund_code,  # 基金代码，用于指定需要处理的基金（如'510050.SH'）。
         metrics_folder,  # 指标数据文件夹路径，包含用于训练模型的特征数据。
         folder_path,  # 数据文件夹路径，通常包含基金的价格数据和其他相关信息。
-        basic_data_as_metric  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
+        basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
     )
     # 预处理指标数据
     metrics_data = preprocess_data(
@@ -179,11 +181,11 @@ def main_data_prepare(the_fund_code='159919.SZ',
         x_test_scaled = scaler.transform(x_test)
 
         if n_components is None:
-            limit = 0.99
+            # dim_reduction_limit = 0.99
             pca_full = PCA().fit(x_train_scaled)
             explained_var_ratio_cum_sum = np.cumsum(pca_full.explained_variance_ratio_)
-            n_components = np.argmax(explained_var_ratio_cum_sum >= limit) + 1
-            print(f"[INFO] PCA降维到 {n_components} 维, 解释方差比率达到{limit * 100}%")
+            n_components = np.argmax(explained_var_ratio_cum_sum >= dim_reduction_limit) + 1
+            print(f"[INFO] PCA降维到 {n_components} 维, 解释方差比率达到{dim_reduction_limit * 100}%")
 
         # 使用 PCA 降维
         pca = PCA(n_components=n_components)
@@ -424,7 +426,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                threshold=None, basic_data_as_metric=False,
                                import_feature_only=False, top_n=200,
                                return_threshold=0.0, parameter_dict=None,
-                               dim_reduction=False, n_components=None,
+                               dim_reduction=False, dim_reduction_limit=0.9, n_components=None,
                                ):
     """
     使用随机森林模型预测基金走势。
@@ -449,6 +451,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param return_threshold: float, 标签生成方法，默认为 0, 表示使用未来收益率大于 0 的样本标记为 1，否则为 0;
     :param parameter_dict: dict, 最优参数字典，如果为 None，则自动调参。
     :param dim_reduction: bool, 是否做PCA降维
+    :param dim_reduction_limit: float, 做PCA降维时保留的解释方差比率，默认为 0.9。
     :param n_components: int, PCA维度
 
     :return: 训练完成的随机森林模型。
@@ -471,6 +474,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         basic_data_as_metric=basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
         return_threshold=return_threshold,  # 标签生成方法
         dim_reduction=dim_reduction,  # 是否PCA
+        dim_reduction_limit=dim_reduction_limit,  # PCA数据降维保留的解释方差比率
         n_components=n_components,  # PCA维度
     )
 
@@ -528,16 +532,16 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
-    for d in [10]:
+    for d in [1]:
         # 调用预测主函数 predict_main_random_forest，用于执行基金数据预处理、模型训练和测试等任务
-        predict_main_random_forest(
+        final_model = predict_main_random_forest(
             the_fund_code='510050.SH',  # 指定基金代码，此处为 '510050.SH'
             n_days=d,  # 预测未来收益的天数，变量 d 在循环中定义，表示不同的预测周期
             folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
             metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'
             train_start=None,  # 训练集开始日期，如果为 None，则从数据的最早日期开始
-            train_end='2024-11-30',  # 训练集结束日期，指定为 '2024-11-30'
-            test_start='2024-12-01',  # 测试集开始日期，指定为 '2024-12-01'
+            train_end='2024-03-31',  # 训练集结束日期，指定为 '2024-11-30'
+            test_start='2024-04-01',  # 测试集开始日期，指定为 '2024-12-01'
             test_end='2025-04-30',  # 测试集结束日期，指定为 '2025-04-30'
             nan_method='drop',  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'
             standardize_method='zscore',  # 指标标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
@@ -550,5 +554,9 @@ if __name__ == '__main__':
             return_threshold=0.0,  # 标签生成方法，未来收益率大于 0.01 的样本标记为 1，否则为 0
             parameter_dict=None,  # 最优参数字典，如果为 None，则自动调参
             dim_reduction=True,  # 是否PCA
+            dim_reduction_limit=0.90,  # PCA降维的方差解释比例, 默认为0.9
             n_components=None,  # PCA维度, 写None表示自动选择, 保留90%方差解释比率
         )
+        # 保存模型
+        filename = f'random_forest_model_{d}.joblib'
+        joblib.dump(final_model, filename)
