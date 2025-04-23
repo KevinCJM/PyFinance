@@ -604,7 +604,7 @@ if __name__ == '__main__':
 
     # 数据读取，包括训练集和测试集，以及 原始指标数据
     x_train, y_train, x_test, y_test, metrics_data = main_data_prepare(
-        the_fund_code='510050.SH',  # 指定基金代码，此处为 '510050.SH'
+        the_fund_code='518880.SH',  # 指定基金代码，此处为 '510050.SH'
         n_days=10,
         folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
         metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'
@@ -637,7 +637,7 @@ if __name__ == '__main__':
     study = optuna.create_study(direction='maximize')
     study.optimize(
         lambda trial: objective_deep_fm(trial, validation_mode='kfold'),
-        n_trials=15
+        n_trials=10
     )
     print("Best trial:", study.best_trial.params)  # 输出最优超参数
     best_trial = study.best_trial.params
@@ -665,13 +665,13 @@ if __name__ == '__main__':
         batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
     )
 
-    # ''' 2) Wide & Deep 模型 '''
+    ''' 2) Wide & Deep 模型 '''
     print(" --- " * 20)
     print("\nTraining Wide & Deep...")
     # 使用Optuna进行超参数优化
     study = optuna.create_study(direction='maximize')
     study.optimize(objective_wide_deep,
-                   n_trials=15  # 设置试验次数
+                   n_trials=10  # 设置试验次数
                    )
     print("Best trial:", study.best_trial.params)  # 输出最优超参数
     best_trial = study.best_trial.params
@@ -704,7 +704,7 @@ if __name__ == '__main__':
     study = optuna.create_study(direction='maximize')
     study.optimize(
         lambda trial: objective_dcn(trial, validation_mode='kfold'),
-        n_trials=15
+        n_trials=10
     )
     print("Best trial:", study.best_trial.params)  # 输出最优超参数
     best_trial = study.best_trial.params
