@@ -11,7 +11,7 @@ from GetData.tushare_get_ETF_data import get_etf_daily_data_all, get_etf_daily_d
 from GetData.akshare_get_INDEX_data import akshare_index_main
 
 '''
-本文件有两个功能:
+本文件有以下功能:
 1) 从 Tushare 获取 ETF 日频数据 (自动增量/全量判断取数)
     具体数据获取的代码位于 GetData/tushare_get_ETF_data.py 文件中.
     目前仅仅支持 Tushare, 使用前需要在 set_tushare.py 中设置你的 Tushare token.
@@ -23,6 +23,11 @@ from GetData.akshare_get_INDEX_data import akshare_index_main
     具体预处理的逻辑代码位于 GetData/data_prepare.py 文件中.
     预处理后的数据将以 dataframe 格式保存到 Data 文件夹下. 名称为 wide_***_df.parquet.
     预处理后的数据都是索引为日期, 字段为ETF代码的宽表数据帧.
+3) 从AkShare 获取各类指数数据
+    具体数据获取的代码位于 GetData/akshare_get_INDEX_data.py 文件中.
+    目前仅仅支持 AkShare, AkShare 为免费接口, 无需设置 token.
+    获取的数据将以 dataframe 格式保存到 Data/Index 文件夹下. 名称为 global_xxx_daily.parquet 或 china_xxx_daily.parquet.
+    global_xxx_daily.parquet 和 china_xxx_daily.parquet 的字段并不统一
 '''
 
 daily_etf_file = "./Data/etf_daily.parquet"  # ETF日频数据文件名
