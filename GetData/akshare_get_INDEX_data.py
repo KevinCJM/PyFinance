@@ -383,74 +383,142 @@ def get_china_interbank_interest_rate_data(save_path='../Data/Index', parquet_na
     return final_df
 
 
-def get_china_wci_data(save_path='../Data/Index', parquet_name='china_wci_daily.parquet', fill_method = 'linear'):
+# 获取中国PMI相关数据并保存为Parquet文件
+def get_china_pmi_data(save_path='../Data/Index', parquet_name='china_pmi_daily.parquet', fill_method='ffill'):
     """
+    获取中国PMI相关数据并保存为Parquet文件。
 
-    :param save_path:
-    :param parquet_name:
-    :param fill_method: ffill', 'time', 'linear'
-    :return:
+    :param save_path: 数据保存路径，默认为'../Data/Index'
+    :param parquet_name: 保存的Parquet文件名，默认为'china_pmi_daily.parquet'
+    :param fill_method: 数据填充方法，默认为 'ffill'，可选值包括 'ffill', 'time', 'linear'
+    :return: 无
     """
-    ll = {
+    # 定义PMI数据字典，键为数据名称，值为对应的API调用函数
+    pmi_dict = {
         '集装箱指数WCI': ak.drewry_wci_index,
-        '制造业PMI':
+        '综合PMI': ak.index_pmi_com_cx,
+        '制造业PMI': ak.index_pmi_man_cx,
+        '服务业PMI': ak.index_pmi_ser_cx,
+        '数字经济指数': ak.index_dei_cx,
+        '产业指数': ak.index_ii_cx,
+        '溢出指数': ak.index_si_cx,
+        '融合指数': ak.index_fi_cx,
+        '基础指数': ak.index_bi_cx,
+        '中国新经济指数': ak.index_nei_cx,
+        '劳动力投入指数': ak.index_li_cx,
+        '资本投入指数': ak.index_ci_cx,
+        '科技投入指数': ak.index_ti_cx,
+        '新经济行业入职平均工资水平': ak.index_neaw_cx,
+        '新经济入职工资溢价水平': ak.index_awpr_cx,
+        '大宗商品指数': ak.index_cci_cx,
+        '高质量因子': ak.index_qli_cx,
+        'AI策略指数': ak.index_ai_cx,
+        '基石经济指数': ak.index_bei_cx,
+        '新动能指数': ak.index_neei_cx,
     }
-    print("开始获取集装箱指数数据...")
+    # 打印开始获取数据的消息
+    print("开始获取PMI相关数据...")
+    # 初始化最终数据列表
     final_df = list()
+    # 设置最大重试次数为1次
     max_retries = 1
-    # 尝试获取数据，允许失败5次
-    for attempt in range(max_retries):
-        try:
-            # 调用函数获取利率数据
-            sub_df = ak.drewry_wci_index().copy()
-            # 将日期列转换为日期格式
-            sub_df['date'] = pd.to_datetime(sub_df['date'])
-            sub_df['ts_code'] = 'wci'
-            # 获取当前日期（以“天”为单位截断）
-            today = pd.Timestamp.today().normalize()
-            # 如果 DataFrame 中没有今天的数据，添加一行空值
-            if today not in sub_df['date'].values:
-                sub_df = pd.concat([
-                    sub_df,
-                    pd.DataFrame([{
-                        'ts_code': 'wci',
-                        'date': today,
-                        'wci': pd.NA
-                    }])
-                ], ignore_index=True)
-            # 仅保留商品、日期和今值列
-            sub_df = sub_df[['ts_code', 'date', 'wci']]
-            sub_df.rename(columns={'wci': 'close', 'date': 'trade_date'}, inplace=True)
-            # 去除重复的行，保留最后一次出现的行
-            sub_df = sub_df.drop_duplicates(subset=['trade_date', 'ts_code'], keep='last')
-            sub_df.dropna(subset=['trade_date'], inplace=True)
-            # 将数据透视，以便每个商品的今值成为列
-            sub_df = sub_df.pivot(index='trade_date', columns='ts_code', values='close')
-            # 按天重采样数据，并使用前向填充方法填充缺失值
-            sub_df = sub_df.resample('D').asfreq()
-            # 数据填充
-            sub_df = sub_df.interpolate(method=fill_method)
-            # 重塑数据格式，将透视表变回长格式
-            sub_df = sub_df.reset_index().melt(id_vars='trade_date', var_name='ts_code', value_name='close')
-            # 将处理后的数据添加到最终的数据列表中
-            final_df.append(sub_df)
-            # 如果成功获取数据，跳出循环
-            break
-        except Exception as e:
-            # 如果发生异常且重试次数未用尽，则打印失败消息并重试
-            if attempt < max_retries - 1:
-                print(f"\t\t获取 wci 数据失败，正在重试...")
-                time.sleep(1)  # 暂停1秒
-            else:
-                # 如果重试次数用尽，打印最终失败消息
-                print(f"\t\t获取 wci 数据失败:{e}，已重试{max_retries}次，不再重试。")
-                print(traceback.format_exc())
 
+    # 遍历PMI数据字典，获取每个数据集
+    for name, func in pmi_dict.items():
+        # 打印当前获取的数据名称
+        print(f"\t获取{name}数据...")
+        # 尝试获取数据，允许失败5次
+        for attempt in range(max_retries):
+            try:
+                # 调用函数获取利率数据
+                sub_df = func().copy()
+
+                # 统一日期字段名
+                if '日期' in sub_df.columns:
+                    sub_df.rename(columns={'日期': 'trade_date'}, inplace=True)
+                elif 'date' in sub_df.columns:
+                    sub_df.rename(columns={'date': 'trade_date'}, inplace=True)
+
+                # 统一值字段名
+                if 'wci' in sub_df.columns:
+                    sub_df.rename(columns={'wci': 'close'}, inplace=True)
+                elif ('综合PMI' or '制造业PMI' or '服务业PMI' or '数字经济指数' or '产业指数' or '溢出指数' or '融合指数'
+                      or '基础指数' or '中国新经济指数' or '劳动力投入指数' or '资本投入指数' or '科技投入指数' or '大宗商品指数'
+                      or '新经济行业入职平均工资水平' or '新经济入职工资溢价水平' or '高质量因子' or 'AI策略指数' or '基石经济指数'
+                      or '新动能指数' in sub_df.columns):
+                    sub_df.rename(columns={'综合PMI': 'close'}, inplace=True)
+                    sub_df.rename(columns={'制造业PMI': 'close'}, inplace=True)
+                    sub_df.rename(columns={'服务业PMI': 'close'}, inplace=True)
+                    sub_df.rename(columns={'数字经济指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'产业指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'溢出指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'融合指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'基础指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'中国新经济指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'劳动力投入指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'资本投入指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'科技投入指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'新经济行业入职平均工资水平': 'close'}, inplace=True)
+                    sub_df.rename(columns={'新经济入职工资溢价水平': 'close'}, inplace=True)
+                    sub_df.rename(columns={'大宗商品指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'高质量因子指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'AI策略指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'基石经济指数': 'close'}, inplace=True)
+                    sub_df.rename(columns={'新动能指数': 'close'}, inplace=True)
+
+                # 将日期列转换为日期格式
+                sub_df['trade_date'] = pd.to_datetime(sub_df['trade_date'])
+                # 添加数据名称列
+                sub_df['ts_code'] = name
+                # 获取当前日期（以“天”为单位截断）
+                today = pd.Timestamp.today().normalize()
+                # 如果 DataFrame 中没有今天的数据，添加一行空值
+                if today not in sub_df['trade_date'].values:
+                    sub_df = pd.concat([
+                        sub_df,
+                        pd.DataFrame([{
+                            'ts_code': name,
+                            'trade_date': today,
+                            'close': pd.NA
+                        }])
+                    ], ignore_index=True)
+                # 仅保留商品、日期和今值列
+                sub_df = sub_df[['ts_code', 'trade_date', 'close']]
+                # 去除重复的行，保留最后一次出现的行
+                sub_df = sub_df.drop_duplicates(subset=['trade_date', 'ts_code'], keep='last')
+                sub_df.dropna(subset=['trade_date'], inplace=True)
+                # 将数据透视，以便每个商品的今值成为列
+                sub_df = sub_df.pivot(index='trade_date', columns='ts_code', values='close')
+                # 按天重采样数据，并使用前向填充方法填充缺失值
+                sub_df = sub_df.resample('D').asfreq()
+                # 数据填充
+                sub_df = sub_df.interpolate(method=fill_method)
+                # 重塑数据格式，将透视表变回长格式
+                sub_df = sub_df.reset_index().melt(id_vars='trade_date', var_name='ts_code', value_name='close')
+                # 将处理后的数据添加到最终的数据列表中
+                final_df.append(sub_df)
+                # 如果成功获取数据，跳出循环
+                break
+            except Exception as e:
+                # 如果发生异常且重试次数未用尽，则打印失败消息并重试
+                if attempt < max_retries - 1:
+                    print(f"\t\t获取 wci 数据失败，正在重试...")
+                    time.sleep(1)  # 暂停1秒
+                else:
+                    # 如果重试次数用尽，打印最终失败消息
+                    print(f"\t\t获取 wci 数据失败:{e}，已重试{max_retries}次，不再重试。")
+                    print(traceback.format_exc())
+
+    # 合并所有数据集
     final_df = pd.concat(final_df, ignore_index=True)
+    # 打印合并后的数据
     print(final_df)
+    # 构建文件路径
     file_path = os.path.join(save_path, parquet_name)
+    # 保存数据为Parquet文件
     final_df.to_parquet(file_path, index=False)
-    print('集装箱指数, 保存路径:', file_path)
+    # 打印数据保存路径
+    print('PMI指数相关数据获取完毕, 保存路径:', file_path)
 
 
 def main():
@@ -558,5 +626,7 @@ def main():
 
 
 if __name__ == '__main__':
-    index_pmi_man_cx_df = ak.index_pmi_man_cx()
-    print(index_pmi_man_cx_df)
+    dd = get_china_pmi_data()
+    print(dd)
+    # index_ii_cx_df = ak.index_ii_cx()
+    # print(index_ii_cx_df)
