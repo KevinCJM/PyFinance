@@ -10,3 +10,12 @@ __pycache__/
 
 # 忽略所有 parquet 数据文件
 *.parquet
+
+# 忽略所有 joblib 文件
+*.joblib
+
+# 忽略所有 pickle 文件
+*.pkl
+
+# 忽略所有 CSV 文件
+*.csv
