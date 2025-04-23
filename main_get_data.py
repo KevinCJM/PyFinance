@@ -8,6 +8,7 @@
 import os
 from GetData.data_prepare import data_prepare
 from GetData.tushare_get_ETF_data import get_etf_daily_data_all, get_etf_daily_data_increment
+from GetData.akshare_get_INDEX_data import akshare_index_main
 
 '''
 本文件有两个功能:
@@ -26,6 +27,7 @@ from GetData.tushare_get_ETF_data import get_etf_daily_data_all, get_etf_daily_d
 
 daily_etf_file = "./Data/etf_daily.parquet"  # ETF日频数据文件名
 wild_df_save_path = "./Data/"  # 预处理后的一系列宽表数据帧存放文件夹
+index_df_save_path = "./Data/Index"  # 指数数据存放文件夹
 
 # 判断 daily_etf_file 文件是否存在, 若不存在则全量取数
 if not os.path.exists(daily_etf_file):
@@ -47,3 +49,6 @@ else:
                  read_file=daily_etf_file,
                  save_path=wild_df_save_path
                  )
+
+# 从AkShare获取各类指数数据
+akshare_index_main('index_df_save_path')

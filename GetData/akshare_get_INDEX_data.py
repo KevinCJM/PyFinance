@@ -522,7 +522,7 @@ def get_china_pmi_data(save_path='../Data/Index', parquet_name='china_pmi_daily.
     return final_df
 
 
-# 获取国证指数数据并保存为Parquet文件
+# 获取中国国证指数数据并保存为Parquet文件
 def get_china_gzindex_data(save_path='../Data/Index', parquet_name='china_gzindex_daily.parquet'):
     """
     获取国证指数数据并保存为Parquet文件。
@@ -687,7 +687,7 @@ def get_china_gzindex_data(save_path='../Data/Index', parquet_name='china_gzinde
     return final_df
 
 
-def main():
+def akshare_index_main(save_path='../Data/Index'):
     # 全球指数字典
     index_dict = {'MXX': '墨西哥BOLSA',
                   'JKSE': '印尼雅加达综合',
@@ -743,8 +743,8 @@ def main():
                   'NDX': '纳斯达克',
                   'OMXC20': 'OMX哥本哈根20'
                   }
-    df = get_global_index_data(index_dict, ak.index_global_hist_em,
-                               '../Data/Index', 'global_index_daily.parquet')
+    get_global_index_data(index_dict, ak.index_global_hist_em,
+                          save_path, 'global_index_daily.parquet')
     # 人民币对全球其他货币汇率字典
     currency_map = {'100日元兑离岸人民币': 'JPYCNH', '纽元人民币中间价': 'NZDCNYC', '100日元人民币中间价': 'JPYCNYC',
                     '欧元人民币中间价': 'EURCNYC', '英镑人民币中间价': 'GBPCNYC', '瑞士法郎人民币中间价': 'CHFCNYC',
@@ -755,8 +755,8 @@ def main():
                     '美元人民币中间价': 'USDCNYC', '港币人民币中间价': 'HKDCNYC', '人民币阿联酋迪拉姆中间价': 'CNYAEDC',
                     '澳元兑离岸人民币': 'AUDCNH', '人民币沙特里亚尔中间价': 'CNYSARC', '离岸人民币兑瑞士法郎': 'CNHCHF'
                     }
-    df = get_global_index_data(currency_map, ak.forex_hist_em,
-                               '../Data/Index', 'global_currency_daily.parquet')
+    get_global_index_data(currency_map, ak.forex_hist_em,
+                          save_path, 'global_currency_daily.parquet')
 
     # 全球贵金属指数字典
     metal_code_dict = {
@@ -778,8 +778,8 @@ def main():
         "纽约金NYAuTN06": "NYAuTN06",
         "纽约金NYAuTN12": "NYAuTN12"
     }
-    df = get_global_index_data(metal_code_dict, ak.spot_hist_sge,
-                               '../Data/Index', 'global_metal_daily.parquet')
+    get_global_index_data(metal_code_dict, ak.spot_hist_sge,
+                          save_path, 'global_metal_daily.parquet')
 
     # 全球商品现货价格指数
     spot_goods_dict = {
@@ -787,8 +787,23 @@ def main():
         "钢坯价格指数": "GP",
         "澳大利亚粉矿价格": "PB",
     }
-    df = get_global_index_data(spot_goods_dict, ak.spot_goods,
-                               '../Data/Index', 'global_goods_daily.parquet')
+    get_global_index_data(spot_goods_dict, ak.spot_goods,
+                          save_path, 'global_goods_daily.parquet')
+
+    # 全球利率数据
+    get_global_interest_rate_data(save_path, 'global_interest_daily.parquet')
+
+    # 获取中国VIX数据
+    get_china_vix_data(save_path, 'china_vix_daily.parquet')
+
+    # 获取中国银行间同业拆借利率数据
+    get_china_interbank_interest_rate_data(save_path, 'china_interbank_daily.parquet')
+
+    # 获取中国PMI数据
+    get_china_pmi_data(save_path, 'china_pmi_daily.parquet')
+
+    # 获取中国国证指数数据
+    get_china_gzindex_data(save_path, 'china_gzindex_daily.parquet')
 
 
 if __name__ == '__main__':
