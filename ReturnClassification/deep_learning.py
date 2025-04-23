@@ -7,6 +7,7 @@
 """
 import numpy as np
 import pandas as pd
+import warnings
 import optuna
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import MinMaxScaler
@@ -20,6 +21,21 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.models import Model
 from sklearn.metrics import f1_score
 import tensorflow as tf
+
+warnings.filterwarnings("ignore")
+
+
+# ✅ 定义一个合法的调度器子类，带 min_lr 限制（推荐方式）
+class CappedSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, schedule, min_lr):
+        self.schedule = schedule
+        self.min_lr = min_lr
+
+    def __call__(self, step):
+        return tf.math.maximum(self.schedule(step), self.min_lr)
+
+    def get_config(self):
+        return {"schedule": self.schedule, "min_lr": self.min_lr}
 
 
 # 自定义FM层（使用Lambda封装tf操作）
@@ -108,18 +124,20 @@ def build_deep_fm(input_dim,
 
     # 构建模型
     if learning_rate is None:  # 如果没有提供学习率，则使用默认的动态学习率
-        lr_schedule = ExponentialDecay(
-            initial_learning_rate=0.0001,
-            decay_steps=10000,
-            decay_rate=0.1,
-            staircase=True
+        lr_schedule = ExponentialDecay(  # lr(step) = initial_lr ⋅ (decay_rate) ^ (step / decay_steps)
+            initial_learning_rate=0.001,  # 初始学习率
+            decay_steps=100,  # 每 N 步进行一次衰减
+            decay_rate=0.25,  # 衰减因子为 50%
+            staircase=False,  # 阶梯式衰减（True表示整数倍step时才下降, False表示每一步都连续平滑地衰减）
         )
+        # optimizer = Adam(learning_rate=lr_schedule)
+        lr_schedule = CappedSchedule(lr_schedule, min_lr=1e-5)
         optimizer = Adam(learning_rate=lr_schedule)
     else:  # 如果提供了学习率，则使用指定的学习率
         optimizer = Adam(learning_rate=learning_rate)
 
     # 定义模型并编译
-    model = Model(inputs=inputs, outputs=output)
+    model = Model(inputs=inputs, outputs=output, name='DeepFM')
     model.compile(
         loss='binary_crossentropy',
         optimizer=optimizer,
@@ -161,6 +179,9 @@ def objective_deep_fm(trial,
         [32, 16],
         [32, 16, 8],
     ])
+    # 搜索 epochs 和 batch_size
+    batch_size = trial.suggest_categorical("batch_size", [16, 32, 64, 128])
+    epochs = trial.suggest_int("epochs", 10, 100)
 
     early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=0)
 
@@ -182,8 +203,8 @@ def objective_deep_fm(trial,
         model.fit(
             x_subtrain, y_subtrain,
             validation_data=(x_val, y_val),
-            epochs=30,
-            batch_size=32,
+            epochs=epochs,
+            batch_size=batch_size,
             verbose=0,
             callbacks=[early_stop]
         )
@@ -297,18 +318,20 @@ def build_wide_deep(
 
     # 构建模型
     if learning_rate is None:  # 如果没有提供学习率，则使用默认的动态学习率
-        lr_schedule = ExponentialDecay(
-            initial_learning_rate=0.0001,
-            decay_steps=10000,
-            decay_rate=0.1,
-            staircase=True
+        lr_schedule = ExponentialDecay(  # lr(step) = initial_lr ⋅ (decay_rate) ^ (step / decay_steps)
+            initial_learning_rate=0.001,  # 初始学习率
+            decay_steps=500,  # 每 N 步进行一次衰减
+            decay_rate=0.5,  # 衰减因子为 50%
+            staircase=False,  # 阶梯式衰减（True表示整数倍step时才下降, False表示每一步都连续平滑地衰减）
         )
+        # optimizer = Adam(learning_rate=lr_schedule)
+        lr_schedule = CappedSchedule(lr_schedule, min_lr=1e-4)
         optimizer = Adam(learning_rate=lr_schedule)
     else:  # 如果提供了学习率，则使用指定的学习率
         optimizer = Adam(learning_rate=learning_rate)
 
     # 定义模型并编译
-    model = Model(inputs=inputs, outputs=output)
+    model = Model(inputs=inputs, outputs=output, name="WideAndDeep")
     model.compile(
         loss='binary_crossentropy',
         optimizer=optimizer,
@@ -339,6 +362,9 @@ def objective_wide_deep(trial, n_splits=5):
         [32, 16],
         [32, 16, 8],
     ])
+    # 搜索 epochs 和 batch_size
+    batch_size = trial.suggest_categorical("batch_size", [16, 32, 64, 128])
+    epochs = trial.suggest_int("epochs", 10, 100)
 
     # K折交叉验证设置
     kf = KFold(
@@ -375,8 +401,8 @@ def objective_wide_deep(trial, n_splits=5):
         model.fit(
             x_subtrain, y_subtrain,
             validation_data=(x_val, y_val),
-            epochs=30,
-            batch_size=32,
+            epochs=epochs,
+            batch_size=batch_size,
             verbose=0,
             callbacks=[early_stop]
         )
@@ -458,18 +484,20 @@ def build_dcn(input_dim,
 
     # 构建模型
     if learning_rate is None:  # 如果没有提供学习率，则使用默认的动态学习率
-        lr_schedule = ExponentialDecay(
-            initial_learning_rate=0.0001,
-            decay_steps=10000,
-            decay_rate=0.1,
-            staircase=True
+        lr_schedule = ExponentialDecay(  # lr(step) = initial_lr ⋅ (decay_rate) ^ (step / decay_steps)
+            initial_learning_rate=0.001,  # 初始学习率
+            decay_steps=500,  # 每 N 步进行一次衰减
+            decay_rate=0.5,  # 衰减因子为 50%
+            staircase=False,  # 阶梯式衰减（True表示整数倍step时才下降, False表示每一步都连续平滑地衰减）
         )
+        # optimizer = Adam(learning_rate=lr_schedule)
+        lr_schedule = CappedSchedule(lr_schedule, min_lr=1e-4)
         optimizer = Adam(learning_rate=lr_schedule)
     else:  # 如果提供了学习率，则使用指定的学习率
         optimizer = Adam(learning_rate=learning_rate)
 
     # 定义模型并编译
-    model = Model(inputs=inputs, outputs=output)
+    model = Model(inputs=inputs, outputs=output, name="DCN")
     model.compile(
         loss='binary_crossentropy',
         optimizer=optimizer,
@@ -506,6 +534,9 @@ def objective_dcn(trial, validation_mode='kfold', n_splits=5):
         [32, 16],
         [32, 16, 8],
     ])
+    # 搜索 epochs 和 batch_size
+    batch_size = trial.suggest_categorical("batch_size", [16, 32, 64, 128])
+    epochs = trial.suggest_int("epochs", 10, 100)
 
     early_stop = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=0)
 
@@ -528,8 +559,8 @@ def objective_dcn(trial, validation_mode='kfold', n_splits=5):
         model.fit(
             x_subtrain, y_subtrain,
             validation_data=(x_val, y_val),
-            epochs=30,
-            batch_size=32,
+            epochs=epochs,
+            batch_size=batch_size,
             verbose=0,
             callbacks=[early_stop]
         )
@@ -574,7 +605,7 @@ def objective_dcn(trial, validation_mode='kfold', n_splits=5):
 
 
 # 训练和评估函数
-def train_and_evaluate(model, x_train, y_train, x_test, y_test, epochs=10, batch_size=32):
+def train_and_evaluate(model, x_train, y_train, x_test, y_test, epochs=100, batch_size=64):
     """
     训练并评估一个机器学习模型。
 
@@ -590,7 +621,17 @@ def train_and_evaluate(model, x_train, y_train, x_test, y_test, epochs=10, batch
     此函数没有返回值，但会在控制台输出模型的评估报告。
     """
     # 训练模型
-    model.fit(x_train, y_train, epochs=epochs, batch_size=batch_size, verbose=2, validation_split=0.1)
+    print(f"[INFO] 开始训练{model.name}模型...")
+    total_step = (len(x_train) // batch_size) * epochs
+    print(f"[INFO] Total steps: {total_step}")
+    model.fit(
+        x_train,  # 训练数据特征，表示模型输入的特征矩阵，通常是一个二维数组，形状为 (样本数, 特征数)。
+        y_train,  # 训练数据标签，表示每个训练样本对应的真实值（目标值），通常是一个一维数组或向量。
+        epochs=epochs,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大可能越容易过拟合，越小可能欠拟合。
+        batch_size=batch_size,  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。较大值可能需要更多内存，较小值可能导致训练不稳定。
+        verbose=0,  # 控制训练过程的日志输出级别。0 表示不输出日志，1 表示输出进度条，2 表示每个 epoch 输出一行记录。
+        validation_split=0.1  # 从训练数据中划分出一部分作为验证集的比例，此处为 10%。用于监控模型在未见数据上的表现，防止过拟合。
+    )
 
     # 使用模型进行预测并转换为二进制分类
     pred = (model.predict(x_test) > 0.5).astype(int)
@@ -609,8 +650,8 @@ if __name__ == '__main__':
         folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
         metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'
         train_start=None,  # 训练集开始日期，如果为 None，则从数据的最早日期开始
-        train_end='2024-11-30',  # 训练集结束日期，指定为 '2024-11-30'
-        test_start='2024-12-01',  # 测试集开始日期，指定为 '2024-12-01'
+        train_end='2024-04-30',  # 训练集结束日期，指定为 '2024-11-30'
+        test_start='2024-05-01',  # 测试集开始日期，指定为 '2024-12-01'
         test_end='2025-04-30',  # 测试集结束日期，指定为 '2025-04-30'
         nan_method='drop',  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'
         standardize_method='zscore',  # 指标标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
@@ -641,7 +682,9 @@ if __name__ == '__main__':
     )
     print("Best trial:", study.best_trial.params)  # 输出最优超参数
     best_trial = study.best_trial.params
-    # best_trial = {'embed_dim': 32, 'dropout_rate': 0.4152850750188673, 'learning_rate': 0.001492202547205302, 'activation': 'relu', 'use_batch_norm': False, 'dnn_units': [64, 32, 16, 8]}
+    # best_trial = {'embed_dim': 32, 'dropout_rate': 0.5, 'learning_rate': 0.0001, 'activation': 'relu',
+    #               'use_batch_norm': False, 'dnn_units': [128, 64, 32], 'epochs': 12, 'batch_size': 32
+    #               }
 
     # 使用最优超参数训练最终模型
     deep_fm_model = build_deep_fm(
@@ -661,8 +704,8 @@ if __name__ == '__main__':
         y_train_values,  # 训练数据标签，对应于训练特征的真实值，用于监督学习过程。
         x_test_scaled,  # 测试数据特征，经过预处理后的特征矩阵，用于评估模型在未见数据上的表现。
         y_test_values,  # 测试数据标签，对应于测试特征的真实值，用于计算模型的预测性能指标。
-        epochs=10,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
-        batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
+        epochs=best_trial['epochs'],  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
+        batch_size=best_trial['batch_size']  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
     )
 
     ''' 2) Wide & Deep 模型 '''
@@ -675,7 +718,9 @@ if __name__ == '__main__':
                    )
     print("Best trial:", study.best_trial.params)  # 输出最优超参数
     best_trial = study.best_trial.params
-    # best_trial = {'dropout_rate': 0.31110760370578694, 'use_batch_norm': True, 'wide_activation': 'linear', 'activation': 'relu', 'learning_rate': 0.0020187999563270574, 'deep_units': [64, 32]}
+    # best_trial = {'dropout_rate': 0.5, 'use_batch_norm': True, 'wide_activation': 'linear', 'activation': 'relu',
+    #               'learning_rate': 0.0001, 'deep_units': [128, 64, 32], 'epochs': 10, 'batch_size': 32
+    #               }
 
     # 使用最优超参数训练最终模型
     wd_model = build_wide_deep(
@@ -693,8 +738,8 @@ if __name__ == '__main__':
                        y_train_values,  # 训练数据标签，对应于训练特征的真实值，用于监督学习过程。
                        x_test_scaled,  # 测试数据特征，经过预处理后的特征矩阵，用于评估模型在未见数据上的表现。
                        y_test_values,  # 测试数据标签，对应于测试特征的真实值，用于计算模型的预测性能指标。
-                       epochs=10,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
-                       batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
+                       epochs=best_trial['epochs'],  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
+                       batch_size=best_trial['batch_size']  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
                        )
 
     ''' 3) NCD 模型 '''
@@ -708,7 +753,9 @@ if __name__ == '__main__':
     )
     print("Best trial:", study.best_trial.params)  # 输出最优超参数
     best_trial = study.best_trial.params
-    # best_trial = {'cross_layers': 2, 'dropout_rate': 0.2043031648581299, 'learning_rate': 0.0009367655839776305, 'use_batch_norm': False, 'deep_units': [128, 64]}
+    # best_trial = {'cross_layers': 5, 'dropout_rate': 0.5, 'learning_rate': 0.0001, 'use_batch_norm': False,
+    #               'deep_units': [128, 64, 32], 'epochs': 10, 'batch_size': 32
+    #               }
 
     # 使用最优超参数训练最终模型
     dcn_model = build_dcn(
@@ -727,6 +774,6 @@ if __name__ == '__main__':
         y_train_values,  # 训练数据标签，对应于训练特征的真实值，用于监督学习过程。
         x_test_scaled,  # 测试数据特征，经过预处理后的特征矩阵，用于评估模型在未见数据上的表现。
         y_test_values,  # 测试数据标签，对应于测试特征的真实值，用于计算模型的预测性能指标。
-        epochs=10,  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
-        batch_size=32  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
+        epochs=best_trial['epochs'],  # 指定模型训练的轮数（epoch），即模型在整个训练数据集上完整训练的次数。越大越容易过拟合, 越小越容易欠拟合。
+        batch_size=best_trial['batch_size']  # 指定每个批次（batch）的大小，即每次更新模型参数时使用的样本数量。越大越容易过拟合, 越小越容易欠拟合。
     )
