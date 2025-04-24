@@ -6,7 +6,7 @@
 @Descriptions: 主程序: 数据获取与准备
 """
 import os
-from GetData.data_prepare import data_prepare
+from GetData.data_prepare import data_prepare, index_data_prepare
 from GetData.tushare_get_ETF_data import get_etf_daily_data_all, get_etf_daily_data_increment
 from GetData.akshare_get_INDEX_data import akshare_index_main
 
@@ -56,4 +56,7 @@ else:
                  )
 
 # 从AkShare获取各类指数数据
-akshare_index_main('index_df_save_path')
+akshare_index_main(index_df_save_path)
+
+# 处理指数数据为宽表
+index_data_prepare(index_df_save_path)

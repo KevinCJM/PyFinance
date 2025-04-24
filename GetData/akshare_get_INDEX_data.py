@@ -669,10 +669,11 @@ def get_china_gzindex_data(save_path='../Data/Index', parquet_name='china_gzinde
             try:
                 # 使用akshare获取指数历史数据
                 gz_index_df = ak.index_hist_cni(symbol=symbol, start_date="20050101", end_date=today_str)
+                gz_index_df['ts_code'] = symbol
                 # 重命名列名，以便后续处理
                 gz_index_df.rename(columns={'日期': 'trade_date', '收盘价': 'close', '开盘价': 'open', '最高价': 'high',
                                             '最低价': 'low', '成交量': 'vol', '成交额': 'amount'}, inplace=True)
-                gz_index_df = gz_index_df[['trade_date', 'open', 'high', 'low', 'close', 'vol', 'amount']]
+                gz_index_df = gz_index_df[['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'vol', 'amount']]
                 # 将当前指数的数据添加到列表中
                 final_df.append(gz_index_df)
                 # 如果数据获取成功，跳出循环
@@ -824,4 +825,4 @@ def akshare_index_main(save_path='../Data/Index'):
 
 
 if __name__ == '__main__':
-    get_china_pmi_data()
+    get_china_gzindex_data()
