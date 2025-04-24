@@ -164,13 +164,16 @@ def get_global_index_data(code_dict, func_obj, save_path='../Data/Index', parque
 
 
 # 获取全球多个国家的利率决议数据
-def get_global_interest_rate_data(save_path='../Data/Index', parquet_name='global_interest_daily.parquet'):
+def get_global_interest_rate_data(save_path='../Data/Index',
+                                  parquet_name='global_interest_daily.parquet',
+                                  expand_daily=False):
     """
     获取全球多个国家的利率决议数据，并保存为 Parquet 文件。
 
     参数:
     save_path (str): 数据保存的文件夹路径。默认为 '../Data/Index'。
     parquet_name (str): 保存的 Parquet 文件名。默认为 'global_interest_daily.parquet'。
+    expand_daily (bool): 是否将数据扩展到每个自然日, 并取前值填充。
 
     返回:
     pd.DataFrame: 合并后的全球利率数据 DataFrame。
@@ -206,31 +209,34 @@ def get_global_interest_rate_data(save_path='../Data/Index', parquet_name='globa
                 interest_rate_df = func().copy()
                 # 将日期列转换为日期格式
                 interest_rate_df['日期'] = pd.to_datetime(interest_rate_df['日期'])
-                # 获取当前日期（以“天”为单位截断）
-                today = pd.Timestamp.today().normalize()
-                # 如果 DataFrame 中没有今天的数据，添加一行空值
-                if today not in interest_rate_df['日期'].values:
-                    product = interest_rate_df['商品'].iloc[0]  # 因为只有一个商品
-                    interest_rate_df = pd.concat([
-                        interest_rate_df,
-                        pd.DataFrame([{
-                            '商品': product,
-                            '日期': today,
-                            '今值': pd.NA
-                        }])
-                    ], ignore_index=True)
                 # 仅保留商品、日期和今值列
                 interest_rate_df = interest_rate_df[['商品', '日期', '今值']]
                 # 去除重复的行，保留最后一次出现的行
                 interest_rate_df = interest_rate_df.drop_duplicates(subset=['日期', '商品'], keep='last')
-                # 将数据透视，以便每个商品的今值成为列
-                pivot_df = interest_rate_df.pivot(index='日期', columns='商品', values='今值')
-                # 按天重采样数据，并使用前向填充方法填充缺失值
-                pivot_df = pivot_df.resample('D').asfreq().ffill()
-                # 重塑数据格式，将透视表变回长格式
-                result_df = pivot_df.reset_index().melt(id_vars='日期', var_name='商品', value_name='今值')
+
+                # 是否需要扩展到日频率
+                if expand_daily:
+                    # 获取当前日期（以“天”为单位截断）
+                    today_date = pd.Timestamp.today().normalize()
+                    # 如果 DataFrame 中没有今天的数据，添加一行空值
+                    if today_date not in interest_rate_df['日期'].values:
+                        product = interest_rate_df['商品'].iloc[0]  # 因为只有一个商品
+                        interest_rate_df = pd.concat([
+                            interest_rate_df,
+                            pd.DataFrame([{
+                                '商品': product,
+                                '日期': today,
+                                '今值': pd.NA
+                            }])
+                        ], ignore_index=True)
+                    # 将数据透视，以便每个商品的今值成为列
+                    pivot_df = interest_rate_df.pivot(index='日期', columns='商品', values='今值')
+                    # 按天重采样数据，并使用前向填充方法填充缺失值
+                    pivot_df = pivot_df.resample('D').asfreq().ffill()
+                    # 重塑数据格式，将透视表变回长格式
+                    interest_rate_df = pivot_df.reset_index().melt(id_vars='日期', var_name='商品', value_name='今值')
                 # 将处理后的数据添加到最终的数据列表中
-                final_df.append(result_df)
+                final_df.append(interest_rate_df)
                 # 如果成功获取数据，跳出循环
                 break
             except Exception as e:
@@ -309,6 +315,7 @@ def get_china_vix_data(save_path='../Data/Index', parquet_name='china_vix_daily.
     # 保存数据为Parquet文件
     final_df.to_parquet(file_path)
     print('中国VIX数据获取完成, 保存路径:', file_path)
+    return final_df
 
 
 # 获取中国银行间同业拆借利率数据
@@ -384,12 +391,16 @@ def get_china_interbank_interest_rate_data(save_path='../Data/Index', parquet_na
 
 
 # 获取中国PMI相关数据并保存为Parquet文件
-def get_china_pmi_data(save_path='../Data/Index', parquet_name='china_pmi_daily.parquet', fill_method='ffill'):
+def get_china_pmi_data(save_path='../Data/Index',
+                       parquet_name='china_pmi_daily.parquet',
+                       expand_daily=False,
+                       fill_method='ffill'):
     """
     获取中国PMI相关数据并保存为Parquet文件。
 
     :param save_path: 数据保存路径，默认为'../Data/Index'
     :param parquet_name: 保存的Parquet文件名，默认为'china_pmi_daily.parquet'
+    :param expand_daily: 是否将数据扩展到每个自然日，默认为False
     :param fill_method: 数据填充方法，默认为 'ffill'，可选值包括 'ffill', 'time', 'linear'
     :return: 无
     """
@@ -470,31 +481,36 @@ def get_china_pmi_data(save_path='../Data/Index', parquet_name='china_pmi_daily.
                 sub_df['trade_date'] = pd.to_datetime(sub_df['trade_date'])
                 # 添加数据名称列
                 sub_df['ts_code'] = name
-                # 获取当前日期（以“天”为单位截断）
-                today = pd.Timestamp.today().normalize()
-                # 如果 DataFrame 中没有今天的数据，添加一行空值
-                if today not in sub_df['trade_date'].values:
-                    sub_df = pd.concat([
-                        sub_df,
-                        pd.DataFrame([{
-                            'ts_code': name,
-                            'trade_date': today,
-                            'close': pd.NA
-                        }])
-                    ], ignore_index=True)
                 # 仅保留商品、日期和今值列
                 sub_df = sub_df[['ts_code', 'trade_date', 'close']]
                 # 去除重复的行，保留最后一次出现的行
                 sub_df = sub_df.drop_duplicates(subset=['trade_date', 'ts_code'], keep='last')
-                sub_df.dropna(subset=['trade_date'], inplace=True)
-                # 将数据透视，以便每个商品的今值成为列
-                sub_df = sub_df.pivot(index='trade_date', columns='ts_code', values='close')
-                # 按天重采样数据，并使用前向填充方法填充缺失值
-                sub_df = sub_df.resample('D').asfreq()
-                # 数据填充
-                sub_df = sub_df.interpolate(method=fill_method)
-                # 重塑数据格式，将透视表变回长格式
-                sub_df = sub_df.reset_index().melt(id_vars='trade_date', var_name='ts_code', value_name='close')
+                # 去除空值
+                sub_df.dropna(inplace=True)
+
+                # 如果需要扩展到日频率
+                if expand_daily:
+                    # 获取当前日期（以“天”为单位截断）
+                    today = pd.Timestamp.today().normalize()
+                    # 如果 DataFrame 中没有今天的数据，添加一行空值
+                    if today not in sub_df['trade_date'].values:
+                        sub_df = pd.concat([
+                            sub_df,
+                            pd.DataFrame([{
+                                'ts_code': name,
+                                'trade_date': today,
+                                'close': pd.NA
+                            }])
+                        ], ignore_index=True)
+                    # 将数据透视，以便每个商品的今值成为列
+                    sub_df = sub_df.pivot(index='trade_date', columns='ts_code', values='close')
+                    # 按天重采样数据，并使用前向填充方法填充缺失值
+                    sub_df = sub_df.resample('D').asfreq()
+                    # 数据填充
+                    sub_df = sub_df.interpolate(method=fill_method)
+                    # 重塑数据格式，将透视表变回长格式
+                    sub_df = sub_df.reset_index().melt(id_vars='trade_date', var_name='ts_code', value_name='close')
+
                 # 将处理后的数据添加到最终的数据列表中
                 final_df.append(sub_df)
                 # 如果成功获取数据，跳出循环
@@ -687,8 +703,9 @@ def get_china_gzindex_data(save_path='../Data/Index', parquet_name='china_gzinde
     return final_df
 
 
+# 获取 akshare 指数数据并保存为Parquet文件
 def akshare_index_main(save_path='../Data/Index'):
-    # 全球指数字典
+    # 全球指数字典 (日频)
     index_dict = {'MXX': '墨西哥BOLSA',
                   'JKSE': '印尼雅加达综合',
                   'ASE': '希腊雅典ASE',
@@ -745,7 +762,7 @@ def akshare_index_main(save_path='../Data/Index'):
                   }
     get_global_index_data(index_dict, ak.index_global_hist_em,
                           save_path, 'global_index_daily.parquet')
-    # 人民币对全球其他货币汇率字典
+    # 人民币对全球其他货币汇率字典 (日频)
     currency_map = {'100日元兑离岸人民币': 'JPYCNH', '纽元人民币中间价': 'NZDCNYC', '100日元人民币中间价': 'JPYCNYC',
                     '欧元人民币中间价': 'EURCNYC', '英镑人民币中间价': 'GBPCNYC', '瑞士法郎人民币中间价': 'CHFCNYC',
                     '澳元人民币中间价': 'AUDCNYC', '港币兑离岸人民币': 'HKDCNH', '人民币土耳其里拉中间价': 'CNYTRYC',
@@ -758,7 +775,7 @@ def akshare_index_main(save_path='../Data/Index'):
     get_global_index_data(currency_map, ak.forex_hist_em,
                           save_path, 'global_currency_daily.parquet')
 
-    # 全球贵金属指数字典
+    # 全球贵金属指数字典 (日频)
     metal_code_dict = {
         "黄金Au99.99": "Au99.99",
         "黄金Au99.95": "Au99.95",
@@ -781,7 +798,7 @@ def akshare_index_main(save_path='../Data/Index'):
     get_global_index_data(metal_code_dict, ak.spot_hist_sge,
                           save_path, 'global_metal_daily.parquet')
 
-    # 全球商品现货价格指数
+    # 全球商品现货价格指数 (周频)
     spot_goods_dict = {
         "波罗的海干散货指数": "BDI",
         "钢坯价格指数": "GP",
@@ -790,21 +807,21 @@ def akshare_index_main(save_path='../Data/Index'):
     get_global_index_data(spot_goods_dict, ak.spot_goods,
                           save_path, 'global_goods_daily.parquet')
 
-    # 全球利率数据
-    get_global_interest_rate_data(save_path, 'global_interest_daily.parquet')
+    # 全球利率数据 (月频)
+    get_global_interest_rate_data(save_path, 'global_interest_daily.parquet', False)
 
-    # 获取中国VIX数据
+    # 获取中国VIX数据 (日频)
     get_china_vix_data(save_path, 'china_vix_daily.parquet')
 
-    # 获取中国银行间同业拆借利率数据
+    # 获取中国银行间同业拆借利率数据 (日频)
     get_china_interbank_interest_rate_data(save_path, 'china_interbank_daily.parquet')
 
-    # 获取中国PMI数据
-    get_china_pmi_data(save_path, 'china_pmi_daily.parquet')
+    # 获取中国PMI数据 (周频或日频)
+    get_china_pmi_data(save_path, 'china_pmi_daily.parquet', False, 'ffill')
 
     # 获取中国国证指数数据
     get_china_gzindex_data(save_path, 'china_gzindex_daily.parquet')
 
 
 if __name__ == '__main__':
-    get_china_gzindex_data()
+    get_china_pmi_data()
