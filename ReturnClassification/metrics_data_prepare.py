@@ -11,6 +11,8 @@ import warnings
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.decomposition import PCA
 
 warnings.filterwarnings("ignore")
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -204,6 +206,10 @@ def get_fund_metrics_data(selected_fund,
         # 读取数据
         full_path = os.path.join(index_folder_path, 'wide_index_close.parquet')
         index_df = pd.read_parquet(full_path)
+        # 将 inf 转为 nan
+        index_df = index_df.replace([np.inf, -np.inf], np.nan)
+
+        # 填充数据
         index_df = index_df.resample('D').asfreq()
         index_df = index_df.fillna(method='ffill')
 
@@ -225,6 +231,8 @@ def get_fund_metrics_data(selected_fund,
         # 将当前数据框与最终数据框按基金代码和日期合并
         df_final = pd.merge(df_final, index_df, on=['date'], how='left')
 
+    # 将 inf 转为 nan
+    df_final = df_final.replace([np.inf, -np.inf], np.nan)
     # 删除合并后存在空值的行
     df_final = df_final.dropna()
     # 按日期排序
@@ -346,6 +354,185 @@ def preprocess_data(metrics_data,
 
     # 返回预处理后的DataFrame
     return df_processed
+
+
+# 划分训练集和测试集数据
+def split_train_test_data(fund_code, future_days, df_price, metrics_df,
+                          train_start=None,
+                          train_end='2023-12-31',
+                          test_start='2024-01-01',
+                          test_end='2025-03-31'
+                          ):
+    """
+    根据给定的基金代码、未来天数、价格数据和指标数据，划分训练集和测试集数据。
+
+    :param fund_code: 基金代码，用于识别特定的基金。
+    :param future_days: 未来的天数，用于预测。
+    :param df_price: 价格数据，包含日期和基金价格信息。
+    :param metrics_df: 指标数据，包含用于训练的特征。
+    :param train_start: str, 训练集的区间开始日期
+    :param train_end: str, 训练集的区间结束日期
+    :param test_start: str, 测试集的区间开始日期
+    :param test_end: str, 测试集的区间解释日期
+    :return: 返回训练集特征、训练集标签、测试集特征和测试集标签。
+    """
+    ''' 合并特征 + 标签 '''
+    # 重命名价格数据列，以便于后续合并和识别
+    df_price_renamed = df_price.rename(columns={
+        "trade_date": "date",
+        fund_code: "price"
+    })
+
+    # 合并指标数据和价格数据，得到包含特征和标签的数据集
+    df_all = pd.merge(metrics_df, df_price_renamed[["date", f"label_up_{future_days}d"]],
+                      how="inner", on="date")
+
+    ''' 划分数据集 '''
+    # 定义训练集和测试集的时间区间
+    train_start = pd.to_datetime(train_start) if train_start else df_all['date'].min()
+    train_end = pd.to_datetime(train_end)
+    test_start = pd.to_datetime(test_start)
+    test_end = pd.to_datetime(test_end)
+    print(f"[INFO] 训练集时间区间: {train_start} ~ {train_end}; 测试集时间区间: {test_start} ~ {test_end}")
+
+    # 根据时间区间划分训练集和测试集
+    train_df = df_all[(df_all['date'] >= train_start) & (df_all['date'] <= train_end)]
+    test_df = df_all[(df_all['date'] >= test_start) & (df_all['date'] <= test_end)]
+
+    ''' 准备特征和标签 '''
+    # 选取特征列和目标列
+    feature_cols = list(set([col for col in metrics_df.columns if col not in ['ts_code', 'date']]))
+    target_col = f"label_up_{future_days}d"
+
+    # 分离训练集和测试集的特征和标签
+    x_train = train_df[feature_cols]
+    y_train = train_df[target_col]
+
+    x_test = test_df[feature_cols]
+    y_test = test_df[target_col]
+
+    print(f"[INFO] "
+          f"训练集数据量: {len(x_train)}条参数&{len(y_train)}条标签; 参数共{len(x_train.columns)}列; "
+          f"测试集数据量: {len(x_test)}条参数&{len(y_test)}条标签; 参数共{len(x_test.columns)}列.")
+    return x_train, y_train, x_test, y_test
+
+
+def main_data_prepare(the_fund_code='159919.SZ',
+                      n_days=20,
+                      folder_path='../Data',
+                      index_folder_path='../Data/Index',
+                      metrics_folder='../Data/Metrics',
+                      train_start=None,
+                      train_end='2023-12-31',
+                      test_start='2024-01-01',
+                      test_end='2025-03-31',
+                      nan_method='drop',
+                      standardize_method='both',
+                      basic_data_as_metric=False,
+                      return_threshold=0.0,
+                      dim_reduction=False, dim_reduction_limit=0.9,
+                      n_components=None,
+                      index_close_as_metric=True,
+                      ):
+    """
+    主要数据准备函数，用于准备基金数据以进行后续的机器学习模型训练和测试。
+
+    :param the_fund_code: 基金代码，默认为'159919.SZ'
+    :param n_days: 用于计算未来收益的天数，默认为20天
+    :param folder_path: 基金价格数据的文件夹路径，默认为'../Data'
+    :param index_folder_path: 指数数据的文件夹路径，默认为'../Data/Index'
+    :param metrics_folder: 基金指标数据的文件夹路径，默认为'../Data/Metrics'
+    :param train_start: 训练集开始日期，如果为None，则从数据的开始日期开始
+    :param train_end: 训练集结束日期，默认为'2023-12-31'
+    :param test_start: 测试集开始日期，默认为'2024-01-01'
+    :param test_end: 测试集结束日期，默认为'2025-03-31'
+    :param nan_method: 处理缺失值的方法，默认为 'drop'，可选值为 'median' 或 'mean'
+    :param standardize_method: 数据标准化/归一化的方法，默认为 'both'，可选['both', 'minmax', 'zscore', 'none']。
+    :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为False
+    :param return_threshold: float, 标签生成方法，默认为0, 表示使用未来收益率大于0的样本标记为1，否则为0;
+                        如果写0.001, 则表示使用未来收益率大于+0.1%的样本标记为2，在-0.1%~0.1%之间的样本标记为1，否则为0;
+    :param dim_reduction: bool, 是否做PCA数据降维，默认为 False
+    :param dim_reduction_limit: float, PCA数据降维保留的解释方差比率，默认为0.9
+    :param n_components: int, PCA数据降维到多少数量
+    :param index_close_as_metric: bool, 是否使用指数收盘价作为指标数据，默认为True
+
+    :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
+    """
+    # 如果要做PCA, 数据预处理阶段不做标准化操作, 而是留到PCA的时候统一来做
+    if dim_reduction:
+        standardize_method = 'none'
+
+    ''' 价格数据预处理 '''
+    # 获取 收盘价 数据
+    close_price = get_fund_close_price(the_fund_code, folder_path)
+    # 滚动计算未来N天的对数收益率
+    close_price = cal_future_log_return(close_price, n_days=n_days)
+    # 生成目标标签: 未来收益大于0的样本标记为1，否则为0
+    if return_threshold == 0:
+        close_price[f"label_up_{n_days}d"] = (close_price[f"log_return_forward_{n_days}d"] > 0).astype(int)
+    else:
+        def classify_three_way(ret, threshold):
+            if ret > threshold:
+                return 2  # 上涨
+            elif ret < -threshold:
+                return 0  # 下跌
+            else:
+                return 1  # 横盘
+
+        close_price[f"label_up_{n_days}d"] = close_price[f"log_return_forward_{n_days}d"].apply(
+            lambda x: classify_three_way(x, return_threshold))
+
+    ''' 指标数据预处理 '''
+    # 获取指标数据
+    metrics_data = get_fund_metrics_data(
+        the_fund_code,  # 基金代码，用于指定需要处理的基金（如'510050.SH'）。
+        index_folder_path,
+        metrics_folder,  # 指标数据文件夹路径，包含用于训练模型的特征数据。
+        folder_path,  # 数据文件夹路径，通常包含基金的价格数据和其他相关信息。
+        basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
+        index_close_as_metric,  # 是否将指数收盘价作为指标数据，默认为True。
+    )
+    # 预处理指标数据
+    metrics_data = preprocess_data(
+        metrics_data=metrics_data,  # 获取到的原始指标数据，需要进行预处理。
+        nan_method=nan_method,  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'。
+        standardize_method=standardize_method  # 数据标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'
+    )
+
+    ''' 测试集训练集划分 '''
+    # 划分训练集和测试集数据
+    x_train, y_train, x_test, y_test = split_train_test_data(
+        the_fund_code, n_days, close_price, metrics_data,
+        train_start=train_start,
+        train_end=train_end,
+        test_start=test_start,
+        test_end=test_end
+    )
+
+    if dim_reduction:
+        print("[INFO] 数据降维中...")
+        # 数据归一化
+        scaler = MinMaxScaler()
+        x_train_scaled = scaler.fit_transform(x_train)
+        x_test_scaled = scaler.transform(x_test)
+
+        if n_components is None:
+            # dim_reduction_limit = 0.99
+            pca_full = PCA().fit(x_train_scaled)
+            explained_var_ratio_cum_sum = np.cumsum(pca_full.explained_variance_ratio_)
+            n_components = np.argmax(explained_var_ratio_cum_sum >= dim_reduction_limit) + 1
+            print(f"[INFO] PCA降维到 {n_components} 维, 解释方差比率达到{dim_reduction_limit * 100}%")
+
+        # 使用 PCA 降维
+        pca = PCA(n_components=n_components)
+        x_train = pca.fit_transform(x_train_scaled)
+        x_test = pca.transform(x_test_scaled)
+        print(f"[INFO] PCA降维完成, "
+              f"训练集数据量: {len(x_train)}条参数&{len(y_train)}条标签; 参数共{x_train.shape[1]}列; "
+              f"测试集数据量: {len(x_test)}条参数&{len(y_test)}条标签; 参数共{x_test.shape[1]}列.")
+
+    # 返回划分好的数据集和原始指标数据
+    return x_train, y_train, x_test, y_test, metrics_data
 
 
 if __name__ == '__main__':
