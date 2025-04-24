@@ -126,6 +126,8 @@ def index_data_prepare(index_path="../Data/Index"):
 
             # 读取数据
             index_data = pd.read_parquet(file_path)
+            index_data['ts_code'] = file.split(".")[0] + '_' + index_data['ts_code']
+            print(index_data)
 
             # 数据预处理
             index_data['trade_date'] = pd.to_datetime(index_data['trade_date']).dt.normalize()

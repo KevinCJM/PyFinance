@@ -681,17 +681,19 @@ def get_china_gzindex_data(save_path='../Data/Index', parquet_name='china_gzinde
             except Exception as e:
                 # 如果已经达到最大重试次数，打印错误信息并跳出循环
                 if attempt == max_retries - 1:
-                    print(f"获取{name}数据失败: {e}")
+                    print(f"\t\t获取{name}数据失败: {e}")
                     break
                 else:
                     # 如果未达到最大重试次数，打印重试信息并等待1秒后重试
-                    print(f"获取{name}数据失败，正在重试...")
+                    print(f"\t\t获取{name}数据失败，正在重试...")
                     time.sleep(1)
 
     # 将列表中的所有DataFrame合并为一个，忽略索引
     final_df = pd.concat(final_df, ignore_index=True)
     # 将日期列转换为datetime类型
     final_df['trade_date'] = pd.to_datetime(final_df['trade_date'])
+    # 删除close字段是0的行
+    final_df = final_df[final_df['close'] != 0]
     # 打印合并后的数据
     print(final_df)
     # 构造保存文件的完整路径

@@ -6,9 +6,9 @@
 @Descriptions: 主程序: 数据获取与准备
 """
 import os
+from GetData.akshare_get_INDEX_data import akshare_index_main
 from GetData.data_prepare import data_prepare, index_data_prepare
 from GetData.tushare_get_ETF_data import get_etf_daily_data_all, get_etf_daily_data_increment
-from GetData.akshare_get_INDEX_data import akshare_index_main
 
 '''
 本文件有以下功能:
@@ -28,6 +28,11 @@ from GetData.akshare_get_INDEX_data import akshare_index_main
     目前仅仅支持 AkShare, AkShare 为免费接口, 无需设置 token.
     获取的数据将以 dataframe 格式保存到 Data/Index 文件夹下. 名称为 global_xxx_daily.parquet 或 china_xxx_daily.parquet.
     global_xxx_daily.parquet 和 china_xxx_daily.parquet 的字段并不统一
+    日期不统一, 有些是日频数据, 有些是周频数据, 有些是月频数据.
+4) 对指数数据进行预处理, 生成宽表数据帧
+    具体预处理的逻辑代码位于 GetData/data_prepare.py 文件中.
+    预处理后的数据将以 dataframe 格式保存到 Data/Index 文件夹下. 名称为 wide_index_***.parquet
+    预处理后的数据都是索引为日期, 字段为指数代码的宽表数据帧.
 '''
 
 daily_etf_file = "./Data/etf_daily.parquet"  # ETF日频数据文件名
