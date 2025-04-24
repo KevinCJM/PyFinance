@@ -128,7 +128,13 @@ def cal_future_log_return(df_selected, n_days=5):
 
 
 # 获取基金指标数据
-def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, basic_data_as_metric):
+def get_fund_metrics_data(selected_fund,
+                          index_folder_path,
+                          metrics_folder_path,
+                          data_folder_path,
+                          basic_data_as_metric=True,
+                          index_close_as_metric=True,
+                          ):
     """
     获取基金指标数据。
 
@@ -138,9 +144,11 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
 
     参数:
     selected_fund (str): 选定的基金代码。
+    index_folder_path (str): 指数数据的文件夹路径。
     metrics_folder_path (str): 包含基金指标数据的文件夹路径。
     data_folder_path (str): 包含基金基本信息的文件夹路径。
     basic_data_as_metric (bool): 是否将基本数据视为指标数据。
+    index_close_as_metric (bool): 是否将指数收盘价数据视为指标数据。
 
     返回:
     pandas.DataFrame: 包含选定基金所有指标数据的干净数据框。
@@ -176,6 +184,7 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
             # 将当前数据框与最终数据框按基金代码和日期合并
             df_final = pd.merge(df_final, df, on=['ts_code', 'date'], how='outer')
 
+    # 如果将基金的基本数据也作为指标数据
     if basic_data_as_metric:
         print(f"[INFO] 基本数据也作为指标数据")
         # 获取 对数收益/开盘价/收盘价/最高价/最低价/成交量/成交额 的数据
@@ -187,6 +196,34 @@ def get_fund_metrics_data(selected_fund, metrics_folder_path, data_folder_path, 
         else:
             # 将当前数据框与最终数据框按基金代码和日期合并
             df_final = pd.merge(df_final, basic_data_df, on=['date'], how='outer')
+
+    # 如果将指数的收盘价数据也作为指标数据
+    if index_close_as_metric:
+        print(f"[INFO] 指数数据也作为指标数据")
+
+        # 读取数据
+        full_path = os.path.join(index_folder_path, 'wide_index_close.parquet')
+        index_df = pd.read_parquet(full_path)
+        index_df = index_df.resample('D').asfreq()
+        index_df = index_df.fillna(method='ffill')
+
+        # 最小日期限制在 2015-01-01 之前
+        min_date = pd.to_datetime('2015-01-01')
+        # 从 index_df 找到每个指数的第一个非空数据的日期
+        first_valid_dates = index_df.apply(lambda col: col.first_valid_index())
+        # 找出需要剔除的列（第一个有效日期 >= min_date）
+        cols_to_drop = first_valid_dates[first_valid_dates >= min_date].index
+        # 从 index_df 中剔除这些列
+        index_df = index_df.drop(columns=cols_to_drop)
+
+        # 重建索引
+        index_df = index_df.reset_index()
+        index_df.columns.name = None
+        index_df.rename(columns={'trade_date': 'date'}, inplace=True)
+        # 删除全是nan的列
+        index_df = index_df.dropna(axis=1, how='all')
+        # 将当前数据框与最终数据框按基金代码和日期合并
+        df_final = pd.merge(df_final, index_df, on=['date'], how='left')
 
     # 删除合并后存在空值的行
     df_final = df_final.dropna()
@@ -311,11 +348,5 @@ def preprocess_data(metrics_data,
     return df_processed
 
 
-
 if __name__ == '__main__':
-    # df = get_fund_metrics_data('510050.SH', '../Data/Metrics')
-    # print(df)
-    selected_fund = '510050.SH'
-
-    # 获取Data文件夹下所有wide开头的文件
-    data_folder_path = '../Data'
+    pass

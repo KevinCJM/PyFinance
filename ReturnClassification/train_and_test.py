@@ -421,7 +421,6 @@ def confidence_based_random_forest(x_train, x_test, y_train, y_test,
 def predict_main_random_forest(the_fund_code='159919.SZ',
                                n_days=20,
                                folder_path='../Data',
-                               index_folder_path='../Data/Index',
                                metrics_folder='../Data/Metrics',
                                train_start=None,
                                train_end='2023-12-31',
@@ -434,6 +433,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                import_feature_only=False, top_n=200,
                                return_threshold=0.0, parameter_dict=None,
                                dim_reduction=False, dim_reduction_limit=0.9, n_components=None,
+                               index_folder_path='../Data/Index', index_close_as_metric=True,
                                ):
     """
     使用随机森林模型预测基金走势。
@@ -441,7 +441,6 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param the_fund_code: 基金代码，默认为 '159919.SZ'。
     :param n_days: 用于预测的天数，默认为 20 天。
     :param folder_path: 数据文件夹路径，默认为 '../Data'。
-    :param index_folder_path: 指数数据文件夹路径，默认为 '../Data/Index'。
     :param metrics_folder: 评价指标文件夹路径，默认为 '../Data/Metrics'。
     :param train_start: 训练数据开始日期，默认为 None 表示从数据的开始日期开始。
     :param train_end: 训练数据结束日期，默认为 '2023-12-31'。
@@ -461,6 +460,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param dim_reduction: bool, 是否做PCA降维
     :param dim_reduction_limit: float, 做PCA降维时保留的解释方差比率，默认为 0.9。
     :param n_components: int, PCA维度
+    :param index_folder_path: 指数数据文件夹路径，默认为 '../Data/Index'。
+    :param index_close_as_metric: 是否使用指数收盘价作为指标数据，默认为 True。
 
     :return: 训练完成的随机森林模型。
     """
@@ -485,7 +486,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         dim_reduction=dim_reduction,  # 是否PCA
         dim_reduction_limit=dim_reduction_limit,  # PCA数据降维保留的解释方差比率
         n_components=n_components,  # PCA维度
-        index_close_as_metric=True,  # 是否将指数收盘价作为指标数据，默认为True。
+        index_close_as_metric=index_close_as_metric,  # 是否将指数收盘价作为指标数据，默认为True。
     )
 
     ''' 特征选择 '''
@@ -548,7 +549,6 @@ if __name__ == '__main__':
             the_fund_code='510050.SH',  # 指定基金代码，此处为 '510050.SH'
             n_days=d,  # 预测未来收益的天数，变量 d 在循环中定义，表示不同的预测周期
             folder_path='../Data',  # 基金价格数据的文件夹路径，默认为 '../Data'
-            index_folder_path='../Data/Index',  # 指数数据的文件夹路径，默认为 '../Data/Index'
             metrics_folder='../Data/Metrics',  # 基金指标数据的文件夹路径，默认为 '../Data/Metrics'
             train_start=None,  # 训练集开始日期，如果为 None，则从数据的最早日期开始
             train_end='2024-03-31',  # 训练集结束日期，指定为 '2024-11-30'
@@ -565,8 +565,10 @@ if __name__ == '__main__':
             return_threshold=0.0,  # 标签生成方法，未来收益率大于 0.01 的样本标记为 1，否则为 0
             parameter_dict=None,  # 最优参数字典，如果为 None，则自动调参
             dim_reduction=True,  # 是否PCA
-            dim_reduction_limit=0.90,  # PCA降维的方差解释比例, 默认为0.9
+            dim_reduction_limit=0.95,  # PCA降维的方差解释比例, 默认为0.9
             n_components=None,  # PCA维度, 写None表示自动选择, 保留90%方差解释比率
+            index_folder_path='../Data/Index',  # 指数数据的文件夹路径，默认为 '../Data/Index'
+            index_close_as_metric=True,  # 是否使用指数收盘价作为指标数据，默认为 True
         )
         # 保存模型
         filename = f'random_forest_model_{d}.joblib'
