@@ -134,6 +134,8 @@ def get_fund_metrics_data(selected_fund,
                           index_folder_path,
                           metrics_folder_path,
                           data_folder_path,
+                          period_metrics=True,
+                          rolling_metrics=True,
                           basic_data_as_metric=True,
                           index_close_as_metric=True,
                           ):
@@ -149,6 +151,8 @@ def get_fund_metrics_data(selected_fund,
     index_folder_path (str): 指数数据的文件夹路径。
     metrics_folder_path (str): 包含基金指标数据的文件夹路径。
     data_folder_path (str): 包含基金基本信息的文件夹路径。
+    period_metrics (bool): 是否使用区间指标作为训练参数。
+    rolling_metrics (bool): 是否使用滚动指标作为训练参数。
     basic_data_as_metric (bool): 是否将基本数据视为指标数据。
     index_close_as_metric (bool): 是否将指数收盘价数据视为指标数据。
 
@@ -158,14 +162,44 @@ def get_fund_metrics_data(selected_fund,
     print(f"[INFO] 获取指标数据 ...")
     # 初始化最终的数据框为None
     df_final = None
-    # 遍历指标数据文件夹中的所有文件
-    for idx, fil in enumerate(os.listdir(metrics_folder_path)):
-        # 如果文件不是.parquet格式，则跳过
-        if not fil.endswith('.parquet'):
-            continue
 
+    # 使用 区间指标 作为训练参数
+    if period_metrics:
+        # 遍历指标数据文件夹中的所有文件
+        for idx, fil in enumerate(os.listdir(metrics_folder_path)):
+            # 如果文件不是.parquet格式，则跳过
+            if not fil.endswith('.parquet'):
+                continue
+            # 如果是滚动指标则跳过
+            if fil == 'rolling_metrics.parquet':
+                continue
+
+            # 构建文件的完整路径
+            full_path = os.path.join(metrics_folder_path, fil)
+
+            # 构建SQL查询语句，以获取选定基金的数据
+            query = f"""
+            SELECT *
+            FROM '{full_path}'
+            WHERE ts_code = '{selected_fund}'
+            """
+
+            # 执行查询并将结果转换为pandas数据框
+            df = duckdb.query(query).to_df()
+            # 删除无用字段，比如 __index_level_0__
+            df = df.loc[:, ~df.columns.str.startswith("__")]
+
+            # 第一个表作为基础
+            if df_final is None:
+                df_final = df
+            else:
+                # 将当前数据框与最终数据框按基金代码和日期合并
+                df_final = pd.merge(df_final, df, on=['ts_code', 'date'], how='outer')
+
+    # 使用 滚动指标 作为训练参数
+    if rolling_metrics:
         # 构建文件的完整路径
-        full_path = os.path.join(metrics_folder_path, fil)
+        full_path = os.path.join(metrics_folder_path, 'rolling_metrics.parquet')
 
         # 构建SQL查询语句，以获取选定基金的数据
         query = f"""
@@ -428,11 +462,12 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       test_end='2025-03-31',
                       nan_method='drop',
                       standardize_method='both',
+                      period_metrics=True,
+                      rolling_metrics=True,
                       basic_data_as_metric=False,
-                      return_threshold=0.0,
-                      dim_reduction=False, dim_reduction_limit=0.9,
-                      n_components=None,
                       index_close_as_metric=True,
+                      return_threshold=0.0,
+                      dim_reduction=False, dim_reduction_limit=0.9, n_components=None,
                       ):
     """
     主要数据准备函数，用于准备基金数据以进行后续的机器学习模型训练和测试。
@@ -448,13 +483,15 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param test_end: 测试集结束日期，默认为'2025-03-31'
     :param nan_method: 处理缺失值的方法，默认为 'drop'，可选值为 'median' 或 'mean'
     :param standardize_method: 数据标准化/归一化的方法，默认为 'both'，可选['both', 'minmax', 'zscore', 'none']。
+    :param period_metrics: bool, 是否使用区间指标作为训练参数，默认为 True
+    :param rolling_metrics: bool, 是否使用滚动指标作为训练参数，默认为 True
     :param basic_data_as_metric: bool, 是否将基本数据(例如:开盘价/收盘价/交易量等等)作为指标数据，默认为False
+    :param index_close_as_metric: bool, 是否使用指数收盘价作为指标数据，默认为True
     :param return_threshold: float, 标签生成方法，默认为0, 表示使用未来收益率大于0的样本标记为1，否则为0;
                         如果写0.001, 则表示使用未来收益率大于+0.1%的样本标记为2，在-0.1%~0.1%之间的样本标记为1，否则为0;
     :param dim_reduction: bool, 是否做PCA数据降维，默认为 False
     :param dim_reduction_limit: float, PCA数据降维保留的解释方差比率，默认为0.9
     :param n_components: int, PCA数据降维到多少数量
-    :param index_close_as_metric: bool, 是否使用指数收盘价作为指标数据，默认为True
 
     :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
     """
@@ -489,6 +526,8 @@ def main_data_prepare(the_fund_code='159919.SZ',
         index_folder_path,
         metrics_folder,  # 指标数据文件夹路径，包含用于训练模型的特征数据。
         folder_path,  # 数据文件夹路径，通常包含基金的价格数据和其他相关信息。
+        period_metrics,  # 是否使用区间指标作为训练参数，默认为 True
+        rolling_metrics,  # 是否使用滚动指标作为训练参数，默认为 True
         basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
         index_close_as_metric,  # 是否将指数收盘价作为指标数据，默认为True。
     )

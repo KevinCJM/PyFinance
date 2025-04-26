@@ -246,6 +246,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                test_end='2025-03-31',
                                nan_method='drop',
                                standardize_method='both',
+                               period_metrics=True,
+                               rolling_metrics=True,
                                random_seed=42, n_iter=20, cv=5,
                                threshold=None, basic_data_as_metric=False,
                                import_feature_only=False, top_n=200,
@@ -266,6 +268,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param test_end: 测试数据结束日期，默认为 '2025-03-31'。
     :param nan_method: 训练数据中 nan 的处理方法, 默认为 'drop', 可选 'median' 或 'mean'。
     :param standardize_method: 数据标准化/归一化的方法，默认为 'both'，可选['both', 'minmax', 'zscore', 'none']。
+    :param period_metrics: bool, 是否使用区间指标作为训练参数，默认为 True
+    :param rolling_metrics: bool, 是否使用滚动指标作为训练参数，默认为 True
     :param random_seed: 随机种子，默认为 42。
     :param n_iter: 随机搜索的迭代次数，默认为 20 次。
     :param cv: 交叉验证的折数，默认为 5 折。
@@ -299,6 +303,8 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         test_end=test_end,  # 测试集结束日期，默认为'2025-03-31'。
         nan_method=nan_method,  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'。
         standardize_method=standardize_method,  # 数据标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
+        period_metrics=period_metrics,
+        rolling_metrics=rolling_metrics,
         basic_data_as_metric=basic_data_as_metric,  # 是否将基本数据（如开盘价、收盘价、交易量等）作为特征数据，默认为False。
         return_threshold=return_threshold,  # 标签生成方法
         dim_reduction=dim_reduction,  # 是否PCA
@@ -374,6 +380,8 @@ if __name__ == '__main__':
             test_end='2025-04-30',  # 测试集结束日期，指定为 '2025-04-30'
             nan_method='drop',  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'
             standardize_method='zscore',  # 指标标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
+            period_metrics=True,    # 是否使用区间指标作为训练参数，默认为 True
+            rolling_metrics=True,   # 是否使用滚动指标作为训练参数，默认为 True
             random_seed=42,  # 随机种子，确保结果可重复，默认为 42
             n_iter=20,  # 随机搜索的迭代次数，默认为 20 次
             cv=5,  # 交叉验证的折数，默认为 5 折
