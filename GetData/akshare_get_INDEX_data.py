@@ -121,8 +121,7 @@ def get_global_index_data(code_dict, func_obj, save_path='../Data/Index', parque
             try:
                 # 尝试获取指数数据
                 sub_df = func_obj(symbol=i_name)
-                if '代码' not in sub_df.columns:
-                    sub_df['ts_code'] = i_name
+                sub_df['ts_code'] = i_name
                 # 将获取到的数据添加到列表中
                 final_df.append(sub_df)
                 # 成功获取数据后，跳出循环
@@ -142,7 +141,7 @@ def get_global_index_data(code_dict, func_obj, save_path='../Data/Index', parque
     # 变更字段名
     if '日期' in final_df.columns:
         final_df.rename(
-            columns={'日期': 'trade_date', '代码': 'ts_code', '名称': 'name', '今开': 'open', '最新价': 'close',
+            columns={'日期': 'trade_date', '名称': 'name', '今开': 'open', '最新价': 'close',
                      '最高': 'high', '最低': 'low', '振幅': 'change'}, inplace=True)
         final_df.rename(
             columns={'指数': 'close'}, inplace=True)
@@ -765,6 +764,7 @@ def akshare_index_main(save_path='../Data/Index'):
                   }
     get_global_index_data(index_dict, ak.index_global_hist_em,
                           save_path, 'global_index_daily.parquet')
+
     # 人民币对全球其他货币汇率字典 (日频)
     currency_map = {'100日元兑离岸人民币': 'JPYCNH', '纽元人民币中间价': 'NZDCNYC', '100日元人民币中间价': 'JPYCNYC',
                     '欧元人民币中间价': 'EURCNYC', '英镑人民币中间价': 'GBPCNYC', '瑞士法郎人民币中间价': 'CHFCNYC',
@@ -803,9 +803,9 @@ def akshare_index_main(save_path='../Data/Index'):
 
     # 全球商品现货价格指数 (周频)
     spot_goods_dict = {
-        "波罗的海干散货指数": "BDI",
-        "钢坯价格指数": "GP",
-        "澳大利亚粉矿价格": "PB",
+        "BDI": "波罗的海干散货指数",
+        "GP": "钢坯价格指数",
+        "PB": "澳大利亚粉矿价格",
     }
     get_global_index_data(spot_goods_dict, ak.spot_goods,
                           save_path, 'global_goods_daily.parquet')
@@ -827,4 +827,14 @@ def akshare_index_main(save_path='../Data/Index'):
 
 
 if __name__ == '__main__':
-    get_china_gzindex_data()
+    # # akshare_index_main()
+    # df = pd.read_parquet('../Data/Index/global_currency_daily.parquet')
+    # print(df)
+    # 全球商品现货价格指数 (周频)
+    spot_goods_dict = {
+        "BDI": "波罗的海干散货指数",
+        "GP": "钢坯价格指数",
+        "PB": "澳大利亚粉矿价格",
+    }
+    get_global_index_data(spot_goods_dict, ak.spot_goods,
+                          '../Data/Index', 'global_goods_daily.parquet')
