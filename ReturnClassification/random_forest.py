@@ -15,8 +15,9 @@ from sklearn.metrics import classification_report
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV
 
-from ReturnClassification.metrics_data_prepare import main_data_prepare
+from ReturnClassification.metrics_data_prepare import main_data_prepare, dim_reduction_func
 from ReturnClassification.select_import_features import find_important_features
+from ReturnClassification.build_collaborative_features import get_cross_metrics_func
 
 warnings.filterwarnings("ignore")
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -254,6 +255,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
                                return_threshold=0.0, parameter_dict=None,
                                dim_reduction=False, dim_reduction_limit=0.9, n_components=None,
                                index_folder_path='../Data/Index', index_close_as_metric=True,
+                               metrics_list=None, model_path='../Data/Models', cross_model_name='autofeat.joblib',
                                ):
     """
     使用随机森林模型预测基金走势。
@@ -284,6 +286,9 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     :param n_components: int, PCA维度
     :param index_folder_path: 指数数据文件夹路径，默认为 '../Data/Index'。
     :param index_close_as_metric: 是否使用指数收盘价作为指标数据，默认为 True。
+    :param metrics_list: list, 需要交叉特征的指标列表，默认为 None。None 表示不使用交叉特征
+    :param model_path: 模型保存路径，默认为 '../Data/Models'。
+    :param cross_model_name: 模型文件名，默认为 'autofeat.joblib'。
 
     :return: 训练完成的随机森林模型。
     """
@@ -312,6 +317,17 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
         n_components=n_components,  # PCA维度
         index_close_as_metric=index_close_as_metric,  # 是否将指数收盘价作为指标数据，默认为True。
     )
+
+    ''' 训练交叉特征 '''
+    x_train, x_test = get_cross_metrics_func(x_train, x_test, metrics_list,
+                                             model_folder_path=model_path,
+                                             joblib_file_name=cross_model_name)
+
+    ''' PCA降维 '''
+    if dim_reduction:
+        x_train, x_test = dim_reduction_func(x_train, x_test,
+                                             dim_reduction_limit=dim_reduction_limit,
+                                             n_components=n_components)
 
     ''' 特征选择 '''
     if import_feature_only:  # 是否使用重要特征进行模型训练
@@ -367,6 +383,37 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
 
 
 if __name__ == '__main__':
+    metrics_list = [
+        'low', 'high', 'amount', 'open', 'close', 'vol',
+        'pct', 'change', 'log',
+        'TotalReturn:5d', 'TotalReturn:10d', 'TotalReturn:15d', 'TotalReturn:25d',
+        'Volatility:5d', 'Volatility:10d', 'Volatility:15d', 'Volatility:25d',
+        'AvgLow:5d', 'AvgLow:10d', 'AvgLow:15d', 'AvgLow:25d',
+        'AvgHigh:5d', 'AvgHigh:10d', 'AvgHigh:15d', 'AvgHigh:25d',
+        'VolAvg:5d', 'VolAvg:10d', 'VolAvg:15d', 'VolAvg:25d',
+        'PriceSigma:3', 'PriceSigma:5', 'PriceSigma:10', 'PriceSigma:15',
+        'CloseMA:3', 'CloseMA:5', 'CloseMA:10', 'CloseMA:15',
+        'VolMA:3', 'VolMA:5', 'VolMA:10', 'VolMA:15',
+        'TRIX:3', 'TRIX:5', 'TRIX:10', 'TRIX:15',
+        'PVT:0', 'OBV:0',
+        'RSI:3', 'RSI:5', 'RSI:10', 'RSI:15',
+        'EMA:3', 'EMA:5', 'EMA:10', 'EMA:15',
+        'PSY:3', 'PSY:5', 'PSY:10', 'PSY:15',
+        'CCI:3', 'CCI:5', 'CCI:10', 'CCI:15',
+        'CR:3', 'CR:5', 'CR:10', 'CR:15',
+        'VR:3', 'VR:5', 'VR:10', 'VR:15',
+        'AR:3', 'AR:5', 'AR:10', 'AR:15',
+        'BR:3', 'BR:5', 'BR:10', 'BR:15',
+        'PDI:3', 'PDI:5', 'PDI:10', 'PDI:15',
+        'MDI:3', 'MDI:5', 'MDI:10', 'MDI:15',
+        'DKX:3', 'DKX:5', 'DKX:10', 'DKX:15',
+        'BIAS:3', 'BIAS:5', 'BIAS:10', 'BIAS:15',
+        'KDJ-K-3:3', 'KDJ-K-3:5', 'KDJ-K-3:10', 'KDJ-K-3:15',
+        'KDJ-D-3:3', 'KDJ-D-3:5', 'KDJ-D-3:10', 'KDJ-D-3:15',
+        'KDJ-J-3:3', 'KDJ-J-3:5', 'KDJ-J-3:10', 'KDJ-J-3:15',
+        'BollDo-2:3', 'BollDo-2:5', 'BollDo-2:10', 'BollDo-2:15',
+        'BollUp-2:3', 'BollUp-2:5', 'BollUp-2:10', 'BollUp-2:15',
+    ]
     for d in [10]:
         # 调用预测主函数 predict_main_random_forest，用于执行基金数据预处理、模型训练和测试等任务
         final_model = predict_main_random_forest(
@@ -380,8 +427,8 @@ if __name__ == '__main__':
             test_end='2025-04-30',  # 测试集结束日期，指定为 '2025-04-30'
             nan_method='drop',  # 处理缺失值的方法，默认为 'drop'（删除缺失值），可选 'median' 或 'mean'
             standardize_method='zscore',  # 指标标准化的方法,可选: 'minmax', 'zscore', 'both', 'none'。
-            period_metrics=True,    # 是否使用区间指标作为训练参数，默认为 True
-            rolling_metrics=True,   # 是否使用滚动指标作为训练参数，默认为 True
+            period_metrics=True,  # 是否使用区间指标作为训练参数，默认为 True
+            rolling_metrics=True,  # 是否使用滚动指标作为训练参数，默认为 True
             random_seed=42,  # 随机种子，确保结果可重复，默认为 42
             n_iter=20,  # 随机搜索的迭代次数，默认为 20 次
             cv=5,  # 交叉验证的折数，默认为 5 折
@@ -395,6 +442,8 @@ if __name__ == '__main__':
             n_components=None,  # PCA维度, 写None表示自动选择, 保留90%方差解释比率
             index_folder_path='../Data/Index',  # 指数数据的文件夹路径，默认为 '../Data/Index'
             index_close_as_metric=True,  # 是否使用指数收盘价作为指标数据，默认为 True
+            metrics_list=metrics_list,
+            model_path='../Data/Models', cross_model_name='autofeat_model_2_10_PeriodAndRolling.joblib'
         )
         # 保存模型
         filename = f'random_forest_model_{d}.joblib'

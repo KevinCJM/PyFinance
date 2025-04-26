@@ -14,8 +14,6 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.decomposition import PCA
 
-from ReturnClassification.build_collaborative_features import get_cross_metrics_transform, get_cross_metrics
-
 warnings.filterwarnings("ignore")
 pd.set_option('display.width', 1000)  # 表格不分段显示
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
@@ -470,9 +468,6 @@ def main_data_prepare(the_fund_code='159919.SZ',
                       index_close_as_metric=True,
                       return_threshold=0.0,
                       dim_reduction=False, dim_reduction_limit=0.9, n_components=None,
-                      cross_metrics=False, selected_metrics=None,
-                      model_folder_path='../Data/Models',
-                      joblib_file_name='autofeat_model_2_10.joblib',
                       ):
     """
     主要数据准备函数，用于准备基金数据以进行后续的机器学习模型训练和测试。
@@ -497,10 +492,6 @@ def main_data_prepare(the_fund_code='159919.SZ',
     :param dim_reduction: bool, 是否做PCA数据降维，默认为 False
     :param dim_reduction_limit: float, PCA数据降维保留的解释方差比率，默认为0.9
     :param n_components: int, PCA数据降维到多少数量
-    :param cross_metrics: bool, 是否构建交叉参数
-    :param selected_metrics: list, 选择用于构建交叉参数的特征
-    :param model_folder_path: str, 交叉参数模型保存的文件夹路径
-    :param joblib_file_name: str, 交叉参数模型的文件名字
 
     :return: 返回训练集特征、训练集标签、测试集特征、测试集标签和原始指标数据
     """
@@ -557,52 +548,66 @@ def main_data_prepare(the_fund_code='159919.SZ',
         test_end=test_end
     )
 
-    if cross_metrics:
-        if selected_metrics is None:
-            selected_metrics = [
-                'low', 'high', 'amount', 'open', 'close', 'vol',
-                'TotalReturn:5d', 'TotalReturn:10d', 'TotalReturn:15d', 'TotalReturn:25d',
-                'Volatility:5d', 'Volatility:10d', 'Volatility:15d', 'Volatility:25d'
-            ]
-
-        model_file_path = os.path.join(model_folder_path, joblib_file_name)
-
-        # 判断文件是否存在
-        if not os.path.exists(model_file_path):
-            # 训练模型
-            get_cross_metrics(x_train, y_train, selected_metrics, steps=2,
-                              model_folder_path=model_folder_path, joblib_file_name=joblib_file_name)
-        else:
-            # 使用模型
-            x_train = get_cross_metrics_transform(x_train, selected_metrics,
-                                                  model_folder_path=model_folder_path,
-                                                  joblib_file_name=joblib_file_name)
-    if dim_reduction:
-        print("[INFO] 数据降维中...")
-        # 数据归一化
-        scaler = MinMaxScaler()
-        x_train_scaled = scaler.fit_transform(x_train)
-        x_test_scaled = scaler.transform(x_test)
-
-        if n_components is None:
-            # dim_reduction_limit = 0.99
-            pca_full = PCA().fit(x_train_scaled)
-            explained_var_ratio_cum_sum = np.cumsum(pca_full.explained_variance_ratio_)
-            n_components = np.argmax(explained_var_ratio_cum_sum >= dim_reduction_limit) + 1
-            print(f"[INFO] PCA降维到 {n_components} 维, 解释方差比率达到{dim_reduction_limit * 100}%")
-
-        # 使用 PCA 降维
-        pca = PCA(n_components=n_components)
-        x_train = pca.fit_transform(x_train_scaled)
-        x_test = pca.transform(x_test_scaled)
-        print(f"[INFO] PCA降维完成, "
-              f"训练集数据量: {len(x_train)}条参数&{len(y_train)}条标签; 参数共{x_train.shape[1]}列; "
-              f"测试集数据量: {len(x_test)}条参数&{len(y_test)}条标签; 参数共{x_test.shape[1]}列.")
+    # # 判断是否需要进行数据降维处理
+    # if dim_reduction:
+    #     print("[INFO] 数据PCA降维中...")
+    #     # 数据归一化
+    #     scaler = MinMaxScaler()
+    #     x_train_scaled = scaler.fit_transform(x_train)
+    #     x_test_scaled = scaler.transform(x_test)
+    #
+    #     # 判断是否需要自动计算主成分数量
+    #     if n_components is None:
+    #         pca_full = PCA().fit(x_train_scaled)
+    #         explained_var_ratio_cum_sum = np.cumsum(pca_full.explained_variance_ratio_)
+    #         n_components = np.argmax(explained_var_ratio_cum_sum >= dim_reduction_limit) + 1
+    #         print(f"[INFO] PCA降维到 {n_components} 维, 解释方差比率达到{dim_reduction_limit * 100}%")
+    #
+    #     # 使用 PCA 降维
+    #     pca = PCA(n_components=n_components)
+    #     x_train = pca.fit_transform(x_train_scaled)
+    #     x_test = pca.transform(x_test_scaled)
+    #     print(f"[INFO] PCA降维完成, "
+    #           f"训练集数据量: {len(x_train)}条参数&{len(y_train)}条标签; 参数共{x_train.shape[1]}列; "
+    #           f"测试集数据量: {len(x_test)}条参数&{len(y_test)}条标签; 参数共{x_test.shape[1]}列.")
 
     # 返回划分好的数据集和原始指标数据
     return x_train, y_train, x_test, y_test, metrics_data
 
 
+def dim_reduction_func(x_train, x_test,
+                       dim_reduction_limit=0.99,
+                       n_components=None,
+                       ):
+    print("[INFO] 数据PCA降维中...")
+
+    # 处理 nan 和 inf
+    x_train = x_train.replace([np.inf, -np.inf], np.nan)
+    x_test = x_test.replace([np.inf, -np.inf], np.nan)
+    x_train = x_train.fillna(method='ffill')
+    x_train = x_train.fillna(method='bfill')
+    x_test = x_test.fillna(method='ffill')
+    x_test = x_test.fillna(method='bfill')
+
+    # 数据归一化
+    scaler = MinMaxScaler()
+    x_train_scaled = scaler.fit_transform(x_train)  #
+    x_test_scaled = scaler.transform(x_test)
+
+    # 判断是否需要自动计算主成分数量
+    if n_components is None:
+        pca_full = PCA().fit(x_train_scaled)
+        explained_var_ratio_cum_sum = np.cumsum(pca_full.explained_variance_ratio_)
+        n_components = np.argmax(explained_var_ratio_cum_sum >= dim_reduction_limit) + 1
+        print(f"[INFO] PCA降维到 {n_components} 维, 解释方差比率达到{dim_reduction_limit * 100}%")
+
+    # 使用 PCA 降维
+    pca = PCA(n_components=n_components)
+    x_train = pca.fit_transform(x_train_scaled)
+    x_test = pca.transform(x_test_scaled)
+    print(f"[INFO] PCA降维完成, 训练集数据结构: {x_train.shape}; 测试集数据量: {x_test.shape}.")
+    return x_train, x_test
+
+
 if __name__ == '__main__':
-    df = pd.read_parquet('/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Index/wide_index_close.parquet')
-    print(df)
+    pass
