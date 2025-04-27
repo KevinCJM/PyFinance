@@ -827,14 +827,4 @@ def akshare_index_main(save_path='../Data/Index'):
 
 
 if __name__ == '__main__':
-    # # akshare_index_main()
-    # df = pd.read_parquet('../Data/Index/global_currency_daily.parquet')
-    # print(df)
-    # 全球商品现货价格指数 (周频)
-    spot_goods_dict = {
-        "BDI": "波罗的海干散货指数",
-        "GP": "钢坯价格指数",
-        "PB": "澳大利亚粉矿价格",
-    }
-    get_global_index_data(spot_goods_dict, ak.spot_goods,
-                          '../Data/Index', 'global_goods_daily.parquet')
+    akshare_index_main()

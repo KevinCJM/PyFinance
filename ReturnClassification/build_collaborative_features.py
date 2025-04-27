@@ -15,9 +15,6 @@ from tsfresh import extract_features
 from tsfresh.utilities.dataframe_functions import impute
 
 
-# from ReturnClassification.metrics_data_prepare import main_data_prepare
-
-
 # 使用 AutoFeat 生成静态组合特征
 def get_cross_metrics(raw_x, raw_y, selected_metrics_list, steps=2,
                       model_folder_path='../Data/Models', joblib_file_name='autofeat_model_2.joblib'):
@@ -270,4 +267,7 @@ if __name__ == '__main__':
 
     cross_metrics = True
     model_folder = '../Data/Models'
-    model_name = 'autofeat_model_2_10_PeriodAndRolling.joblib'
+    model_name = 'autofeat_model_2_10_Rolling.joblib'
+
+    get_cross_metrics(x_train, y_train, rolling_metrics, steps=2,
+                      model_folder_path=model_folder, joblib_file_name=model_name)

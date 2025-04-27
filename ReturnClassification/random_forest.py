@@ -319,9 +319,10 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     )
 
     ''' 训练交叉特征 '''
-    x_train, x_test = get_cross_metrics_func(x_train, x_test, metrics_list,
-                                             model_folder_path=model_path,
-                                             joblib_file_name=cross_model_name)
+    if metrics_list is not None:
+        x_train, x_test = get_cross_metrics_func(x_train, x_test, metrics_list,
+                                                 model_folder_path=model_path,
+                                                 joblib_file_name=cross_model_name)
 
     ''' PCA降维 '''
     if dim_reduction:
@@ -372,7 +373,7 @@ def predict_main_random_forest(the_fund_code='159919.SZ',
     else:
         # 训练随机森林模型
         trained_model = train_and_test_random_forest(
-            x_train, x_test, y_train, y_test, metrics_data,
+            x_train, x_test, y_train, y_test, x_train,
             random_seed=random_seed, n_iter=n_iter, cv=cv, best_dict=parameter_dict,
             return_threshold=return_threshold, dim_reduction=dim_reduction)
 
@@ -386,33 +387,32 @@ if __name__ == '__main__':
     metrics_list = [
         'low', 'high', 'amount', 'open', 'close', 'vol',
         'pct', 'change', 'log',
-        'TotalReturn:5d', 'TotalReturn:10d', 'TotalReturn:15d', 'TotalReturn:25d',
+        'TotalReturn:3d', 'TotalReturn:10d', 'TotalReturn:15d', 'TotalReturn:25d',
+        'AverageDailyReturn:3d', 'AverageDailyReturn:10d', 'AverageDailyReturn:15d', 'AverageDailyReturn:25d',
+        'AvgPositiveReturn:5d', 'AvgPositiveReturn:10d', 'AvgPositiveReturn:15d', 'AvgPositiveReturn:25d',
+        'AvgNegativeReturn:5d', 'AvgNegativeReturn:10d', 'AvgNegativeReturn:15d', 'AvgNegativeReturn:25d',
+        'AvgReturnRatio:5d', 'AvgReturnRatio:10d', 'AvgReturnRatio:15d', 'AvgReturnRatio:25d',
         'Volatility:5d', 'Volatility:10d', 'Volatility:15d', 'Volatility:25d',
+        'MeanAbsoluteDeviation:5d', 'MeanAbsoluteDeviation:10d', 'MeanAbsoluteDeviation:15d',
+        'MeanAbsoluteDeviation:25d',
+        'ReturnRange:5d', 'ReturnRange:10d', 'ReturnRange:15d', 'ReturnRange:25d',
+        'MaxDrawDown:5d', 'MaxDrawDown:10d', 'MaxDrawDown:15d', 'MaxDrawDown:25d',
+        'UlcerIndex:5d', 'UlcerIndex:10d', 'UlcerIndex:15d', 'UlcerIndex:25d',
+        'SharpeRatio:5d', 'SharpeRatio:10d', 'SharpeRatio:15d', 'SharpeRatio:25d',
+        'DownsideVolatility:5d', 'DownsideVolatility:10d', 'DownsideVolatility:15d', 'DownsideVolatility:25d',
+        'GainConsistency:5d', 'GainConsistency:10d', 'GainConsistency:15d', 'GainConsistency:25d',
+        'ReturnSkewness:5d', 'ReturnSkewness:10d', 'ReturnSkewness:15d', 'ReturnSkewness:25d',
+        'ReturnKurtosis:5d', 'ReturnKurtosis:10d', 'ReturnKurtosis:15d', 'ReturnKurtosis:25d',
+        'CrossProductRatio-1:5d', 'CrossProductRatio-1:10d', 'CrossProductRatio-1:15d', 'CrossProductRatio-1:25d',
+        'HurstExponent:5m',
+        'CVaR-95:5d', 'CVaR-95:10d', 'CVaR-95:15d', 'CVaR-95:25d',
+        'VaR-95:5d', 'VaR-95:10d', 'VaR-95:15d', 'VaR-95:25d',
+        'ReturnSlope:5d', 'ReturnSlope:10d', 'ReturnSlope:15d', 'ReturnSlope:25d',
+        'EquitySmoothness:5d', 'EquitySmoothness:10d', 'EquitySmoothness:15d', 'EquitySmoothness:25d',
         'AvgLow:5d', 'AvgLow:10d', 'AvgLow:15d', 'AvgLow:25d',
         'AvgHigh:5d', 'AvgHigh:10d', 'AvgHigh:15d', 'AvgHigh:25d',
+        'HLDiff:5d', 'HLDiff:10d', 'HLDiff:15d', 'HLDiff:25d',
         'VolAvg:5d', 'VolAvg:10d', 'VolAvg:15d', 'VolAvg:25d',
-        'PriceSigma:3', 'PriceSigma:5', 'PriceSigma:10', 'PriceSigma:15',
-        'CloseMA:3', 'CloseMA:5', 'CloseMA:10', 'CloseMA:15',
-        'VolMA:3', 'VolMA:5', 'VolMA:10', 'VolMA:15',
-        'TRIX:3', 'TRIX:5', 'TRIX:10', 'TRIX:15',
-        'PVT:0', 'OBV:0',
-        'RSI:3', 'RSI:5', 'RSI:10', 'RSI:15',
-        'EMA:3', 'EMA:5', 'EMA:10', 'EMA:15',
-        'PSY:3', 'PSY:5', 'PSY:10', 'PSY:15',
-        'CCI:3', 'CCI:5', 'CCI:10', 'CCI:15',
-        'CR:3', 'CR:5', 'CR:10', 'CR:15',
-        'VR:3', 'VR:5', 'VR:10', 'VR:15',
-        'AR:3', 'AR:5', 'AR:10', 'AR:15',
-        'BR:3', 'BR:5', 'BR:10', 'BR:15',
-        'PDI:3', 'PDI:5', 'PDI:10', 'PDI:15',
-        'MDI:3', 'MDI:5', 'MDI:10', 'MDI:15',
-        'DKX:3', 'DKX:5', 'DKX:10', 'DKX:15',
-        'BIAS:3', 'BIAS:5', 'BIAS:10', 'BIAS:15',
-        'KDJ-K-3:3', 'KDJ-K-3:5', 'KDJ-K-3:10', 'KDJ-K-3:15',
-        'KDJ-D-3:3', 'KDJ-D-3:5', 'KDJ-D-3:10', 'KDJ-D-3:15',
-        'KDJ-J-3:3', 'KDJ-J-3:5', 'KDJ-J-3:10', 'KDJ-J-3:15',
-        'BollDo-2:3', 'BollDo-2:5', 'BollDo-2:10', 'BollDo-2:15',
-        'BollUp-2:3', 'BollUp-2:5', 'BollUp-2:10', 'BollUp-2:15',
     ]
     for d in [10]:
         # 调用预测主函数 predict_main_random_forest，用于执行基金数据预处理、模型训练和测试等任务
@@ -437,13 +437,13 @@ if __name__ == '__main__':
             import_feature_only=False,  # 是否仅使用重要特征进行训练，默认为 True
             return_threshold=0.0,  # 标签生成方法，未来收益率大于 0.01 的样本标记为 1，否则为 0
             parameter_dict=None,  # 最优参数字典，如果为 None，则自动调参
-            dim_reduction=True,  # 是否PCA
+            dim_reduction=False,  # 是否PCA
             dim_reduction_limit=0.99,  # PCA降维的方差解释比例, 默认为0.9
             n_components=None,  # PCA维度, 写None表示自动选择, 保留90%方差解释比率
             index_folder_path='../Data/Index',  # 指数数据的文件夹路径，默认为 '../Data/Index'
             index_close_as_metric=True,  # 是否使用指数收盘价作为指标数据，默认为 True
             metrics_list=metrics_list,
-            model_path='../Data/Models', cross_model_name='autofeat_model_2_10_PeriodAndRolling.joblib'
+            model_path='../Data/Models', cross_model_name='autofeat_model_2_10_Period.joblib'
         )
         # 保存模型
         filename = f'random_forest_model_{d}.joblib'
