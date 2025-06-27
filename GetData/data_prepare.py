@@ -45,13 +45,13 @@ def data_prepare(min_data_req=500,
     etf_df["trade_date"] = pd.to_datetime(etf_df["trade_date"])
     etf_df = etf_df.drop_duplicates(subset=["trade_date", "ts_code"], keep="last")
 
-    ''' 剔除货币类基金 '''
-    # 获取货币型基金的 ts_code 并剔除
+    # ''' 剔除货币类基金 '''
+    # # 获取货币型基金的 ts_code 并剔除
     etf_info = get_etf_info()
-    mm_etf_df = etf_info[etf_info["invest_type"] == "货币型"]['ts_code'].tolist()
-    etf_df = etf_df[~etf_df["ts_code"].isin(mm_etf_df)]
-    del mm_etf_df
-    gc.collect()
+    # mm_etf_df = etf_info[etf_info["invest_type"] == "货币型"]['ts_code'].tolist()
+    # etf_df = etf_df[~etf_df["ts_code"].isin(mm_etf_df)]
+    # del mm_etf_df
+    # gc.collect()
 
     ''' 剔除数据量不足的基金 '''
     # 统计每个 ts_code 的数据量并剔除数据量不足的基金
@@ -81,7 +81,7 @@ def data_prepare(min_data_req=500,
     ''' 建立宽表数据帧 '''
     # 设置索引并生成宽表数据帧
     etf_df.set_index(["trade_date", "ts_code"], inplace=True)
-    fields = ["open", "high", "low", "close", "change", "pct", "vol", "amount", "log"]
+    fields = ["open", "high", "low", "close", "change", "pct_chg", "vol", "amount", "log_return"]
     pivot_dfs = {
         field + "_df": etf_df[field].unstack(level="ts_code") for field in fields
     }
@@ -183,4 +183,5 @@ def index_data_prepare(index_path="../Data/Index"):
 
 
 if __name__ == '__main__':
-    index_data_prepare()
+    # index_data_prepare()
+    data_prepare()

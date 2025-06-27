@@ -408,6 +408,6 @@ def get_etf_daily_data_increment(parquet_path="../Data/etf_daily.parquet"):
 
 
 if __name__ == '__main__':
-    # get_etf_daily_data_all()
+    get_etf_daily_data_all()
     df = get_etf_info(save_parquet=False)
     df.to_excel("../Data/etf_info.xlsx", index=False)

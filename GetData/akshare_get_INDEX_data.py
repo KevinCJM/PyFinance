@@ -827,4 +827,9 @@ def akshare_index_main(save_path='../Data/Index'):
 
 
 if __name__ == '__main__':
-    akshare_index_main()
+    # akshare_index_main()
+    df = pd.read_parquet('../Data/Index/global_metal_daily.parquet')
+    print(df.head())
+    df = pd.read_parquet('../Data/Index/wide_index_close.parquet')
+    df = df[['Au99.99']]
+    print(df.head())

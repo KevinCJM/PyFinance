@@ -18,7 +18,7 @@ from MetricsFactory.metrics_factory import compute_metrics_for_period_initialize
 '''
 
 # 配置路径
-log_return_file = "./Data/wide_log_df.parquet"  # ETF日频对数收益率文件路径
+log_return_file = "./Data/wide_log_return_df.parquet"  # ETF日频对数收益率文件路径
 open_price_file = "./Data/wide_open_df.parquet"  # ETF日频开盘价文件路径
 close_price_file = "./Data/wide_close_df.parquet"  # ETF日频收盘价文件路径
 high_price_file = "./Data/wide_high_df.parquet"  # ETF日频收盘价文件路径
@@ -34,22 +34,24 @@ low_price_df = pd.read_parquet(low_price_file)  # 读取ETF日频收盘价数据
 volume_df = pd.read_parquet(volume_file)  # 读取ETF日频收盘价数据
 
 # 指定要计算的基金 (所有基金都要计算的话写None)
-fund = ['510050.SH',    # 上证50ETF
-        '159915.SZ',    # 创业板ETF
-        '159912.SZ',    # 沪深300ETF
-        '512500.SH',    # 中证500ETF华夏
-        '511010.SH',    # 国债ETF
-        '513100.SH',    # 纳指ETF
-        '513030.SH',    # 德国ETF
-        '513080.SH',    # 法国CAC40ETF
-        '513520.SH',    # 日经ETF
-        '518880.SH',    # 黄金ETF
-        '161226.SZ',    # 国投白银LOF
-        '501018.SH',    # 南方原油LOF
-        '159981.SZ',    # 能源化工ETF
-        '159985.SZ',    # 豆粕ETF
-        '159980.SZ',    # 有色ETF
-        ]
+fund = [
+    '510050.SH',  # 上证50ETF
+    '159915.SZ',  # 创业板ETF
+    '159912.SZ',  # 沪深300ETF
+    '512500.SH',  # 中证500ETF华夏
+    '511010.SH',  # 国债ETF
+    '513100.SH',  # 纳指ETF
+    '513030.SH',  # 德国ETF
+    '513080.SH',  # 法国CAC40ETF
+    '513520.SH',  # 日经ETF
+    '518880.SH',  # 黄金ETF
+    '161226.SZ',  # 国投白银LOF
+    '501018.SH',  # 南方原油LOF
+    '159981.SZ',  # 能源化工ETF
+    '159985.SZ',  # 豆粕ETF
+    '159980.SZ',  # 有色ETF
+    '511990.SH',  # 华宝添益货币ETF
+]
 
 if __name__ == '__main__':
     # 计算区间指标
