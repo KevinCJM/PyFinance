@@ -38,36 +38,54 @@ the_metrics_info_file_path_dict = [
 # --- 1. 配置中心 (CONFIG) ---
 # 将所有超参数和配置集中在此处
 CONFIG = {
+    "infra": {
+        "seed": 42,  # 新增：随机种子
+    },
     "preprocessing": {
         "train_split_ratio": 0.8,
     },
     "environment": {
         "initial_capital": 100000,
-        "transaction_cost_pct": 0.001,
-        # 新增：奖励函数超参数
+        "transaction_cost_pct": 0.001,  # 交易成本百分比 (0.1%)
+        "trade_penalty": 0.05,  # 固定交易惩罚 (奖励单位)
+        "slippage_pct": 0.0005,  # 新增：0.05% 的滑点
         "reward_scaling": {
-            "drawdown_penalty_factor": 1.0,  # k1: 回撤惩罚系数
-            "risk_aversion_reward_factor": 0.01,  # k2: 避险奖励系数 (乘以100便于观察)
-            "settlement_reward_factor": 1.0,  # k3: 结算奖励系数
+            # 每日持仓奖励的缩放系数
+            "holding_pnl_factor": 1.0,
+            # 卖出结算时，(回报率 * log(持仓天数)) 的缩放系数
+            "settlement_return_factor": 1.0,
         }
     },
     "agent": {
-        "state_dim": None,  # 将在运行时动态确定
+        "state_dim": None,
         "action_dim": 3,
-        "dqn_hidden_layers": [256, 128],  # DQN网络的隐藏层尺寸
+        "dqn_hidden_layers": [256, 128],
         "memory_size": 10000,
         "batch_size": 64,
         "gamma": 0.99,
-        "epsilon_start": 1.0,
-        "epsilon_min": 0.01,
-        "epsilon_decay": 0.995,
         "learning_rate": 0.0005,
         "target_update_freq": 20,
+        # --- 线性Epsilon衰减配置 ---
+        "epsilon_start": 1.0,
+        "epsilon_min": 0.01,
+        "epsilon_linear_decay_steps": 150000,  # 在15万步内完成衰减
     },
     "training": {
-        "num_episodes": 100,  # 增加轮数以获得更好效果
+        "num_episodes": 10,  # 增加轮数以获得更好效果
     }
 }
+
+
+def set_seeds(seed):
+    """ 设置所有随机种子以保证结果可复现 """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 # --- 2. 数据加载与预处理---
@@ -103,62 +121,57 @@ def preprocess_and_split_data(df, config):
     """
     重构后的预处理函数，解决了数据泄露和数据起点问题。
     """
-    # 1. (修正#2) 确定所有指标都可用的起始日期
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)  # 首先替换inf
+    # 替换inf为nan
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
+    # 修正#2: 确定所有指标都可用的统一开始日期
     first_valid_indices = [df[col].first_valid_index() for col in df.columns]
     start_date = max(dt for dt in first_valid_indices if dt is not None)
-    df = df.loc[start_date:]
-    print(f"Data sliced. New start date: {start_date.date()}")
+    df = df.loc[start_date:].copy()
 
-    # 2. 分割训练集和测试集
+    # 修正#3: 只使用ffill后删除NaN，避免bfill的数据泄露
+    df.fillna(method='ffill', inplace=True)
+    df.dropna(inplace=True)
+
+    # 分割训练集和测试集
     split_index = int(len(df) * config['preprocessing']['train_split_ratio'])
     train_df = df.iloc[:split_index].copy()
     test_df = df.iloc[split_index:].copy()
 
-    # 3. (修正#1) 在分割后的数据集上分别填充NaN (防止数据泄露)
-    train_df.fillna(method='ffill', inplace=True)
-    train_df.fillna(method='bfill', inplace=True)
-    test_df.fillna(method='ffill', inplace=True)
-    test_df.fillna(method='bfill', inplace=True)
-
-    # 4. 归一化
-    # 注意：'close'列不参与归一化，因为它将用于环境中的奖励计算和绘图
+    # --- 修正#1: 不再将原始'close'价格暴露给scaler ---
     feature_cols = df.columns.drop('close')
     scaler = StandardScaler()
-
-    # 在训练数据上拟合scaler
     scaler.fit(train_df[feature_cols])
 
-    # 对训练和测试数据的特征列进行归一化
-    train_scaled_features = scaler.transform(train_df[feature_cols])
-    test_scaled_features = scaler.transform(test_df[feature_cols])
-
-    # 创建新的DataFrame
-    train_scaled = pd.DataFrame(train_scaled_features, index=train_df.index, columns=feature_cols)
+    train_scaled = pd.DataFrame(scaler.transform(train_df[feature_cols]), index=train_df.index, columns=feature_cols)
     train_scaled['close'] = train_df['close']
 
-    test_scaled = pd.DataFrame(test_scaled_features, index=test_df.index, columns=feature_cols)
+    test_scaled = pd.DataFrame(scaler.transform(test_df[feature_cols]), index=test_df.index, columns=feature_cols)
     test_scaled['close'] = test_df['close']
 
     return train_scaled, test_scaled
 
 
-# --- 3. Gym环境与DQN智能体 (已更新为使用CONFIG) ---
-
+# --- 3. Gym环境与DQN智能体 (奖励与状态已重构) ---
 class StockTradingEnv(gym.Env):
     def __init__(self, df, config):
         super(StockTradingEnv, self).__init__()
         self.df = df
+        self.feature_df = df.drop(columns=['close'])
+        self.price_series = df['close']
+
         self.config = config
-        self.reward_config = config['environment']['reward_scaling']
-        self.initial_capital = config['environment']['initial_capital']
-        self.transaction_cost_pct = config['environment']['transaction_cost_pct']
+        self.env_config = config['environment']
+        self.reward_config = self.env_config['reward_scaling']
+        self.initial_capital = self.env_config['initial_capital']
+        self.transaction_cost_pct = self.env_config['transaction_cost_pct']
+        self.trade_penalty = self.env_config['trade_penalty']
+        self.slippage_pct = self.env_config['slippage_pct']  # 新增：读取滑点配置
 
         self.action_space = spaces.Discrete(config['agent']['action_dim'])
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf,
-            shape=(len(df.columns) + 2,), dtype=np.float32
+            shape=(len(self.feature_df.columns) + 2,), dtype=np.float32
         )
         self.reset()
 
@@ -168,65 +181,62 @@ class StockTradingEnv(gym.Env):
         self.shares = 0
         self.portfolio_value = self.initial_capital
         self.history = []
-
         self.entry_price = 0
-        self.max_price_in_position = 0
+        self.position_steps = 0
         return self._get_observation()
 
     def _get_observation(self):
-        # ... (与之前版本相同)
-        market_obs = self.df.iloc[self.current_step].values
+        # --- 观测向量只使用归一化后的特征 ---
+        market_obs = self.feature_df.iloc[self.current_step].values
         position_status = 1.0 if self.shares > 0 else 0.0
         if self.shares > 0:
-            current_price = self.df['close'].iloc[self.current_step]
+            current_price = self.price_series.iloc[self.current_step]
             unrealized_pnl_pct = (current_price / self.entry_price) - 1.0
         else:
             unrealized_pnl_pct = 0.0
         return np.concatenate([market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
 
     def step(self, action):
-        current_price = self.df['close'].iloc[self.current_step]
-        prev_price = self.df['close'].iloc[self.current_step - 1] if self.current_step > 0 else current_price
+        current_price = self.price_series.iloc[self.current_step]
+        prev_portfolio_value = self.portfolio_value
 
         # --- 全新的混合式奖励计算 ---
         reward = 0.0
 
-        # A. 持仓期奖励/惩罚
+        # 1. 每日持仓奖励 (解决奖励稀疏问题)
         if self.shares > 0:
-            # A.1. 顺势持有奖励 (对数收益率)
-            reward += np.log(current_price / prev_price) * 100  # 乘以100放大信号
+            # 计算当日的资产组合价值日收益率
+            daily_return = (self.cash + self.shares * current_price - prev_portfolio_value) / prev_portfolio_value
 
-            # A.2. 回撤惩罚
-            self.max_price_in_position = max(self.max_price_in_position, current_price)
-            drawdown = (self.max_price_in_position - current_price) / self.max_price_in_position
-            reward -= self.reward_config['drawdown_penalty_factor'] * (drawdown ** 2)
+            # 使用 sign(pnl) * sqrt(|pnl|) 对奖励进行塑造
+            shaped_holding_reward = np.sign(daily_return) * np.sqrt(np.abs(daily_return))
+            reward += shaped_holding_reward * self.reward_config['holding_pnl_factor']
 
-        # B. 空仓期奖励/惩罚
-        else:
-            # B.1. 成功避险奖励
-            if current_price < prev_price:
-                reward += self.reward_config['risk_aversion_reward_factor']
-
-        # C. 交易终结奖励
-        # 在卖出动作时，额外增加一个一次性的结算奖励
-        if action == 2 and self.shares > 0:
+        # 2. 交易终结奖励/惩罚
+        if action == 2 and self.shares > 0:  # 仅在卖出时结算
             trade_return = (current_price / self.entry_price) - 1
-            # 减去双边交易成本
-            trade_return -= 2 * self.transaction_cost_pct
 
-            settlement_reward = self.reward_config['settlement_reward_factor'] * np.tanh(
-                trade_return * 10)  # 乘以10放大tanh的敏感区
-            reward += settlement_reward
+            # 鼓励长趋势，惩罚长持亏损
+            duration_factor = np.log(self.position_steps + 1)
+
+            # 综合奖励: (回报率 * 持有周期因子) - 固定交易惩罚
+            settlement_reward = (trade_return * duration_factor) - self.trade_penalty
+            reward += settlement_reward * self.reward_config['settlement_return_factor']
 
         # --- 奖励计算结束 ---
 
         self._take_action(action, current_price)
         self.current_step += 1
 
+        if self.shares > 0:
+            self.position_steps += 1
+
         done = self.current_step >= len(self.df) - 1
         obs = self._get_observation() if not done else np.zeros(self.observation_space.shape)
 
+        # 更新资产组合价值（用于下一次计算）
         self.portfolio_value = self.cash + self.shares * current_price
+
         info = {'date': self.df.index[self.current_step - 1], 'portfolio_value': self.portfolio_value, 'action': action,
                 'price': current_price, 'reward': reward}
         self.history.append(info)
@@ -234,18 +244,39 @@ class StockTradingEnv(gym.Env):
         return obs, reward, done, info
 
     def _take_action(self, action, current_price):
+        """
+        这个方法现在包含了滑点计算。
+        """
+        # Action 1: Buy
         if action == 1 and self.shares == 0:
+            # --- 新增：计算滑点后的实际买入价 ---
+            buy_price = current_price * (1 + self.slippage_pct)
+
+            # 用实际买入价计算交易成本和股数
             cost = self.cash * self.transaction_cost_pct
-            self.shares = (self.cash - cost) / current_price
+            buy_capital = self.cash - cost
+            self.shares = buy_capital / buy_price
             self.cash = 0
-            self.entry_price = current_price
-            self.max_price_in_position = current_price
+
+            # 记录的入场价也必须是滑点后的真实价格
+            self.entry_price = buy_price
+            self.position_steps = 1
+            self.max_price_in_position = buy_price  # 持仓期最高价的起点也是买入价
+
+        # Action 2: Sell
         elif action == 2 and self.shares > 0:
-            proceeds = self.shares * current_price
+            # --- 新增：计算滑点后的实际卖出价 ---
+            sell_price = current_price * (1 - self.slippage_pct)
+
+            # 用实际卖出价计算总收入和成本
+            proceeds = self.shares * sell_price
             cost = proceeds * self.transaction_cost_pct
             self.cash = proceeds - cost
             self.shares = 0
+
+            # 重置交易状态变量
             self.entry_price = 0
+            self.position_steps = 0
             self.max_price_in_position = 0
 
 
@@ -271,12 +302,15 @@ class DQNAgent:
         self.state_dim = self.config['state_dim']
         self.action_dim = self.config['action_dim']
 
+        # Epsilon衰减逻辑
+        self.epsilon = self.config['epsilon_start']
+        self.epsilon_min = self.config['epsilon_min']
+        self.epsilon_decay_step = (self.config['epsilon_start'] - self.config['epsilon_min']) / self.config[
+            'epsilon_linear_decay_steps']
+
         self.memory_size = self.config['memory_size']
         self.batch_size = self.config['batch_size']
         self.gamma = self.config['gamma']
-        self.epsilon = self.config['epsilon_start']
-        self.epsilon_min = self.config['epsilon_min']
-        self.epsilon_decay = self.config['epsilon_decay']
         self.learning_rate = self.config['learning_rate']
         self.target_update_freq = self.config['target_update_freq']
 
@@ -309,38 +343,61 @@ class DQNAgent:
                 q_values[0][i] = -float('inf')
         return torch.argmax(q_values[0]).item()
 
-    def replay(self):
+    def replay(self, global_step):
         """
-        学习方法，Epsilon衰减的逻辑已移出此函数。
+        执行DQN算法的训练步骤。从经验回放缓冲区中采样并更新策略网络参数，
+        定期同步目标网络参数。
+
+        流程说明：
+        1. 检查经验回放缓冲区是否有足够样本
+        2. 随机采样小批量经验
+        3. 转换数据为PyTorch张量并移至指定设备
+        4. 计算当前Q值和目标Q值
+        5. 计算损失并更新策略网络
+        6. 定期同步目标网络参数
         """
         if len(self.memory) < self.batch_size:
             return
 
+        # 从经验回放缓冲区随机采样小批量数据
         minibatch = random.sample(self.memory, self.batch_size)
 
+        # 解压小批量数据为独立数组
         states, actions, rewards, next_states, dones = zip(*minibatch)
 
+        # 将数据转换为PyTorch张量并移至指定设备（GPU/CPU）
         states = torch.FloatTensor(np.array(states)).to(self.device)
         actions = torch.LongTensor(actions).unsqueeze(1).to(self.device)
         rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
         next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
         dones = torch.BoolTensor(dones).unsqueeze(1).to(self.device)
 
+        # 计算当前状态-动作对的Q值
         current_q_values = self.policy_net(states).gather(1, actions)
 
+        # 衰减epsilon
+        self.epsilon = max(self.epsilon_min, self.config['epsilon_start'] - self.epsilon_decay_step * global_step)
+
+        # 计算下一状态的max Q值（目标网络评估，不计算梯度）
         with torch.no_grad():
             next_q_values = self.target_net(next_states).max(1)[0].unsqueeze(1)
 
+        # 终止状态的下一Q值设为0
         next_q_values[dones] = 0.0
+        # 计算目标Q值（贝尔曼方程）
         target_q_values = rewards + (self.gamma * next_q_values)
 
+        # 计算当前Q值和目标Q值之间的损失
         loss = self.loss_fn(current_q_values, target_q_values)
 
+        # 梯度下降更新策略网络
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
+        # 更新学习步数计数器
         self.learn_step_counter += 1
+        # 定期同步目标网络参数
         if self.learn_step_counter % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
 
@@ -392,23 +449,25 @@ def train_dqn(config, train_df):
 
     initial_capital = config['environment']['initial_capital']
     num_episodes = config['training']['num_episodes']
+    global_step_counter = 0  # 声明全局步数计数器
 
-    print(f"--- Starting Training for {num_episodes} episodes ---")
-    for e in range(num_episodes):
+    print(f"--- Starting Training for {config['training']['num_episodes']} episodes ---")
+    for e in range(config['training']['num_episodes']):
         state = env.reset()
         done = False
         while not done:
+            global_step_counter += 1  # 每次与环境交互，计数器+1
             action = agent.act(state)
             next_state, reward, done, info = env.step(action)
             agent.remember(state, action, reward, next_state, done)
             state = next_state
 
             if len(agent.memory) > agent.batch_size:
-                agent.replay()
+                agent.replay(global_step_counter)  # 将全局步数传入
 
-        # --- 核心修改：在每轮结束后进行Epsilon衰减 ---
-        if agent.epsilon > agent.epsilon_min:
-            agent.epsilon *= agent.config['epsilon_decay']
+        # # --- 核心修改：在每轮结束后进行Epsilon衰减 ---
+        # if agent.epsilon > agent.epsilon_min:
+        #     agent.epsilon *= agent.config['epsilon_decay']
 
         # 每10轮打印一次训练日志
         if (e + 1) % 10 == 0 or e == num_episodes - 1:
@@ -512,6 +571,8 @@ def plot_results(history, config, benchmark_df, title):
 
 # --- 主程序 ---
 if __name__ == '__main__':
+    set_seeds(CONFIG["infra"]["seed"])
+
     # 1. 加载数据
     full_df = get_data(the_fund_code, the_basic_info_file_path_dict, the_metrics_info_file_path_dict)
 
