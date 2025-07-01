@@ -6,6 +6,7 @@ from torch.distributions import Dirichlet
 import torch.optim as optim
 import gym
 from gym import spaces
+import matplotlib
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import scale
 import warnings
@@ -17,7 +18,17 @@ plt.style.use('seaborn-v0_8-darkgrid')
 # 设置随机种子以保证结果可复现
 torch.manual_seed(42)
 np.random.seed(42)
+# matplotlib.use('TkAgg')
 
+# ===== 新增：检测并设置GPU设备 =====
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"\n=== 使用设备: {device} ===")
+if device.type == 'cuda':
+    print(f"GPU型号: {torch.cuda.get_device_name(0)}")
+    torch.cuda.manual_seed(42)  # 设置CUDA随机种子
+
+# cuDNN 自动优化
+torch.backends.cudnn.benchmark = True
 
 # ==============================================================================
 # 1. 数据处理模块
@@ -243,6 +254,9 @@ class Actor(nn.Module):
             nn.Linear(128, 128), nn.ReLU(),
             nn.Linear(128, action_dim), nn.Softplus())
 
+        # === 初始化后立即转移到设备 ===
+        self.to(device)
+
     def forward(self, state):
         return Dirichlet(self.network(state) + 1e-6)
 
@@ -254,6 +268,9 @@ class Critic(nn.Module):
             nn.Linear(state_dim, 128), nn.ReLU(),
             nn.Linear(128, 128), nn.ReLU(),
             nn.Linear(128, 1))
+
+        # === 初始化后立即转移到设备 ===
+        self.to(device)
 
     def forward(self, state):
         return self.network(state)
@@ -298,7 +315,8 @@ class PPOAgent:
             states, actions, log_probs, rewards, dones, values = [], [], [], [], [], []
             state = env.reset()
             for _ in range(n_steps):
-                state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                # === 修改：将状态数据转移到设备 ===
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
                 with torch.no_grad():
                     dist = self.actor(state_tensor)
                     action = dist.sample()
@@ -311,7 +329,7 @@ class PPOAgent:
 
                 states.append(state);
                 actions.append(action.cpu().numpy().flatten())
-                log_probs.append(log_prob.cpu().numpy());
+                log_probs.append(log_prob.cpu().numpy())
                 dones.append(done)
                 values.append(value.item());
                 state = next_state
@@ -341,9 +359,12 @@ class PPOAgent:
             returns = advantages + np.array(values)
             advantages = (advantages - np.mean(advantages)) / (np.std(advantages) + 1e-8)
 
-            states_t, actions_t, log_probs_t = torch.FloatTensor(np.array(states)), torch.FloatTensor(
-                np.array(actions)), torch.FloatTensor(np.array(log_probs).flatten())
-            advantages_t, returns_t = torch.FloatTensor(advantages), torch.FloatTensor(returns)
+            # === 修改：将所有数据转移到设备 ===
+            states_t = torch.FloatTensor(np.array(states)).to(device)
+            actions_t = torch.FloatTensor(np.array(actions)).to(device)
+            log_probs_t = torch.FloatTensor(np.array(log_probs).flatten()).to(device)
+            advantages_t = torch.FloatTensor(advantages).to(device)
+            returns_t = torch.FloatTensor(returns).to(device)
 
             # --- 优化网络部分---
             epoch_actor_losses, epoch_critic_losses, epoch_entropies = [], [], []
@@ -407,11 +428,14 @@ class PPOAgent:
 
         with torch.no_grad():
             for _ in range(env.n_steps):
-                state_tensor = torch.FloatTensor(state).unsqueeze(0)
+                # === 修改：将状态数据转移到设备 ===
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
                 dist = self.actor(state_tensor)
                 action = dist.sample()
+                # === 修改：将动作移回CPU再传入环境 ===
                 state, _, done, _ = env.step(action.squeeze().cpu().numpy())
-                if done: break
+                if done:
+                    break
 
         print("--- PPO评估完成 ---")
         return env.portfolio_value_history, env.weights_history
@@ -509,7 +533,8 @@ def plot_convergence(history: Dict):
             ax.set_xlabel('Iteration')
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-    plt.show()
+    # plt.show()
+    plt.legend()
 
 
 # ==============================================================================
@@ -533,7 +558,7 @@ if __name__ == '__main__':
         'gae_lambda': 0.95,
         'n_epochs': 10,
         'batch_size': 64,
-        'num_iterations': 2000,
+        'num_iterations': 1000,
         'entropy_coef': 0.01,  # <--- 新增熵系数
         'risk_penalty_coef': 0.0,  # <--- 新增：风险惩罚系数
         'reward_window': 22  # <--- 新增：计算波动的窗口
