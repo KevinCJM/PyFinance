@@ -68,10 +68,10 @@ CONFIG = {
         # --- 线性Epsilon衰减配置 ---
         "epsilon_start": 1.0,
         "epsilon_min": 0.01,
-        "epsilon_linear_decay_steps": 150000,  # 在15万步内完成衰减
+        "epsilon_linear_decay_steps": 250000,  # 在n步内完成衰减
     },
     "training": {
-        "num_episodes": 10,  # 增加轮数以获得更好效果
+        "num_episodes": 100,  # 增加轮数以获得更好效果
     }
 }
 

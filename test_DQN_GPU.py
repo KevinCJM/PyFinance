@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
+import time
 from torch.cuda.amp import GradScaler, autocast
 import random
 import collections
@@ -55,7 +55,7 @@ CONFIG = {
         "pin_memory": True,  # 固定内存，加速GPU传输
         "non_blocking": True,  # 非阻塞传输
         "compile_model": False,  # 禁用PyTorch 2.0 模型编译（避免Triton依赖）
-        "use_multiple_gpus": True,  # 是否使用多GPU
+        "auto_select_best_gpu": True,  # 是否选择最佳单个GPU
         "gpu_memory_fraction": 0.8,  # GPU内存使用比例
         "enable_cudnn_benchmark": True,  # 启用CuDNN benchmark
     },
@@ -84,7 +84,7 @@ CONFIG = {
         "target_update_freq": 100,  # 降低更新频率
         "epsilon_start": 1.0,
         "epsilon_min": 0.01,
-        "epsilon_linear_decay_steps": 250000,
+        "epsilon_linear_decay_steps": 300000,
         # GPU优化参数
         "gradient_clip": 1.0,  # 梯度裁剪
         "weight_decay": 1e-5,  # L2正则化
@@ -494,7 +494,7 @@ class StockTradingEnv(gym.Env):
             self.position_steps = 0
 
 
-# --- 5. GPU优化的DQN智能体 ---
+# --- 5. GPU优化的DQN智能体 (Double DQN) ---
 class OptimizedDQNAgent:
     def __init__(self, config, device_manager):
         self.config = config['agent']
@@ -545,9 +545,6 @@ class OptimizedDQNAgent:
 
         print(f"Networks moved to device: {device_manager.device}")
 
-        # 注意：移除PyTorch 2.0编译以避免Triton依赖
-        # 如果需要编译功能，请确保安装正确版本的Triton
-
         # 优化器
         self.optimizer = optim.AdamW(
             self.policy_net.parameters(),
@@ -581,7 +578,6 @@ class OptimizedDQNAgent:
             )
             q_values = self.policy_net(state_tensor)
 
-            # 屏蔽无效动作
             for i in range(self.action_dim):
                 if i not in valid_actions:
                     q_values[0][i] = -float('inf')
@@ -589,15 +585,15 @@ class OptimizedDQNAgent:
             return torch.argmax(q_values[0]).item()
 
     def replay(self, global_step):
-        """优化的经验回放函数"""
+        """
+        优化的经验回放函数，已实现Double DQN逻辑。
+        """
         if len(self.memory) < self.batch_size:
             return None
 
-        # 采样小批量数据
         minibatch = random.sample(self.memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*minibatch)
 
-        # 批量转换为张量
         states = self.device_manager.to_device(torch.FloatTensor(np.array(states)))
         actions = self.device_manager.to_device(torch.LongTensor(actions).unsqueeze(1))
         rewards = self.device_manager.to_device(torch.FloatTensor(rewards).unsqueeze(1))
@@ -605,45 +601,47 @@ class OptimizedDQNAgent:
         dones = self.device_manager.to_device(torch.BoolTensor(dones).unsqueeze(1))
 
         # 使用混合精度训练
-        if self.device_manager.use_amp:
-            with autocast():
-                current_q_values = self.policy_net(states).gather(1, actions)
+        use_amp = self.device_manager.use_amp
+        scaler = self.device_manager.scaler
 
-                with torch.no_grad():
-                    next_q_values = self.target_net(next_states).max(1)[0].unsqueeze(1)
-                    next_q_values[dones] = 0.0
-                    target_q_values = rewards + (self.gamma * next_q_values)
-
-                loss = self.loss_fn(current_q_values, target_q_values)
-
-            # 缩放梯度并反向传播
-            self.device_manager.scaler.scale(loss).backward()
-
-            # 梯度裁剪
-            self.device_manager.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.gradient_clip)
-
-            self.device_manager.scaler.step(self.optimizer)
-            self.device_manager.scaler.update()
-
-        else:
+        with autocast(enabled=use_amp):
+            # 1. 计算当前Q值: Q_policy(s, a)
             current_q_values = self.policy_net(states).gather(1, actions)
 
+            # --- Double DQN 核心修改 ---
             with torch.no_grad():
-                next_q_values = self.target_net(next_states).max(1)[0].unsqueeze(1)
-                next_q_values[dones] = 0.0
-                target_q_values = rewards + (self.gamma * next_q_values)
+                # 步骤1: 使用 policy_net 选择下一状态的最佳动作 a*
+                best_next_actions = self.policy_net(next_states).argmax(1).unsqueeze(1)
 
+                # 步骤2: 使用 target_net 评估动作 a* 的价值
+                next_q_values_for_best_actions = self.target_net(next_states).gather(1, best_next_actions)
+            # --- Double DQN 修改结束 ---
+
+            # 如果是done状态，未来预期奖励为0
+            next_q_values_for_best_actions[dones] = 0.0
+
+            # 计算最终的目标Q值
+            target_q_values = rewards + (self.gamma * next_q_values_for_best_actions)
+
+            # 计算损失
             loss = self.loss_fn(current_q_values, target_q_values)
 
+        # 梯度更新
+        if use_amp:
+            self.optimizer.zero_grad()
+            scaler.scale(loss).backward()
+            scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.gradient_clip)
+            scaler.step(self.optimizer)
+            scaler.update()
+        else:
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.gradient_clip)
             self.optimizer.step()
 
         # 更新epsilon
-        self.epsilon = max(self.epsilon_min,
-                           self.config['epsilon_start'] - self.epsilon_decay_step * global_step)
+        self.epsilon = max(self.epsilon_min, self.config['epsilon_start'] - self.epsilon_decay_step * global_step)
 
         # 更新目标网络
         self.learn_step_counter += 1
@@ -1021,6 +1019,7 @@ if __name__ == '__main__':
     print("=" * 80)
     print("GPU-OPTIMIZED DQN TRADING SYSTEM")
     print("=" * 80)
+    s_t = time.time()
 
     try:
         # 初始化设备管理器
@@ -1103,3 +1102,5 @@ if __name__ == '__main__':
             device_manager.print_memory_usage()
             print("GPU memory cleared.")
         print("Program finished.")
+
+    print(f"\nTotal execution time: {time.time() - s_t:.2f} seconds")
