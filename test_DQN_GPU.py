@@ -66,11 +66,18 @@ CONFIG = {
     "environment": {
         "initial_capital": 100000,
         "transaction_cost_pct": 0.001,
-        "trade_penalty": 0.05,
+        "trade_penalty": 0.1,  # 固定的交易惩罚项
         "slippage_pct": 0.0005,
         "reward_scaling": {
+            # 每日持仓盈亏奖励的缩放系数
             "holding_pnl_factor": 1.0,
-            "settlement_return_factor": 1.0,
+            # 每日回撤惩罚的缩放系数
+            "drawdown_penalty_factor": 1.5,
+            # 卖出结算时，盈利交易的(回报率 * log(持仓天数)) 的缩放系数
+            "settlement_profit_factor": 1.0,
+            # “智能止损”的参数
+            "smart_stop_loss_threshold": -0.10,  # 可接受的最大亏损阈值 (-10%)
+            "heavy_loss_penalty_factor": 2.0,  # 超出阈值的亏损的额外惩罚倍数
         }
     },
     "agent": {
@@ -92,9 +99,9 @@ CONFIG = {
     },
     "training": {
         "num_episodes": 100,  # 增加训练轮数
-        "prefetch_factor": 4,  # 数据预取因子
-        "num_workers": 4,  # 数据加载线程数
         "update_frequency": 4,  # 每N步更新一次
+        # "prefetch_factor": 4,  # 数据预取因子
+        # "num_workers": 4,  # 数据加载线程数
     }
 }
 
@@ -383,17 +390,20 @@ class OptimizedDQN(nn.Module):
 
 
 # --- 4. GPU优化的环境 ---
+# --- 4. GPU优化的环境 (奖励逻辑完全重构) ---
 class StockTradingEnv(gym.Env):
     def __init__(self, df, config, device_manager=None):
         super(StockTradingEnv, self).__init__()
         self.df = df
-        self.feature_df = df.drop(columns=['close'])
+        # 分离特征和价格数据
+        self.feature_df = df.drop(columns=['close'], errors='ignore')
         self.price_series = df['close']
-        self.device_manager = device_manager
 
+        self.device_manager = device_manager
         self.config = config
         self.env_config = config['environment']
         self.reward_config = self.env_config['reward_scaling']
+
         self.initial_capital = self.env_config['initial_capital']
         self.transaction_cost_pct = self.env_config['transaction_cost_pct']
         self.trade_penalty = self.env_config['trade_penalty']
@@ -405,12 +415,10 @@ class StockTradingEnv(gym.Env):
             shape=(len(self.feature_df.columns) + 2,), dtype=np.float32
         )
 
-        # 预计算特征以提高性能
         self._precompute_features()
         self.reset()
 
     def _precompute_features(self):
-        """预计算所有特征以提高性能"""
         self.features_array = self.feature_df.values.astype(np.float32)
         self.prices_array = self.price_series.values.astype(np.float32)
         print(f"Precomputed features: {self.features_array.shape}")
@@ -423,6 +431,7 @@ class StockTradingEnv(gym.Env):
         self.history = []
         self.entry_price = 0
         self.position_steps = 0
+        self.max_price_in_position = 0  # 新增：用于跟踪持仓期最高价
         return self._get_observation()
 
     def _get_observation(self):
@@ -441,16 +450,47 @@ class StockTradingEnv(gym.Env):
 
         reward = 0.0
 
+        # --- 修正#3: 引入持续的、基于回撤的持仓惩罚 ---
         if self.shares > 0:
-            daily_return = (self.cash + self.shares * current_price - prev_portfolio_value) / prev_portfolio_value
+            # a. 每日盈亏部分 (保持不变)
+            daily_pnl = (self.cash + self.shares * current_price) - prev_portfolio_value
+            daily_return = daily_pnl / prev_portfolio_value if prev_portfolio_value != 0 else 0
             shaped_holding_reward = np.sign(daily_return) * np.sqrt(np.abs(daily_return))
             reward += shaped_holding_reward * self.reward_config['holding_pnl_factor']
 
+            # b. 每日回撤惩罚部分
+            self.max_price_in_position = max(self.max_price_in_position, current_price)
+            drawdown = (self.max_price_in_position - current_price) / self.max_price_in_position
+            # 对回撤进行平方，放大惩罚
+            drawdown_penalty = self.reward_config['drawdown_penalty_factor'] * (drawdown ** 2)
+            reward -= drawdown_penalty
+
+        # --- 修正#1 & #2: 重构交易终结奖励 ---
         if action == 2 and self.shares > 0:
-            trade_return = (current_price / self.entry_price) - 1
-            duration_factor = np.log(self.position_steps + 1)
-            settlement_reward = (trade_return * duration_factor) - self.trade_penalty
-            reward += settlement_reward * self.reward_config['settlement_return_factor']
+            sell_price = current_price * (1 - self.slippage_pct)
+            trade_return = (sell_price / self.entry_price) - 1 - (2 * self.transaction_cost_pct)
+
+            settlement_reward = 0
+
+            # 1. 对亏损交易应用“智能止损”逻辑
+            if trade_return < 0:
+                stop_loss_threshold = self.reward_config['smart_stop_loss_threshold']
+                if trade_return > stop_loss_threshold:
+                    # 亏损在可接受范围内，惩罚较小
+                    settlement_reward = trade_return  # 惩罚等于亏损本身
+                else:
+                    # 亏损超出阈值，给予巨大惩罚
+                    settlement_reward = trade_return * self.reward_config['heavy_loss_penalty_factor']
+
+            # 2. 对盈利交易，鼓励长期持有
+            else:
+                duration_factor = np.log(self.position_steps + 1)
+                settlement_reward = (trade_return * duration_factor)
+
+            # 3. 额外扣除固定的交易惩罚，以抑制“手痒”
+            settlement_reward -= self.trade_penalty
+
+            reward += settlement_reward * self.reward_config['settlement_profit_factor']
 
         self._take_action(action, current_price)
         self.current_step += 1
@@ -462,14 +502,8 @@ class StockTradingEnv(gym.Env):
         obs = self._get_observation() if not done else np.zeros(self.observation_space.shape, dtype=np.float32)
 
         self.portfolio_value = self.cash + self.shares * current_price
-
-        info = {
-            'date': self.df.index[self.current_step - 1],
-            'portfolio_value': self.portfolio_value,
-            'action': action,
-            'price': current_price,
-            'reward': reward
-        }
+        info = {'date': self.df.index[self.current_step - 1], 'portfolio_value': self.portfolio_value, 'action': action,
+                'price': current_price, 'reward': reward}
         self.history.append(info)
 
         return obs, reward, done, info
@@ -479,10 +513,12 @@ class StockTradingEnv(gym.Env):
             buy_price = current_price * (1 + self.slippage_pct)
             cost = self.cash * self.transaction_cost_pct
             buy_capital = self.cash - cost
-            self.shares = buy_capital / buy_price
+            if buy_price > 0:
+                self.shares = buy_capital / buy_price
             self.cash = 0
             self.entry_price = buy_price
             self.position_steps = 1
+            self.max_price_in_position = buy_price  # 初始化持仓期最高价
 
         elif action == 2 and self.shares > 0:
             sell_price = current_price * (1 - self.slippage_pct)
@@ -492,6 +528,7 @@ class StockTradingEnv(gym.Env):
             self.shares = 0
             self.entry_price = 0
             self.position_steps = 0
+            self.max_price_in_position = 0  # 重置
 
 
 # --- 5. GPU优化的DQN智能体 (Double DQN) ---
