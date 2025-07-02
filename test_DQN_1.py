@@ -1,4 +1,3 @@
-# --------------- 单纯的以最大收益为目标
 import pandas as pd
 import numpy as np
 import torch
@@ -240,14 +239,18 @@ def get_data(fund_code, basic_info_file_path_dict, metrics_info_file_path_dict):
 
 
 def preprocess_and_split_data(df, config):
+    """
+    预处理函数，增加滚动波动率作为新特征。
+    """
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     first_valid_indices = [df[col].first_valid_index() for col in df.columns]
     start_date = max(dt for dt in first_valid_indices if dt is not None)
     df = df.loc[start_date:].copy()
 
-    # 移除波动率计算
-    # 原代码: vol_window = config['preprocessing']['volatility_window']
-    # 原代码: df['reward_volatility'] = ...
+    # --- 新增：预计算用于奖励函数的滚动波动率 ---
+    vol_window = config['preprocessing']['volatility_window']
+    # 我们用对数收益率的滚动标准差来衡量波动率
+    df['reward_volatility'] = df['log'].rolling(window=vol_window, min_periods=vol_window).std()
 
     df.fillna(method='ffill', inplace=True)
     df.dropna(inplace=True)
@@ -257,17 +260,19 @@ def preprocess_and_split_data(df, config):
     train_df = df.iloc[:split_index].copy()
     test_df = df.iloc[split_index:].copy()
 
-    # 归一化 - 移除波动率特征
-    feature_cols = df.columns.drop(['close', 'high', 'low'])  # 不再包含'reward_volatility'
+    # 归一化
+    # 注意：'close', 'high', 'low'和'reward_volatility'不参与归一化，仅供环境内部使用
+    feature_cols = df.columns.drop(['close', 'high', 'low', 'reward_volatility'])
 
     scaler = StandardScaler()
     scaler.fit(train_df[feature_cols])
 
     train_scaled = pd.DataFrame(scaler.transform(train_df[feature_cols]), index=train_df.index, columns=feature_cols)
-    train_scaled[['close', 'high', 'low']] = train_df[['close', 'high', 'low']]
+    train_scaled[['close', 'high', 'low', 'reward_volatility']] = train_df[
+        ['close', 'high', 'low', 'reward_volatility']]
 
     test_scaled = pd.DataFrame(scaler.transform(test_df[feature_cols]), index=test_df.index, columns=feature_cols)
-    test_scaled[['close', 'high', 'low']] = test_df[['close', 'high', 'low']]
+    test_scaled[['close', 'high', 'low', 'reward_volatility']] = test_df[['close', 'high', 'low', 'reward_volatility']]
 
     train_scaled.dropna(inplace=True)
     test_scaled.dropna(inplace=True)
@@ -318,10 +323,11 @@ class StockTradingEnv(gym.Env):
         super(StockTradingEnv, self).__init__()
         self.df = df
         # 分离特征和用于计算的原始数据
-        self.feature_df = df.drop(columns=['close', 'high', 'low'], errors='ignore')
+        self.feature_df = df.drop(columns=['close', 'high', 'low', 'reward_volatility'], errors='ignore')
         self.price_series = df['close']
         self.high_series = df['high']
         self.low_series = df['low']
+        self.volatility_series = df['reward_volatility']
 
         self.device_manager = device_manager
         self.config = config
@@ -351,8 +357,8 @@ class StockTradingEnv(gym.Env):
         self.cash = self.initial_capital
         self.shares = 0
         self.portfolio_value = self.initial_capital
-        self.entry_price = 0
         self.history = []
+        self.entry_price = 0
         return self._get_observation()
 
     def _get_observation(self):
@@ -373,7 +379,7 @@ class StockTradingEnv(gym.Env):
         if self.shares > 0 and self.entry_price > 0:
             unrealized_pnl = (self.price_series.iloc[self.current_step] / self.entry_price) - 1
 
-        # 如果触发了强制止损，当前步的动作被覆盖为"卖出"
+        # 如果触发了强制止损，当前步的动作被覆盖为“卖出”
         if self.shares > 0 and unrealized_pnl < self.hard_stop_loss_pct:
             action = 2  # 覆盖动作为卖出
 
@@ -387,14 +393,50 @@ class StockTradingEnv(gym.Env):
         current_price = self.price_series.iloc[self.current_step if not done else -1]
         self.portfolio_value = self.cash + self.shares * current_price
 
-        # --- 3. 简化的奖励函数：仅在结束时给出最终收益 ---
-        reward = 0.0  # 中间步骤奖励为0
+        # --- 3. 全新的、基于原则的奖励函数 ---
+        reward = 0.0
 
-        # 仅在episode结束时计算最终收益
-        if done:
-            # 计算总收益率
-            total_return = (self.portfolio_value / self.initial_capital) - 1.0
-            reward = total_return
+        # a. 计算核心奖励：风险调整后的超额收益 (Alpha)
+        if prev_portfolio_value > 0:
+            portfolio_log_return = np.log(self.portfolio_value / prev_portfolio_value)
+
+            # 基准收益：买入并持有策略的单步对数收益
+            benchmark_log_return = np.log(
+                self.price_series.iloc[self.current_step if not done else -1] / self.price_series.iloc[
+                    self.current_step - 1]
+            )
+
+            # 获取预先计算的市场波动率
+            market_volatility = self.volatility_series.iloc[self.current_step if not done else -1]
+
+            # 计算超额收益
+            excess_return = portfolio_log_return - benchmark_log_return
+
+            # 如果波动率很小或为0，则不进行风险调整，避免除以零
+            if market_volatility > 1e-9:
+                reward = excess_return / market_volatility
+            else:
+                reward = excess_return  # 如果市场无波动，奖励就是纯粹的超额收益
+
+        # b. 对交易行为本身进行惩罚
+        if action == 1 or action == 2:  # 只要执行了买或卖
+            reward -= self.trade_penalty
+
+        # 如果当前动作是持有(action 0) 并且手中有仓位
+        if action == 0 and self.shares > 0 and self.entry_price > 0:
+            unrealized_pnl_pct = (current_price / self.entry_price) - 1.0
+
+            # 定义一个持有奖励/惩罚的系数
+            holding_reward_factor = 0.5  # 这是一个超参数，可以调整
+
+            # 如果持有的是盈利仓位，给予正奖励，鼓励继续持有
+            if unrealized_pnl_pct > 0:
+                reward += unrealized_pnl_pct * holding_reward_factor
+            # 如果持有的是亏损仓位，给予负奖励（惩罚），鼓励其决策（如止损）
+            else:
+                reward += unrealized_pnl_pct * holding_reward_factor  # PNL为负，所以这是减法
+
+        # --- 奖励计算结束 ---
 
         obs = self._get_observation() if not done else np.zeros(self.observation_space.shape, dtype=np.float32)
         info = {
