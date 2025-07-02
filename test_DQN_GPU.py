@@ -79,6 +79,8 @@ CONFIG = {
         "transaction_cost_pct": 0.001,
         "trade_penalty": 0.15,
         "hard_stop_loss_pct": -0.15,
+        "trade_price_mode": "close_slippage",  # "extreme", "open_slippage", "close_slippage"
+        "slippage_pct": 0.0005,  # 0.05% 滑点
     },
     "agent": {
         "state_dim": None,
@@ -253,14 +255,16 @@ def preprocess_and_split_data(df, config):
     split_index = int(len(df) * config['preprocessing']['train_split_ratio'])
     train_df = df.iloc[:split_index].copy()
     test_df = df.iloc[split_index:].copy()
-    feature_cols = df.columns.drop(['close', 'high', 'low', 'reward_volatility'])
+    # 确保 'open' 列不被当作特征列处理
+    feature_cols = df.columns.drop(['close', 'high', 'low', 'open', 'reward_volatility'])
     scaler = StandardScaler()
     scaler.fit(train_df[feature_cols])
     train_scaled = pd.DataFrame(scaler.transform(train_df[feature_cols]), index=train_df.index, columns=feature_cols)
-    train_scaled[['close', 'high', 'low', 'reward_volatility']] = train_df[
-        ['close', 'high', 'low', 'reward_volatility']]
+    train_scaled[['close', 'high', 'low', 'open', 'reward_volatility']] = train_df[
+        ['close', 'high', 'low', 'open', 'reward_volatility']]
     test_scaled = pd.DataFrame(scaler.transform(test_df[feature_cols]), index=test_df.index, columns=feature_cols)
-    test_scaled[['close', 'high', 'low', 'reward_volatility']] = test_df[['close', 'high', 'low', 'reward_volatility']]
+    test_scaled[['close', 'high', 'low', 'open', 'reward_volatility']] = test_df[
+        ['close', 'high', 'low', 'open', 'reward_volatility']]
     train_scaled.dropna(inplace=True)
     test_scaled.dropna(inplace=True)
     return train_scaled, test_scaled
@@ -307,10 +311,11 @@ class StockTradingEnv(gym.Env):
     def __init__(self, df, config, device_manager=None):
         super(StockTradingEnv, self).__init__()
         self.df = df
-        self.feature_df = df.drop(columns=['close', 'high', 'low', 'reward_volatility'], errors='ignore')
+        self.feature_df = df.drop(columns=['close', 'high', 'low', 'open', 'reward_volatility'], errors='ignore')
         self.price_series = df['close']
         self.high_series = df['high']
         self.low_series = df['low']
+        self.open_series = df['open']  # 新增
         self.volatility_series = df['reward_volatility']
         self.device_manager = device_manager
         self.config = config
@@ -319,6 +324,8 @@ class StockTradingEnv(gym.Env):
         self.initial_capital = self.env_config['initial_capital']
         self.transaction_cost_pct = self.env_config['transaction_cost_pct']
         self.trade_penalty = self.env_config['trade_penalty']
+        self.trade_price_mode = self.env_config['trade_price_mode']  # 新增
+        self.slippage_pct = self.env_config['slippage_pct']  # 新增
         self.action_space = spaces.Discrete(len(Actions))
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf,
@@ -334,6 +341,7 @@ class StockTradingEnv(gym.Env):
         self.prices_array = self.price_series.values.astype(np.float32)
         self.highs_array = self.high_series.values.astype(np.float32)
         self.lows_array = self.low_series.values.astype(np.float32)
+        self.opens_array = self.open_series.values.astype(np.float32)  # 新增
         self.volatility_array = self.volatility_series.values.astype(np.float32)
         print(f"已预计算特征和环境数据数组，维度: {self.features_array.shape}")
 
@@ -409,8 +417,24 @@ class StockTradingEnv(gym.Env):
     def _take_action(self, action):
         """根据动作执行交易。"""
         current_step_index = self.current_step
-        if action == Actions.BUY.value and self.cash > 0:
+        buy_price = 0
+        sell_price = 0
+
+        if self.trade_price_mode == "extreme":
             buy_price = self.highs_array[current_step_index]
+            sell_price = self.lows_array[current_step_index]
+        elif self.trade_price_mode == "open_slippage":
+            buy_price = self.opens_array[current_step_index] * (1 + self.slippage_pct)
+            sell_price = self.opens_array[current_step_index] * (1 - self.slippage_pct)
+        elif self.trade_price_mode == "close_slippage":
+            buy_price = self.prices_array[current_step_index] * (1 + self.slippage_pct)
+            sell_price = self.prices_array[current_step_index] * (1 - self.slippage_pct)
+        else:
+            # 默认使用收盘价
+            buy_price = self.prices_array[current_step_index]
+            sell_price = self.prices_array[current_step_index]
+
+        if action == Actions.BUY.value and self.cash > 0:
             cost = self.cash * self.transaction_cost_pct
             buy_capital = self.cash - cost
             if buy_price > 0:
@@ -418,7 +442,6 @@ class StockTradingEnv(gym.Env):
                 self.cash = 0
                 self.entry_price = buy_price
         elif action == Actions.SELL.value and self.shares > 0:
-            sell_price = self.lows_array[current_step_index]
             proceeds = self.shares * sell_price
             cost = proceeds * self.transaction_cost_pct
             self.cash = proceeds - cost
