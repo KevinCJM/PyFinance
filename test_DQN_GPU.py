@@ -62,23 +62,13 @@ CONFIG = {
     "preprocessing": {
         "train_split_ratio": 0.8,
         "use_gpu_preprocessing": True,  # GPU加速预处理
+        "volatility_window": 21,  # 新增：计算波动率的滚动窗口
     },
     "environment": {
         "initial_capital": 100000,
-        "transaction_cost_pct": 0.001,
-        "trade_penalty": 0.1,  # 固定的交易惩罚项
-        "slippage_pct": 0.0005,
-        "reward_scaling": {
-            # 每日持仓盈亏奖励的缩放系数
-            "holding_pnl_factor": 1.0,
-            # 每日回撤惩罚的缩放系数
-            "drawdown_penalty_factor": 1.5,
-            # 卖出结算时，盈利交易的(回报率 * log(持仓天数)) 的缩放系数
-            "settlement_profit_factor": 1.0,
-            # “智能止损”的参数
-            "smart_stop_loss_threshold": -0.10,  # 可接受的最大亏损阈值 (-10%)
-            "heavy_loss_penalty_factor": 2.0,  # 超出阈值的亏损的额外惩罚倍数
-        }
+        "transaction_cost_pct": 0.001,  # 手续费依然保留
+        "trade_penalty": 0.1,  # 固定的交易行为惩罚
+        "hard_stop_loss_pct": -0.15,  # 当未实现亏损达到-15%时，强制平仓
     },
     "agent": {
         "state_dim": None,
@@ -248,107 +238,45 @@ def get_data(fund_code, basic_info_file_path_dict, metrics_info_file_path_dict):
     return the_final_df
 
 
-def preprocess_and_split_data(df, config, device_manager=None):
-    """GPU优化的预处理函数"""
-    print("Starting data preprocessing...")
-
-    # 处理无穷值
+def preprocess_and_split_data(df, config):
+    """
+    预处理函数，增加滚动波动率作为新特征。
+    """
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    print(f"Data shape after replacing inf: {df.shape}")
-
-    # 找到所有列都有效的开始日期
     first_valid_indices = [df[col].first_valid_index() for col in df.columns]
     start_date = max(dt for dt in first_valid_indices if dt is not None)
     df = df.loc[start_date:].copy()
-    print(f"Data shape after trimming to valid start date {start_date}: {df.shape}")
 
-    # 前向填充和删除NaN
+    # --- 新增：预计算用于奖励函数的滚动波动率 ---
+    vol_window = config['preprocessing']['volatility_window']
+    # 我们用对数收益率的滚动标准差来衡量波动率
+    df['reward_volatility'] = df['log'].rolling(window=vol_window, min_periods=vol_window).std()
+
     df.fillna(method='ffill', inplace=True)
     df.dropna(inplace=True)
-    print(f"Data shape after cleaning: {df.shape}")
 
     # 分割数据
     split_index = int(len(df) * config['preprocessing']['train_split_ratio'])
     train_df = df.iloc[:split_index].copy()
     test_df = df.iloc[split_index:].copy()
-    print(f"Train split: {train_df.shape}, Test split: {test_df.shape}")
 
-    feature_cols = df.columns.drop('close')
-    print(f"Feature columns: {len(feature_cols)}")
+    # 归一化
+    # 注意：'close', 'high', 'low'和'reward_volatility'不参与归一化，仅供环境内部使用
+    feature_cols = df.columns.drop(['close', 'high', 'low', 'reward_volatility'])
 
-    # GPU加速预处理（如果可用且配置启用）
-    if (config['preprocessing']['use_gpu_preprocessing'] and
-            device_manager and device_manager.device.type == "cuda"):
+    scaler = StandardScaler()
+    scaler.fit(train_df[feature_cols])
 
-        try:
-            print("Using GPU-accelerated preprocessing...")
-            # 使用GPU加速StandardScaler
-            train_features = torch.tensor(train_df[feature_cols].values, dtype=torch.float32)
-            train_features = device_manager.to_device(train_features)
+    train_scaled = pd.DataFrame(scaler.transform(train_df[feature_cols]), index=train_df.index, columns=feature_cols)
+    train_scaled[['close', 'high', 'low', 'reward_volatility']] = train_df[
+        ['close', 'high', 'low', 'reward_volatility']]
 
-            # GPU上计算均值和标准差
-            mean = train_features.mean(dim=0, keepdim=True)
-            std = train_features.std(dim=0, keepdim=True)
+    test_scaled = pd.DataFrame(scaler.transform(test_df[feature_cols]), index=test_df.index, columns=feature_cols)
+    test_scaled[['close', 'high', 'low', 'reward_volatility']] = test_df[['close', 'high', 'low', 'reward_volatility']]
 
-            # 标准化训练数据
-            train_features_scaled = (train_features - mean) / (std + 1e-8)
+    train_scaled.dropna(inplace=True)
+    test_scaled.dropna(inplace=True)
 
-            # 标准化测试数据
-            test_features = torch.tensor(test_df[feature_cols].values, dtype=torch.float32)
-            test_features = device_manager.to_device(test_features)
-            test_features_scaled = (test_features - mean) / (std + 1e-8)
-
-            # 转换回CPU和pandas
-            train_scaled = pd.DataFrame(
-                train_features_scaled.cpu().numpy(),
-                index=train_df.index,
-                columns=feature_cols
-            )
-            test_scaled = pd.DataFrame(
-                test_features_scaled.cpu().numpy(),
-                index=test_df.index,
-                columns=feature_cols
-            )
-            print("GPU preprocessing completed successfully")
-
-        except Exception as e:
-            print(f"GPU preprocessing failed: {e}, falling back to CPU...")
-            # 回退到CPU预处理
-            scaler = StandardScaler()
-            scaler.fit(train_df[feature_cols])
-
-            train_scaled = pd.DataFrame(
-                scaler.transform(train_df[feature_cols]),
-                index=train_df.index,
-                columns=feature_cols
-            )
-            test_scaled = pd.DataFrame(
-                scaler.transform(test_df[feature_cols]),
-                index=test_df.index,
-                columns=feature_cols
-            )
-    else:
-        print("Using CPU preprocessing...")
-        # 使用传统CPU预处理
-        scaler = StandardScaler()
-        scaler.fit(train_df[feature_cols])
-
-        train_scaled = pd.DataFrame(
-            scaler.transform(train_df[feature_cols]),
-            index=train_df.index,
-            columns=feature_cols
-        )
-        test_scaled = pd.DataFrame(
-            scaler.transform(test_df[feature_cols]),
-            index=test_df.index,
-            columns=feature_cols
-        )
-
-    # 添加价格信息
-    train_scaled['close'] = train_df['close']
-    test_scaled['close'] = test_df['close']
-
-    print("Preprocessing completed")
     return train_scaled, test_scaled
 
 
@@ -395,19 +323,23 @@ class StockTradingEnv(gym.Env):
     def __init__(self, df, config, device_manager=None):
         super(StockTradingEnv, self).__init__()
         self.df = df
-        # 分离特征和价格数据
-        self.feature_df = df.drop(columns=['close'], errors='ignore')
+        # 分离特征和用于计算的原始数据
+        self.feature_df = df.drop(columns=['close', 'high', 'low', 'reward_volatility'], errors='ignore')
         self.price_series = df['close']
+        self.high_series = df['high']
+        self.low_series = df['low']
+        self.volatility_series = df['reward_volatility']
 
         self.device_manager = device_manager
         self.config = config
         self.env_config = config['environment']
-        self.reward_config = self.env_config['reward_scaling']
+        # self.reward_config = self.env_config['reward_scaling']
 
+        self.hard_stop_loss_pct = self.env_config['hard_stop_loss_pct']
         self.initial_capital = self.env_config['initial_capital']
         self.transaction_cost_pct = self.env_config['transaction_cost_pct']
         self.trade_penalty = self.env_config['trade_penalty']
-        self.slippage_pct = self.env_config['slippage_pct']
+        # self.slippage_pct = self.env_config['slippage_pct']
 
         self.action_space = spaces.Discrete(config['agent']['action_dim'])
         self.observation_space = spaces.Box(
@@ -445,90 +377,91 @@ class StockTradingEnv(gym.Env):
         return np.concatenate([market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
 
     def step(self, action):
-        current_price = self.prices_array[self.current_step]
         prev_portfolio_value = self.portfolio_value
 
+        # --- 修正#4: 实现强制止损机制 ---
+        unrealized_pnl = 0
+        if self.shares > 0:
+            unrealized_pnl = (self.price_series.iloc[self.current_step] / self.entry_price) - 1
+
+        # 如果触发了强制止损，当前步的动作被覆盖为“卖出”
+        if self.shares > 0 and unrealized_pnl < self.hard_stop_loss_pct:
+            action = 2  # 覆盖动作为卖出
+
+        # 执行交易
+        self._take_action(action, self.current_step)
+
+        self.current_step += 1
+        done = self.current_step >= len(self.df) - 1
+
+        # 计算新的资产组合价值
+        self.portfolio_value = self.cash + self.shares * self.price_series.iloc[self.current_step if not done else -1]
+
+        # --- 全新的、基于原则的奖励函数 ---
         reward = 0.0
 
-        # --- 修正#3: 引入持续的、基于回撤的持仓惩罚 ---
-        if self.shares > 0:
-            # a. 每日盈亏部分 (保持不变)
-            daily_pnl = (self.cash + self.shares * current_price) - prev_portfolio_value
-            daily_return = daily_pnl / prev_portfolio_value if prev_portfolio_value != 0 else 0
-            shaped_holding_reward = np.sign(daily_return) * np.sqrt(np.abs(daily_return))
-            reward += shaped_holding_reward * self.reward_config['holding_pnl_factor']
+        # 1. 计算核心奖励：风险调整后的超额收益 (Alpha)
+        if prev_portfolio_value != 0:
+            portfolio_log_return = np.log(self.portfolio_value / prev_portfolio_value)
+            benchmark_log_return = np.log(
+                self.price_series.iloc[self.current_step if not done else -1] / self.price_series.iloc[
+                    self.current_step - 1])
+            market_volatility = self.volatility_series.iloc[self.current_step if not done else -1]
 
-            # b. 每日回撤惩罚部分
-            self.max_price_in_position = max(self.max_price_in_position, current_price)
-            drawdown = (self.max_price_in_position - current_price) / self.max_price_in_position
-            # 对回撤进行平方，放大惩罚
-            drawdown_penalty = self.reward_config['drawdown_penalty_factor'] * (drawdown ** 2)
-            reward -= drawdown_penalty
+            excess_return = portfolio_log_return - benchmark_log_return
 
-        # --- 修正#1 & #2: 重构交易终结奖励 ---
-        if action == 2 and self.shares > 0:
-            sell_price = current_price * (1 - self.slippage_pct)
-            trade_return = (sell_price / self.entry_price) - 1 - (2 * self.transaction_cost_pct)
-
-            settlement_reward = 0
-
-            # 1. 对亏损交易应用“智能止损”逻辑
-            if trade_return < 0:
-                stop_loss_threshold = self.reward_config['smart_stop_loss_threshold']
-                if trade_return > stop_loss_threshold:
-                    # 亏损在可接受范围内，惩罚较小
-                    settlement_reward = trade_return  # 惩罚等于亏损本身
-                else:
-                    # 亏损超出阈值，给予巨大惩罚
-                    settlement_reward = trade_return * self.reward_config['heavy_loss_penalty_factor']
-
-            # 2. 对盈利交易，鼓励长期持有
+            # 如果波动率很小，则不进行调整，避免数值不稳定
+            if market_volatility > 1e-6:
+                reward = excess_return / market_volatility
             else:
-                duration_factor = np.log(self.position_steps + 1)
-                settlement_reward = (trade_return * duration_factor)
+                reward = excess_return
 
-            # 3. 额外扣除固定的交易惩罚，以抑制“手痒”
-            settlement_reward -= self.trade_penalty
+        # 2. 对交易行为本身进行惩罚
+        if action == 1 or action == 2:
+            reward -= self.trade_penalty
 
-            reward += settlement_reward * self.reward_config['settlement_profit_factor']
+        # --- 奖励计算结束 ---
 
-        self._take_action(action, current_price)
-        self.current_step += 1
-
-        if self.shares > 0:
-            self.position_steps += 1
-
-        done = self.current_step >= len(self.df) - 1
         obs = self._get_observation() if not done else np.zeros(self.observation_space.shape, dtype=np.float32)
-
-        self.portfolio_value = self.cash + self.shares * current_price
-        info = {'date': self.df.index[self.current_step - 1], 'portfolio_value': self.portfolio_value, 'action': action,
-                'price': current_price, 'reward': reward}
+        info = {
+            'date': self.df.index[self.current_step - 1],
+            'portfolio_value': self.portfolio_value,
+            'action': action,
+            'price': self.price_series.iloc[self.current_step - 1],
+            'reward': reward
+        }
         self.history.append(info)
 
         return obs, reward, done, info
 
-    def _take_action(self, action, current_price):
+    def _take_action(self, action, current_step_index):
+        """
+        重构交易执行逻辑：在最差价格成交，并包含手续费。
+        """
+        # 动作1: 买入
         if action == 1 and self.shares == 0:
-            buy_price = current_price * (1 + self.slippage_pct)
+            # --- 修正#2: 在当日最高价买入 ---
+            buy_price = self.high_series.iloc[self.current_step]
+
+            # 包含手续费
             cost = self.cash * self.transaction_cost_pct
             buy_capital = self.cash - cost
             if buy_price > 0:
                 self.shares = buy_capital / buy_price
             self.cash = 0
             self.entry_price = buy_price
-            self.position_steps = 1
-            self.max_price_in_position = buy_price  # 初始化持仓期最高价
 
+        # 动作2: 卖出
         elif action == 2 and self.shares > 0:
-            sell_price = current_price * (1 - self.slippage_pct)
+            # --- 修正#2: 在当日最低价卖出 ---
+            sell_price = self.low_series.iloc[self.current_step]
+
+            # 包含手续费
             proceeds = self.shares * sell_price
             cost = proceeds * self.transaction_cost_pct
             self.cash = proceeds - cost
             self.shares = 0
             self.entry_price = 0
-            self.position_steps = 0
-            self.max_price_in_position = 0  # 重置
 
 
 # --- 5. GPU优化的DQN智能体 (Double DQN) ---
@@ -1084,7 +1017,7 @@ if __name__ == '__main__':
 
         # 2. 预处理和分割数据
         print("\n4. Preprocessing Data...")
-        train_df, test_df = preprocess_and_split_data(full_df, CONFIG, device_manager)
+        train_df, test_df = preprocess_and_split_data(full_df, CONFIG)
         print(f"Training data: {train_df.shape} ({train_df.index[0]} to {train_df.index[-1]})")
         print(f"Testing data: {test_df.shape} ({test_df.index[0]} to {test_df.index[-1]})")
 
