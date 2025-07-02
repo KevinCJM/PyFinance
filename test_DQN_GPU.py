@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA  # 新增导入
 import warnings
 from enum import Enum
 
@@ -73,6 +74,12 @@ CONFIG = {
         "train_split_ratio": 0.8,
         "use_gpu_preprocessing": True,
         "volatility_window": 21,
+        "pca": {
+            "enabled": True,  # 是否启用PCA
+            "mode": "n_components",  # "n_components" 或 "variance_ratio"
+            "n_components": 100,  # 如果 mode 为 "n_components"，指定维度数量
+            "variance_ratio": 0.95,  # 如果 mode 为 "variance_ratio"，指定解释方差比例
+        }
     },
     "environment": {
         "initial_capital": 100000,
@@ -267,6 +274,38 @@ def preprocess_and_split_data(df, config):
         ['close', 'high', 'low', 'open', 'reward_volatility']]
     train_scaled.dropna(inplace=True)
     test_scaled.dropna(inplace=True)
+
+    # PCA 降维
+    pca_config = config['preprocessing']['pca']
+    if pca_config['enabled']:
+        print("开始进行PCA降维...")
+        pca_n_components = None
+        if pca_config['mode'] == 'n_components':
+            pca_n_components = pca_config['n_components']
+        elif pca_config['mode'] == 'variance_ratio':
+            pca_n_components = pca_config['variance_ratio']
+        else:
+            raise ValueError("PCA mode must be 'n_components' or 'variance_ratio'")
+
+        pca = PCA(n_components=pca_n_components)
+
+        # 拟合PCA模型并转换训练数据
+        train_features_pca = pca.fit_transform(train_scaled[feature_cols])
+        train_scaled_pca_df = pd.DataFrame(train_features_pca, index=train_scaled.index)
+
+        # 转换测试数据
+        test_features_pca = pca.transform(test_scaled[feature_cols])
+        test_scaled_pca_df = pd.DataFrame(test_features_pca, index=test_scaled.index)
+
+        # 重新组合数据
+        train_scaled = pd.concat(
+            [train_scaled_pca_df, train_scaled[['close', 'high', 'low', 'open', 'reward_volatility']]], axis=1)
+        test_scaled = pd.concat(
+            [test_scaled_pca_df, test_scaled[['close', 'high', 'low', 'open', 'reward_volatility']]], axis=1)
+
+        print(f"PCA降维完成。原始特征维度: {len(feature_cols)}，降维后维度: {pca.n_components_}")
+        print(f"解释方差比例: {pca.explained_variance_ratio_.sum():.4f}")
+
     return train_scaled, test_scaled
 
 
