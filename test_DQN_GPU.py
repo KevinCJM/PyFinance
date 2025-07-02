@@ -317,7 +317,6 @@ class OptimizedDQN(nn.Module):
         return self.net(x)
 
 
-# --- 4. GPU优化的环境 ---
 # --- 4. GPU优化的环境 (奖励逻辑完全重构) ---
 class StockTradingEnv(gym.Env):
     def __init__(self, df, config, device_manager=None):
@@ -333,13 +332,11 @@ class StockTradingEnv(gym.Env):
         self.device_manager = device_manager
         self.config = config
         self.env_config = config['environment']
-        # self.reward_config = self.env_config['reward_scaling']
 
         self.hard_stop_loss_pct = self.env_config['hard_stop_loss_pct']
         self.initial_capital = self.env_config['initial_capital']
         self.transaction_cost_pct = self.env_config['transaction_cost_pct']
         self.trade_penalty = self.env_config['trade_penalty']
-        # self.slippage_pct = self.env_config['slippage_pct']
 
         self.action_space = spaces.Discrete(config['agent']['action_dim'])
         self.observation_space = spaces.Box(
@@ -362,8 +359,6 @@ class StockTradingEnv(gym.Env):
         self.portfolio_value = self.initial_capital
         self.history = []
         self.entry_price = 0
-        self.position_steps = 0
-        self.max_price_in_position = 0  # 新增：用于跟踪持仓期最高价
         return self._get_observation()
 
     def _get_observation(self):
@@ -371,7 +366,7 @@ class StockTradingEnv(gym.Env):
         position_status = 1.0 if self.shares > 0 else 0.0
         if self.shares > 0:
             current_price = self.prices_array[self.current_step]
-            unrealized_pnl_pct = (current_price / self.entry_price) - 1.0
+            unrealized_pnl_pct = (current_price / self.entry_price) - 1.0 if self.entry_price > 0 else 0.0
         else:
             unrealized_pnl_pct = 0.0
         return np.concatenate([market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
@@ -379,45 +374,52 @@ class StockTradingEnv(gym.Env):
     def step(self, action):
         prev_portfolio_value = self.portfolio_value
 
-        # --- 修正#4: 实现强制止损机制 ---
+        # --- 1. 实现强制止损机制 ---
         unrealized_pnl = 0
-        if self.shares > 0:
+        if self.shares > 0 and self.entry_price > 0:
             unrealized_pnl = (self.price_series.iloc[self.current_step] / self.entry_price) - 1
 
         # 如果触发了强制止损，当前步的动作被覆盖为“卖出”
         if self.shares > 0 and unrealized_pnl < self.hard_stop_loss_pct:
             action = 2  # 覆盖动作为卖出
 
-        # 执行交易
-        self._take_action(action, self.current_step)
+        # --- 2. 执行交易 (使用最差价格) ---
+        self._take_action(action)
 
         self.current_step += 1
         done = self.current_step >= len(self.df) - 1
 
         # 计算新的资产组合价值
-        self.portfolio_value = self.cash + self.shares * self.price_series.iloc[self.current_step if not done else -1]
+        current_price = self.price_series.iloc[self.current_step if not done else -1]
+        self.portfolio_value = self.cash + self.shares * current_price
 
-        # --- 全新的、基于原则的奖励函数 ---
+        # --- 3. 全新的、基于原则的奖励函数 ---
         reward = 0.0
 
-        # 1. 计算核心奖励：风险调整后的超额收益 (Alpha)
-        if prev_portfolio_value != 0:
+        # a. 计算核心奖励：风险调整后的超额收益 (Alpha)
+        if prev_portfolio_value > 0:
             portfolio_log_return = np.log(self.portfolio_value / prev_portfolio_value)
+
+            # 基准收益：买入并持有策略的单步对数收益
             benchmark_log_return = np.log(
                 self.price_series.iloc[self.current_step if not done else -1] / self.price_series.iloc[
-                    self.current_step - 1])
+                    self.current_step - 1]
+            )
+
+            # 获取预先计算的市场波动率
             market_volatility = self.volatility_series.iloc[self.current_step if not done else -1]
 
+            # 计算超额收益
             excess_return = portfolio_log_return - benchmark_log_return
 
-            # 如果波动率很小，则不进行调整，避免数值不稳定
-            if market_volatility > 1e-6:
+            # 如果波动率很小或为0，则不进行风险调整，避免除以零
+            if market_volatility > 1e-9:
                 reward = excess_return / market_volatility
             else:
-                reward = excess_return
+                reward = excess_return  # 如果市场无波动，奖励就是纯粹的超额收益
 
-        # 2. 对交易行为本身进行惩罚
-        if action == 1 or action == 2:
+        # b. 对交易行为本身进行惩罚
+        if action == 1 or action == 2:  # 只要执行了买或卖
             reward -= self.trade_penalty
 
         # --- 奖励计算结束 ---
@@ -434,34 +436,37 @@ class StockTradingEnv(gym.Env):
 
         return obs, reward, done, info
 
-    def _take_action(self, action, current_step_index):
+    def _take_action(self, action):
         """
         重构交易执行逻辑：在最差价格成交，并包含手续费。
         """
-        # 动作1: 买入
-        if action == 1 and self.shares == 0:
-            # --- 修正#2: 在当日最高价买入 ---
-            buy_price = self.high_series.iloc[self.current_step]
+        current_step_index = self.current_step
 
-            # 包含手续费
+        # 动作1: 买入 (全仓买入)
+        if action == 1 and self.cash > 0:
+            # --- 在当日最高价买入 ---
+            buy_price = self.high_series.iloc[current_step_index]
+
+            # 计算并扣除手续费
             cost = self.cash * self.transaction_cost_pct
             buy_capital = self.cash - cost
             if buy_price > 0:
                 self.shares = buy_capital / buy_price
-            self.cash = 0
-            self.entry_price = buy_price
+                self.cash = 0
+                self.entry_price = buy_price  # 记录入场价格
 
-        # 动作2: 卖出
+        # 动作2: 卖出 (全仓卖出)
         elif action == 2 and self.shares > 0:
-            # --- 修正#2: 在当日最低价卖出 ---
-            sell_price = self.low_series.iloc[self.current_step]
+            # --- 在当日最低价卖出 ---
+            sell_price = self.low_series.iloc[current_step_index]
 
-            # 包含手续费
+            # 计算卖出所得
             proceeds = self.shares * sell_price
+            # 计算并扣除手续费
             cost = proceeds * self.transaction_cost_pct
             self.cash = proceeds - cost
             self.shares = 0
-            self.entry_price = 0
+            self.entry_price = 0  # 清空入场价格
 
 
 # --- 5. GPU优化的DQN智能体 (Double DQN) ---
