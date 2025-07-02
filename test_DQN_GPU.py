@@ -67,7 +67,7 @@ CONFIG = {
     "environment": {
         "initial_capital": 100000,
         "transaction_cost_pct": 0.001,  # 手续费依然保留
-        "trade_penalty": 0.1,  # 固定的交易行为惩罚
+        "trade_penalty": 0.15,  # 固定的交易行为惩罚
         "hard_stop_loss_pct": -0.15,  # 当未实现亏损达到-15%时，强制平仓
     },
     "agent": {
@@ -421,6 +421,20 @@ class StockTradingEnv(gym.Env):
         # b. 对交易行为本身进行惩罚
         if action == 1 or action == 2:  # 只要执行了买或卖
             reward -= self.trade_penalty
+
+        # 如果当前动作是持有(action 0) 并且手中有仓位
+        if action == 0 and self.shares > 0 and self.entry_price > 0:
+            unrealized_pnl_pct = (current_price / self.entry_price) - 1.0
+
+            # 定义一个持有奖励/惩罚的系数
+            holding_reward_factor = 0.5  # 这是一个超参数，可以调整
+
+            # 如果持有的是盈利仓位，给予正奖励，鼓励继续持有
+            if unrealized_pnl_pct > 0:
+                reward += unrealized_pnl_pct * holding_reward_factor
+            # 如果持有的是亏损仓位，给予负奖励（惩罚），鼓励其决策（如止损）
+            else:
+                reward += unrealized_pnl_pct * holding_reward_factor  # PNL为负，所以这是减法
 
         # --- 奖励计算结束 ---
 
