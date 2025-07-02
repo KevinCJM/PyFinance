@@ -465,10 +465,6 @@ def train_dqn(config, train_df):
             if len(agent.memory) > agent.batch_size:
                 agent.replay(global_step_counter)  # 将全局步数传入
 
-        # # --- 核心修改：在每轮结束后进行Epsilon衰减 ---
-        # if agent.epsilon > agent.epsilon_min:
-        #     agent.epsilon *= agent.config['epsilon_decay']
-
         # 每10轮打印一次训练日志
         if (e + 1) % 10 == 0 or e == num_episodes - 1:
             stats = calculate_episode_stats(env.history, initial_capital)
@@ -477,7 +473,7 @@ def train_dqn(config, train_df):
             print(f"  Final Portfolio Value: {stats['final_value']:.2f}")
             print(f"  Total Return: {stats['total_return']:.2%}")
             print(f"  Annual Volatility: {stats['annual_volatility']:.2%}")
-            print(f"  Epsilon: {agent.epsilon:.4f}\n")  # 现在这里的Epsilon会缓慢下降
+            print(f"  Epsilon: {agent.epsilon:.4f}\n")
 
     print("--- Training Finished ---")
     return agent
