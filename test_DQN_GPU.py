@@ -90,9 +90,8 @@ CONFIG = {
         "slippage_pct": 0.005,  # 滑点%
     },
     "agent": {
-        "state_dim": None,
+        "network_type": "cnn",  # "feed_forward" or "cnn"
         "action_dim": 3,
-        "dqn_hidden_layers": [512, 256, 128],
         "memory_size": 50000,
         "batch_size": 256,
         "gamma": 0.99,
@@ -104,9 +103,22 @@ CONFIG = {
         "gradient_clip": 1.0,
         "weight_decay": 1e-5,
         "dropout_rate": 0.3,
+
+        # Feed-forward network specific configuration
+        "feed_forward_config": {
+            "dqn_hidden_layers": [512, 256, 128],
+        },
+        # CNN network specific configuration
+        "cnn_config": {
+            "date_length": 10,  # Number of historical days to consider for CNN input
+            "conv_kernel_size": 3,  # CNN 卷积核的时间长度
+            "dqn_hidden_layers": [512, 256, 128],  # FC layers after CNN
+        },
+        "state_dim": None,  # Will be calculated dynamically
+        "num_market_features": None,  # Will be calculated dynamically for CNN
     },
     "training": {
-        "num_episodes": 10,
+        "num_episodes": 5,
         "update_frequency": 4,
     }
 }
@@ -330,33 +342,103 @@ def preprocess_and_split_data(df, config):
 
 # --- 3. 优化的DQN网络 ---
 class OptimizedDQN(nn.Module):
-    """GPU优化的DQN网络结构。"""
+    """GPU优化的DQN网络结构，支持2D CNN和传统全连接网络。"""
 
-    def __init__(self, input_dim, output_dim, hidden_layers, dropout_rate=0.1):
+    def __init__(self, network_type, input_dim, output_dim, hidden_layers, dropout_rate=0.1, date_length=None,
+                 num_market_features=None, conv_kernel_size=None):
         super(OptimizedDQN, self).__init__()
-        layers = []
-        prev_dim = input_dim
-        for i, hidden_dim in enumerate(hidden_layers):
-            layers.append(nn.Linear(prev_dim, hidden_dim))
-            layers.append(nn.LayerNorm(hidden_dim))
-            layers.append(nn.ReLU(inplace=True))
-            if dropout_rate > 0:
-                layers.append(nn.Dropout(dropout_rate))
-            prev_dim = hidden_dim
-        layers.append(nn.Linear(prev_dim, output_dim))
-        self.net = nn.Sequential(*layers)
+        self.network_type = network_type
+        self.output_dim = output_dim
+        self.dropout_rate = dropout_rate
+
+        if self.network_type == "feed_forward":
+            print("使用全连接前馈神经网络")
+            layers = []
+            prev_dim = input_dim
+            for i, hidden_dim in enumerate(hidden_layers):
+                layers.append(nn.Linear(prev_dim, hidden_dim))
+                layers.append(nn.LayerNorm(hidden_dim))
+                layers.append(nn.ReLU(inplace=True))
+                if self.dropout_rate > 0:
+                    layers.append(nn.Dropout(self.dropout_rate))
+                prev_dim = hidden_dim
+            layers.append(nn.Linear(prev_dim, output_dim))
+            self.net = nn.Sequential(*layers)
+        elif self.network_type == "cnn":
+            print("使用卷积神经网络 (CNN)")
+            if date_length is None or num_market_features is None or conv_kernel_size is None:
+                raise ValueError("For CNN network, date_length, num_market_features and conv_kernel_size must be provided.")
+            self.date_length = date_length
+            self.num_market_features = num_market_features
+            self.conv_kernel_size = conv_kernel_size
+            self.channels = 1  # Assuming single channel for market features
+
+            # CNN layers for market features
+            self.conv_layers = nn.Sequential(
+                nn.Conv2d(self.channels, 32, kernel_size=(self.conv_kernel_size, num_market_features), stride=1, padding=(self.conv_kernel_size // 2, 0)),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)), # Added MaxPool2d
+                nn.Conv2d(32, 64, kernel_size=(self.conv_kernel_size, 1), stride=1, padding=(self.conv_kernel_size // 2, 0)),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)), # Added MaxPool2d
+                nn.Flatten()
+            )
+
+            # Calculate the output size of the conv layers
+            conv_output_size = self._get_conv_output_size()
+
+            # Fully connected layers, combining CNN output with additional features (position, PnL)
+            # The input to the first FC layer will be conv_output_size + 2 (for position_status and unrealized_pnl_pct)
+            fc_input_dim = conv_output_size + 2
+
+            layers = []
+            prev_dim = fc_input_dim
+            for i, hidden_dim in enumerate(hidden_layers):
+                layers.append(nn.Linear(prev_dim, hidden_dim))
+                layers.append(nn.LayerNorm(hidden_dim))
+                layers.append(nn.ReLU(inplace=True))
+                if self.dropout_rate > 0:
+                    layers.append(nn.Dropout(self.dropout_rate))
+                prev_dim = hidden_dim
+            layers.append(nn.Linear(prev_dim, output_dim))
+            self.fc_layers = nn.Sequential(*layers)
+        else:
+            raise ValueError(f"Unsupported network_type: {network_type}")
+
         self._initialize_weights()
 
+    def _get_conv_output_size(self):
+        """Helper to calculate the output size of the convolutional layers."""
+        if self.network_type != "cnn":
+            return 0  # Not applicable for feed_forward
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, self.channels, self.date_length, self.num_market_features)
+            return self.conv_layers(dummy_input).numel()
+
     def _initialize_weights(self):
-        """使用Xavier均匀初始化线性层的权重。"""
+        """使用Xavier均匀初始化线性层和卷积层的权重。"""
         for m in self.modules():
-            if isinstance(m, nn.Linear):
+            if isinstance(m, (nn.Linear, nn.Conv2d)):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        return self.net(x)
+        if self.network_type == "feed_forward":
+            return self.net(x)
+        elif self.network_type == "cnn":
+            # x is (batch_size, date_length * num_market_features + 2)
+            # Separate market features from additional features
+            # Reshape market features for CNN input: (batch_size, channels, date_length, num_market_features)
+            x_market = x[:, :-2].reshape(-1, self.channels, self.date_length, self.num_market_features)
+            x_additional = x[:, -2:]  # Position status and unrealized PnL
+
+            cnn_output = self.conv_layers(x_market)
+
+            # Concatenate CNN output with additional features
+            combined_input = torch.cat((cnn_output, x_additional), dim=1)
+
+            return self.fc_layers(combined_input)
 
 
 # --- 4. 交易环境 ---
@@ -373,7 +455,7 @@ class StockTradingEnv(gym.Env):
         self.price_series = df['close']
         self.high_series = df['high']
         self.low_series = df['low']
-        self.open_series = df['open']  # 新增
+        self.open_series = df['open']
         self.volatility_series = df['reward_volatility']
         self.device_manager = device_manager
         self.config = config
@@ -382,12 +464,25 @@ class StockTradingEnv(gym.Env):
         self.initial_capital = self.env_config['initial_capital']
         self.transaction_cost_pct = self.env_config['transaction_cost_pct']
         self.trade_penalty = self.env_config['trade_penalty']
-        self.trade_price_mode = self.env_config['trade_price_mode']  # 新增
-        self.slippage_pct = self.env_config['slippage_pct']  # 新增
+        self.trade_price_mode = self.env_config['trade_price_mode']
+        self.slippage_pct = self.env_config['slippage_pct']
         self.action_space = spaces.Discrete(len(Actions))
+
+        self.network_type = config['agent']['network_type']
+        self.num_market_features = len(self.feature_df.columns)
+
+        if self.network_type == "cnn":
+            self.date_length = config['agent']['cnn_config']['date_length']
+            self.total_state_dim = (self.date_length * self.num_market_features) + 2
+        elif self.network_type == "feed_forward":
+            self.date_length = 1  # Not used for feed_forward, but set for consistency if needed elsewhere
+            self.total_state_dim = self.num_market_features + 2
+        else:
+            raise ValueError(f"Unsupported network_type: {self.network_type}")
+
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf,
-            shape=(len(self.feature_df.columns) + 2,),
+            shape=(self.total_state_dim,),
             dtype=np.float32
         )
         self._precompute_data_arrays()
@@ -399,7 +494,7 @@ class StockTradingEnv(gym.Env):
         self.prices_array = self.price_series.values.astype(np.float32)
         self.highs_array = self.high_series.values.astype(np.float32)
         self.lows_array = self.low_series.values.astype(np.float32)
-        self.opens_array = self.open_series.values.astype(np.float32)  # 新增
+        self.opens_array = self.open_series.values.astype(np.float32)
         self.volatility_array = self.volatility_series.values.astype(np.float32)
         print(f"已预计算特征和环境数据数组，维度: {self.features_array.shape}")
 
@@ -415,20 +510,37 @@ class StockTradingEnv(gym.Env):
         return self._get_observation()
 
     def _get_observation(self):
-        """获取当前时间步的观察状态。"""
-        # 确保 current_step 不会超出数据范围
+        """获取当前时间步的观察状态，包含历史窗口和当前持仓信息。"""
+        # Ensure current_step does not exceed data range
         if self.current_step >= len(self.features_array):
             return np.zeros(self.observation_space.shape, dtype=np.float32)
 
-        market_obs = self.features_array[self.current_step]
         position_status = 1.0 if self.shares > 0 else 0.0
-
-        # 使用当前观察日期的价格来计算未实现盈亏
         current_price_for_pnl = self.prices_array[self.current_step]
-        unrealized_pnl_pct = (current_price_for_pnl / self.entry_price) - 1.0 \
-            if self.shares > 0 and self.entry_price > 0 else 0.0
+        unrealized_pnl_pct = ( \
+                    (current_price_for_pnl / self.entry_price) - 1.0 \
+            ) if self.shares > 0 and self.entry_price > 0 else 0.0
 
-        return np.concatenate([market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
+        if self.network_type == "cnn":
+            # Determine the start index for the window
+            start_idx = max(0, self.current_step - self.date_length + 1)
+
+            # Extract market observations for the window
+            # Pad with zeros if the window is not full at the beginning
+            market_obs_window = np.zeros((self.date_length, self.num_market_features), dtype=np.float32)
+            actual_window_len = self.current_step - start_idx + 1
+            market_obs_window[-actual_window_len:] = self.features_array[start_idx:self.current_step + 1]
+
+            # Flatten the market observation window
+            flattened_market_obs = market_obs_window.flatten()
+
+            # Concatenate flattened market observations with current position/PnL
+            return np.concatenate([flattened_market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
+        elif self.network_type == "feed_forward":
+            market_obs = self.features_array[self.current_step]
+            return np.concatenate([market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
+        else:
+            raise ValueError(f"Unsupported network_type: {self.network_type}")
 
     def step(self, action_from_agent):
         """
@@ -593,7 +705,7 @@ class OptimizedDQNAgent:
         self.action_dim = self.config['action_dim']
         self.epsilon = self.config['epsilon_start']
         self.epsilon_min = self.config['epsilon_min']
-        self.epsilon_decay_step = (self.config['epsilon_start'] - self.config['epsilon_min']) / self.config[
+        self.epsilon_decay_step = (self.config['epsilon_start'] - self.config['epsilon_min']) / self.config[ \
             'epsilon_linear_decay_steps']
 
         # 将需要频繁访问的参数设为对象的直接属性
@@ -603,21 +715,41 @@ class OptimizedDQNAgent:
         self.learning_rate = self.config['learning_rate']
         self.target_update_freq = self.config['target_update_freq']
         self.gradient_clip = self.config['gradient_clip']
+        self.weight_decay = self.config['weight_decay']
+        self.dropout_rate = self.config['dropout_rate']
+        self.network_type = self.config['network_type']
 
         self.memory = collections.deque(maxlen=self.memory_size)
 
-        print(f"初始化DQN网络，输入维度={self.state_dim}, 输出维度={self.action_dim}")
-        self.policy_net = OptimizedDQN(self.state_dim, self.action_dim, self.config['dqn_hidden_layers'],
-                                       self.config['dropout_rate'])
-        self.target_net = OptimizedDQN(self.state_dim, self.action_dim, self.config['dqn_hidden_layers'],
-                                       self.config['dropout_rate'])
+        print(f"初始化DQN网络，输入维度={self.state_dim}, 输出维度={self.action_dim}, 网络类型={self.network_type}")
+
+        if self.network_type == "cnn":
+            self.date_length = self.config['cnn_config']['date_length']
+            self.num_market_features = self.config['num_market_features']
+            self.conv_kernel_size = self.config['cnn_config']['conv_kernel_size']
+            hidden_layers = self.config['cnn_config']['dqn_hidden_layers']
+            self.policy_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
+                                           self.dropout_rate, self.date_length, self.num_market_features, self.conv_kernel_size)
+            self.target_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
+                                           self.dropout_rate, self.date_length, self.num_market_features, self.conv_kernel_size)
+        elif self.network_type == "feed_forward":
+            self.date_length = None  # Not applicable
+            self.num_market_features = None  # Not applicable
+            hidden_layers = self.config['feed_forward_config']['dqn_hidden_layers']
+            self.policy_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
+                                           self.dropout_rate)
+            self.target_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
+                                           self.dropout_rate)
+        else:
+            raise ValueError(f"Unsupported network_type: {self.network_type}")
+
         self.policy_net = device_manager.to_device(self.policy_net)
         self.target_net = device_manager.to_device(self.target_net)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
         print(f"网络已移动到设备: {device_manager.device}")
-        self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=self.learning_rate,
-                                     weight_decay=self.config['weight_decay'])
+        self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=self.learning_rate, \
+                                     weight_decay=self.weight_decay)
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='max', patience=1000, factor=0.8)
         self.loss_fn = nn.SmoothL1Loss()
         self.learn_step_counter = 0
@@ -629,8 +761,9 @@ class OptimizedDQNAgent:
 
     def act(self, state):
         """根据当前状态选择一个动作。"""
+        # The last two elements of the state are position_status and unrealized_pnl_pct
         position_status = state[-2]
-        valid_actions = [Actions.HOLD.value, Actions.BUY.value] if position_status == 0 else [Actions.HOLD.value,
+        valid_actions = [Actions.HOLD.value, Actions.BUY.value] if position_status == 0 else [Actions.HOLD.value, \
                                                                                               Actions.SELL.value]
         if random.random() <= self.epsilon:
             return random.choice(valid_actions)
@@ -704,7 +837,11 @@ def train_dqn(config, train_df, device_manager):
     """DQN模型的主训练函数。"""
     print("初始化训练环境...")
     env = StockTradingEnv(train_df, config, device_manager)
+
+    # Update config with actual state dimensions from the environment
     config['agent']['state_dim'] = env.observation_space.shape[0]
+    config['agent']['num_market_features'] = env.num_market_features  # Pass num_market_features to agent config
+
     print("初始化DQN智能体...")
     agent = OptimizedDQNAgent(config, device_manager)
     initial_capital = config['environment']['initial_capital']
@@ -989,8 +1126,14 @@ def safe_model_save(agent, config, device_manager):
             'model_info': {
                 'state_dim': agent.state_dim,
                 'action_dim': agent.action_dim,
-                'hidden_layers': agent.config['dqn_hidden_layers'],
-                'dropout_rate': agent.config['dropout_rate']
+                'network_type': agent.network_type,
+                'hidden_layers': agent.config['feed_forward_config'][
+                    'dqn_hidden_layers'] if agent.network_type == "feed_forward" else agent.config['cnn_config'][
+                    'dqn_hidden_layers'],
+                'dropout_rate': agent.dropout_rate,
+                'date_length': agent.date_length,
+                'num_market_features': agent.num_market_features,
+                'conv_kernel_size': agent.conv_kernel_size
             }
         }, model_path)
         print(f"Model saved successfully to: {model_path}")
