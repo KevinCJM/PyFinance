@@ -73,21 +73,21 @@ CONFIG = {
     "preprocessing": {
         "train_split_ratio": 0.8,
         "use_gpu_preprocessing": True,
-        "volatility_window": 21,
+        "volatility_window": 25,
         "pca": {
             "enabled": True,  # 是否启用PCA
-            "mode": "n_components",  # "n_components" 或 "variance_ratio"
+            "mode": "variance_ratio",  # "n_components" 或 "variance_ratio"
             "n_components": 100,  # 如果 mode 为 "n_components"，指定维度数量
-            "variance_ratio": 0.95,  # 如果 mode 为 "variance_ratio"，指定解释方差比例
+            "variance_ratio": 0.9,  # 如果 mode 为 "variance_ratio"，指定解释方差比例
         }
     },
     "environment": {
         "initial_capital": 100000,
-        "transaction_cost_pct": 0.001,
+        "transaction_cost_pct": 0.005,
         "trade_penalty": 0.15,
-        "hard_stop_loss_pct": -0.15,
+        "hard_stop_loss_pct": -0.05,
         "trade_price_mode": "close_slippage",  # "extreme", "open_slippage", "close_slippage"
-        "slippage_pct": 0.0005,  # 0.05% 滑点
+        "slippage_pct": 0.005,  # 滑点%
     },
     "agent": {
         "state_dim": None,
@@ -100,13 +100,13 @@ CONFIG = {
         "target_update_freq": 100,
         "epsilon_start": 1.0,
         "epsilon_min": 0.01,
-        "epsilon_linear_decay_steps": 300000,
+        "epsilon_linear_decay_steps": 500000,
         "gradient_clip": 1.0,
         "weight_decay": 1e-5,
-        "dropout_rate": 0.1,
+        "dropout_rate": 0.3,
     },
     "training": {
-        "num_episodes": 5,
+        "num_episodes": 100,
         "update_frequency": 4,
     }
 }
