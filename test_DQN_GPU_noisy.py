@@ -36,6 +36,7 @@ class NoisyLinear(nn.Module):
     """
     带有因子分解高斯噪声的Noisy Net全连接层。
     """
+
     def __init__(self, in_features, out_features, std_init=0.5):
         super(NoisyLinear, self).__init__()
         self.in_features = in_features
@@ -156,6 +157,11 @@ CONFIG = {
     },
     # --- DQN智能体配置 ---
     "agent": {
+        # --- N-Step Learning 配置 ---
+        "n_step_learning": {
+            "enabled": False,  # 是否启用 N-step learning
+            "n_steps": 5      # N的值，即向前看多少步
+        },
         "exploration_method": "noisy",  # 探索策略: "epsilon_greedy" 或 "noisy"
         "noisy_std_init": 0.5,  # NoisyLinear层的初始标准差
         "network_type": "cnn",  # 神经网络类型: "feed_forward" (全连接网络) 或 "cnn" (卷积神经网络)
@@ -816,13 +822,20 @@ class StockTradingEnv(gym.Env):
 
 # --- 5. DQN智能体 ---
 class OptimizedDQNAgent:
-    """优化的DQN智能体，支持epsilon-greedy和Noisy Networks探索策略。"""
+    """优化的DQN智能体，支持epsilon-greedy和Noisy Networks探索策略，以及N-step learning。"""
 
     def __init__(self, config, device_manager):
         self.config = config['agent']
         self.device_manager = device_manager
         self.state_dim = self.config['state_dim']
         self.action_dim = self.config['action_dim']
+
+        # --- N-Step Learning 配置 ---
+        n_step_config = self.config.get("n_step_learning", {})
+        self.n_step_enabled = n_step_config.get("enabled", False)
+        self.n_steps = n_step_config.get("n_steps", 1)
+        if self.n_step_enabled:
+            print(f"启用 N-Step Learning, N = {self.n_steps}")
 
         # --- 探索策略选择 ---
         self.exploration_method = self.config.get("exploration_method", "epsilon_greedy")
@@ -909,10 +922,7 @@ class OptimizedDQNAgent:
         self.memory.append((state, action, reward, next_state, done))
 
     def reset_noise(self):
-        """重置策略网络和目标网络中的噪声。
-        在每个训练步（replay调用）开始时执行一次，以确保在整个批次的计算中
-        使用的噪声参数是固定的，这对于稳定的学习至关重要。
-        """
+        """重置策略网络和目标网络中的噪声。"""
         if self.use_noisy_net:
             self.policy_net.reset_noise()
             self.target_net.reset_noise()
@@ -922,41 +932,45 @@ class OptimizedDQNAgent:
         position_status = state[-2]
         valid_actions = [Actions.HOLD.value, Actions.BUY.value]             if position_status == 0 else [Actions.HOLD.value, Actions.SELL.value]
 
-        # 如果使用epsilon-greedy且随机数小于epsilon，则随机选择一个有效动作
         if not self.use_noisy_net and random.random() <= self.epsilon:
             return random.choice(valid_actions)
 
-        # 如果使用Noisy Nets，需要在每次决策前为策略网络重置噪声以进行探索
         if self.use_noisy_net:
             self.policy_net.reset_noise()
 
         with torch.no_grad():
             state_tensor = self.device_manager.to_device(torch.FloatTensor(state).unsqueeze(0))
             q_values = self.policy_net(state_tensor)
-            # 将无效动作的Q值设为负无穷
             for i in range(self.action_dim):
                 if i not in valid_actions:
                     q_values[0][i] = -float('inf')
             return torch.argmax(q_values[0]).item()
 
     def replay(self, global_step):
-        """从经验回放缓冲区中采样并训练网络 (Double DQN)。"""
+        """从经验回放缓冲区中采样并训练网络，支持1-step和N-step DQN。"""
+        if self.n_step_enabled:
+            return self._replay_n_step(global_step)
+        else:
+            return self._replay_1_step(global_step)
+
+    def _replay_1_step(self, global_step):
+        """传统的1-step Double DQN学习。"""
         if len(self.memory) < self.batch_size:
             return None
 
-        # 如果使用Noisy Nets，在训练前为整个批次重置噪声，以稳定学习目标。
-        self.reset_noise()
+        if self.use_noisy_net:
+            self.reset_noise()
 
         minibatch = random.sample(self.memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*minibatch)
+
         states = self.device_manager.to_device(torch.FloatTensor(np.array(states)))
         actions = self.device_manager.to_device(torch.LongTensor(actions).unsqueeze(1))
         rewards = self.device_manager.to_device(torch.FloatTensor(rewards).unsqueeze(1))
         next_states = self.device_manager.to_device(torch.FloatTensor(np.array(next_states)))
         dones = self.device_manager.to_device(torch.BoolTensor(dones).unsqueeze(1))
-        use_amp = self.device_manager.use_amp
-        scaler = self.device_manager.scaler
-        with autocast(enabled=use_amp):
+
+        with autocast(enabled=self.device_manager.use_amp):
             current_q_values = self.policy_net(states).gather(1, actions)
             with torch.no_grad():
                 best_next_actions = self.policy_net(next_states).argmax(1).unsqueeze(1)
@@ -964,27 +978,98 @@ class OptimizedDQNAgent:
             next_q_values_for_best_actions[dones] = 0.0
             target_q_values = rewards + (self.gamma * next_q_values_for_best_actions)
             loss = self.loss_fn(current_q_values, target_q_values)
-        if use_amp:
+
+        self._optimize_model(loss)
+        self._update_epsilon(global_step)
+        self._update_target_net()
+        return loss.item()
+
+    def _replay_n_step(self, global_step):
+        """N-step Double DQN学习。"""
+        if len(self.memory) < self.batch_size + self.n_steps:
+            return None
+
+        if self.use_noisy_net:
+            self.reset_noise()
+
+        # 采样起始索引
+        indices = random.sample(range(len(self.memory) - self.n_steps), self.batch_size)
+
+        # 准备N-step经验
+        states, actions, n_step_rewards, n_step_next_states, n_step_dones = [], [], [], [], []
+
+        for idx in indices:
+            # 获取初始状态和动作
+            state, action, _, _, _ = self.memory[idx]
+            states.append(state)
+            actions.append(action)
+
+            # 计算N-step累计奖励和最终状态
+            G = 0.0
+            gamma_power = 1.0
+            final_done = True
+            for i in range(self.n_steps):
+                _, _, reward, next_s, done = self.memory[idx + i]
+                G += gamma_power * reward
+                gamma_power *= self.gamma
+                if done:
+                    final_next_state = next_s  # 即使终止，也需要一个占位符
+                    final_done = True
+                    break
+                final_next_state = next_s
+                final_done = False
+
+            n_step_rewards.append(G)
+            n_step_next_states.append(final_next_state)
+            n_step_dones.append(final_done)
+
+        # 转换为张量
+        states = self.device_manager.to_device(torch.FloatTensor(np.array(states)))
+        actions = self.device_manager.to_device(torch.LongTensor(actions).unsqueeze(1))
+        n_step_rewards = self.device_manager.to_device(torch.FloatTensor(n_step_rewards).unsqueeze(1))
+        n_step_next_states = self.device_manager.to_device(torch.FloatTensor(np.array(n_step_next_states)))
+        n_step_dones = self.device_manager.to_device(torch.BoolTensor(n_step_dones).unsqueeze(1))
+
+        with autocast(enabled=self.device_manager.use_amp):
+            current_q_values = self.policy_net(states).gather(1, actions)
+            with torch.no_grad():
+                best_next_actions = self.policy_net(n_step_next_states).argmax(1).unsqueeze(1)
+                next_q_values = self.target_net(n_step_next_states).gather(1, best_next_actions)
+            
+            next_q_values[n_step_dones] = 0.0
+            target_q_values = n_step_rewards + (self.gamma ** self.n_steps) * next_q_values
+            loss = self.loss_fn(current_q_values, target_q_values)
+
+        self._optimize_model(loss)
+        self._update_epsilon(global_step)
+        self._update_target_net()
+        return loss.item()
+
+    def _optimize_model(self, loss):
+        """执行一次模型优化步骤。"""
+        if self.device_manager.use_amp:
             self.optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            scaler.unscale_(self.optimizer)
+            self.device_manager.scaler.scale(loss).backward()
+            self.device_manager.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.gradient_clip)
-            scaler.step(self.optimizer)
-            scaler.update()
+            self.device_manager.scaler.step(self.optimizer)
+            self.device_manager.scaler.update()
         else:
             self.optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), self.gradient_clip)
             self.optimizer.step()
 
-        # 如果使用epsilon-greedy，则进行epsilon衰减
+    def _update_epsilon(self, global_step):
+        """更新epsilon值。"""
         if not self.use_noisy_net:
             self.epsilon = max(self.epsilon_min, self.config['epsilon_start'] - self.epsilon_decay_step * global_step)
 
+    def _update_target_net(self):
+        """更新目标网络。"""
         self.learn_step_counter += 1
         if self.learn_step_counter % self.target_update_freq == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
-        return loss.item()
 
 
 # --- 6. 训练与评估 ---
