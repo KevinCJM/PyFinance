@@ -152,7 +152,8 @@ CONFIG = {
         "transaction_cost_pct": 0.005,  # 单边交易成本（手续费）的百分比
         "trade_penalty": 0.15,  # 对每次交易行为在奖励函数中施加的额外惩罚项，以抑制过于频繁的交易
         "hard_stop_loss_pct": -0.05,  # 硬止损百分比，当浮动亏损达到此比例时，环境会强制执行卖出
-        "trade_price_mode": "close_slippage",
+        "buy_price_mode": "close_slippage",
+        "sell_price_mode": "close_slippage",
         # 交易执行价格模式: "extreme"(用当日最高/最低价), "open_slippage"(开盘价+滑点), "close_slippage"(收盘价+滑点)
         "slippage_pct": 0.005,  # 滑点百分比，模拟实际成交价与理想价之间的偏差
     },
@@ -611,7 +612,8 @@ class StockTradingEnv(gym.Env):
         self.hard_stop_loss_pct = self.env_config['hard_stop_loss_pct']
         self.initial_capital = self.env_config['initial_capital']
         self.transaction_cost_pct = self.env_config['transaction_cost_pct']
-        self.trade_price_mode = self.env_config['trade_price_mode']
+        self.buy_price_mode = self.env_config['buy_price_mode']
+        self.sell_price_mode = self.env_config['sell_price_mode']
         self.slippage_pct = self.env_config['slippage_pct']
         self.action_space = spaces.Discrete(len(Actions))
 
@@ -800,20 +802,25 @@ class StockTradingEnv(gym.Env):
         buy_price = 0
         sell_price = 0
 
-        # 根据 trade_price_mode 获取执行日的价格
-        if self.trade_price_mode == "extreme":
-            buy_price = self.highs_array[execution_day_index]
-            sell_price = self.lows_array[execution_day_index]
-        elif self.trade_price_mode == "open_slippage":
-            buy_price = self.opens_array[execution_day_index] * (1 + self.slippage_pct)
-            sell_price = self.opens_array[execution_day_index] * (1 - self.slippage_pct)
-        elif self.trade_price_mode == "close_slippage":
-            buy_price = self.prices_array[execution_day_index] * (1 + self.slippage_pct)
-            sell_price = self.prices_array[execution_day_index] * (1 - self.slippage_pct)
-        else:
-            # 默认使用收盘价
-            buy_price = self.prices_array[execution_day_index]
-            sell_price = self.prices_array[execution_day_index]
+        # 根据动作和对应的价格模式获取执行价格
+        if action == Actions.BUY.value:
+            if self.buy_price_mode == "extreme":
+                buy_price = self.highs_array[execution_day_index]
+            elif self.buy_price_mode == "open_slippage":
+                buy_price = self.opens_array[execution_day_index] * (1 + self.slippage_pct)
+            elif self.buy_price_mode == "close_slippage":
+                buy_price = self.prices_array[execution_day_index] * (1 + self.slippage_pct)
+            else:
+                buy_price = self.prices_array[execution_day_index]
+        elif action == Actions.SELL.value:
+            if self.sell_price_mode == "extreme":
+                sell_price = self.lows_array[execution_day_index]
+            elif self.sell_price_mode == "open_slippage":
+                sell_price = self.opens_array[execution_day_index] * (1 - self.slippage_pct)
+            elif self.sell_price_mode == "close_slippage":
+                sell_price = self.prices_array[execution_day_index] * (1 - self.slippage_pct)
+            else:
+                sell_price = self.prices_array[execution_day_index]
 
         if action == Actions.BUY.value and self.cash > 0:
             cost = self.cash * self.transaction_cost_pct
