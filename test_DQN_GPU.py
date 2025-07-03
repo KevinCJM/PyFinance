@@ -110,9 +110,14 @@ CONFIG = {
         },
         # CNN network specific configuration
         "cnn_config": {
-            "date_length": 20,  # Number of historical days to consider for CNN input
-            "conv_kernel_size": 3,  # CNN 卷积核的时间长度
-            "dqn_hidden_layers": [256, 128],  # MLP的隐藏层
+            "date_length": 10,  # Number of historical days to consider for CNN input
+            "conv_kernel_size": 3,  # CNN 卷积核大小
+            "cnn_out_channels": [32, 64],  # 定义CNN通道数
+            "use_attention": True,  # 是否使用注意力机制
+            "num_heads": 8,  # 注意力头数，必须能被d_model整除
+            "dim_feedforward": 256,  # Encoder内部前馈网络的维度
+            "num_attention_layers": 2,  # 堆叠多层Encoder
+            "dqn_hidden_layers": [256, 128],  # FC layers after CNN
         },
         "state_dim": None,  # Will be calculated dynamically
         "num_market_features": None,  # Will be calculated dynamically for CNN
@@ -345,7 +350,8 @@ class OptimizedDQN(nn.Module):
     """GPU优化的DQN网络结构，支持2D CNN和传统全连接网络。"""
 
     def __init__(self, network_type, input_dim, output_dim, hidden_layers, dropout_rate=0.1, date_length=None,
-                 num_market_features=None, conv_kernel_size=None):
+                 num_market_features=None, conv_kernel_size=None, cnn_out_channels=None,
+                 use_attention=False, num_heads=None, dim_feedforward=None, num_attention_layers=None):
         super(OptimizedDQN, self).__init__()
         self.network_type = network_type
         self.output_dim = output_dim
@@ -363,43 +369,72 @@ class OptimizedDQN(nn.Module):
                     layers.append(nn.Dropout(self.dropout_rate))
                 prev_dim = hidden_dim
             layers.append(nn.Linear(prev_dim, output_dim))
-            self.net = nn.Sequential(*layers)
+            self.decision_mlp = nn.Sequential(*layers)
         elif self.network_type == "cnn":
             print("使用卷积神经网络 (CNN)")
-            if date_length is None or num_market_features is None or conv_kernel_size is None:
+            if date_length is None or num_market_features is None or conv_kernel_size is None or cnn_out_channels is None:
                 raise ValueError(
-                    "For CNN network, date_length, num_market_features and conv_kernel_size must be provided.")
+                    "For CNN network, date_length, num_market_features, conv_kernel_size and cnn_out_channels must be provided.")
             self.date_length = date_length
             self.num_market_features = num_market_features
             self.conv_kernel_size = conv_kernel_size
+            self.cnn_out_channels = cnn_out_channels
+            self.use_attention = use_attention
+            self.num_heads = num_heads
+            self.dim_feedforward = dim_feedforward
+            self.num_attention_layers = num_attention_layers
             self.channels = 1  # Assuming single channel for market features
 
+            self.cnn_extractor = None  # Initialize to None
+            self.attention_encoder = None  # Initialize to None
+            self.decision_mlp = None  # Initialize to None
+
             # CNN layers for market features
-            self.conv_layers = nn.Sequential(
-                nn.Conv2d(self.channels, 32,
+            cnn_layers = [
+                nn.Conv2d(self.channels, self.cnn_out_channels[0],
                           kernel_size=(self.conv_kernel_size, num_market_features),
                           stride=1,
                           padding=(self.conv_kernel_size // 2, 0)),
-                nn.BatchNorm2d(32),  # Added BatchNorm2d
+                nn.BatchNorm2d(self.cnn_out_channels[0]),
                 nn.ReLU(inplace=True),
                 nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
-                nn.Conv2d(32, 64,
+                nn.Conv2d(self.cnn_out_channels[0], self.cnn_out_channels[1],
                           kernel_size=(self.conv_kernel_size, 1),
                           stride=1,
                           padding=(self.conv_kernel_size // 2, 0)),
-                nn.BatchNorm2d(64),  # Added BatchNorm2d
+                nn.BatchNorm2d(self.cnn_out_channels[1]),
                 nn.ReLU(inplace=True),
                 nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
-                nn.Flatten()
-            )
+            ]
+
+            if not self.use_attention:
+                cnn_layers.append(nn.Flatten())
+            self.cnn_extractor = nn.Sequential(*cnn_layers)
 
             # Calculate the output size of the conv layers
-            conv_output_size = self._get_conv_output_size()
+            cnn_output_shape = self._get_cnn_output_size()
+            # cnn_output_shape will be (1, channels, height, width)
+            # For attention, d_model is channels * width, and sequence_length is height
+            # For non-attention, it's channels * height * width
 
-            # Fully connected layers, combining CNN output with additional features (position, PnL)
-            # The input to the first FC layer will be conv_output_size + 2 (for position_status and unrealized_pnl_pct)
-            fc_input_dim = conv_output_size + 2
+            if self.use_attention:
+                d_model = cnn_output_shape[1] * cnn_output_shape[3]  # channels * width
+                sequence_length = cnn_output_shape[2]  # height
+                if d_model % self.num_heads != 0:
+                    raise ValueError(f"d_model ({d_model}) must be divisible by num_heads ({self.num_heads}).")
 
+                encoder_layer = nn.TransformerEncoderLayer(d_model=d_model,
+                                                           nhead=self.num_heads,
+                                                           dim_feedforward=self.dim_feedforward,
+                                                           batch_first=True)
+                self.attention_encoder = nn.TransformerEncoder(encoder_layer,
+                                                               num_layers=self.num_attention_layers)
+                fc_input_dim = d_model * sequence_length + 2  # After attention, we flatten the sequence
+            else:
+                fc_input_dim = cnn_output_shape[1] * cnn_output_shape[2] * cnn_output_shape[
+                    3] + 2  # Flattened CNN output + 2 additional features
+
+            # Decision MLP
             layers = []
             prev_dim = fc_input_dim
             for i, hidden_dim in enumerate(hidden_layers):
@@ -410,19 +445,24 @@ class OptimizedDQN(nn.Module):
                     layers.append(nn.Dropout(self.dropout_rate))
                 prev_dim = hidden_dim
             layers.append(nn.Linear(prev_dim, output_dim))
-            self.fc_layers = nn.Sequential(*layers)
+            self.decision_mlp = nn.Sequential(*layers)
         else:
             raise ValueError(f"Unsupported network_type: {network_type}")
 
         self._initialize_weights()
 
-    def _get_conv_output_size(self):
+    def _get_cnn_output_size(self):
         """Helper to calculate the output size of the convolutional layers."""
         if self.network_type != "cnn":
             return 0  # Not applicable for feed_forward
         with torch.no_grad():
             dummy_input = torch.zeros(1, self.channels, self.date_length, self.num_market_features)
-            return self.conv_layers(dummy_input).numel()
+            # Pass through cnn_extractor, then get its shape
+            output_shape = self.cnn_extractor(dummy_input).shape
+            # The output shape will be (batch_size, cnn_out_channels[-1], sequence_length, 1)
+            # We need to flatten the last two dimensions for d_model calculation if attention is not used
+            # If attention is used, d_model is cnn_out_channels[-1] and sequence_length is output_shape[2]
+            return output_shape
 
     def _initialize_weights(self):
         """使用Xavier均匀初始化线性层和卷积层的权重。"""
@@ -434,7 +474,7 @@ class OptimizedDQN(nn.Module):
 
     def forward(self, x):
         if self.network_type == "feed_forward":
-            return self.net(x)
+            return self.decision_mlp(x)
         elif self.network_type == "cnn":
             # x is (batch_size, date_length * num_market_features + 2)
             # Separate market features from additional features
@@ -442,12 +482,27 @@ class OptimizedDQN(nn.Module):
             x_market = x[:, :-2].reshape(-1, self.channels, self.date_length, self.num_market_features)
             x_additional = x[:, -2:]  # Position status and unrealized PnL
 
-            cnn_output = self.conv_layers(x_market)
+            # CNN Extractor
+            cnn_output = self.cnn_extractor(x_market)
 
-            # Concatenate CNN output with additional features
-            combined_input = torch.cat((cnn_output, x_additional), dim=1)
+            # Attention Encoder (Optional)
+            if self.use_attention:
+                # Reshape for attention: (batch_size, sequence_length, d_model)
+                batch_size = cnn_output.shape[0]
+                sequence_length = cnn_output.shape[2]  # height
+                d_model = cnn_output.shape[1] * cnn_output.shape[3]  # channels * width
+                cnn_output = cnn_output.permute(0, 2, 1, 3).contiguous().view(batch_size, sequence_length,
+                                                                              d_model)  # (batch_size, height, channels * width)
+                attention_output = self.attention_encoder(cnn_output)
+                # Flatten attention output for MLP: (batch_size, d_model * sequence_length)
+                processed_features = attention_output.view(batch_size, -1)
+            else:
+                processed_features = cnn_output
 
-            return self.fc_layers(combined_input)
+            # Concatenate processed features with additional features
+            combined_input = torch.cat((processed_features, x_additional), dim=1)
+
+            return self.decision_mlp(combined_input)
 
 
 # --- 4. 交易环境 ---
@@ -736,16 +791,25 @@ class OptimizedDQNAgent:
             self.date_length = self.config['cnn_config']['date_length']
             self.num_market_features = self.config['num_market_features']
             self.conv_kernel_size = self.config['cnn_config']['conv_kernel_size']
+            self.cnn_out_channels = self.config['cnn_config']['cnn_out_channels']
+            self.use_attention = self.config['cnn_config']['use_attention']
+            self.num_heads = self.config['cnn_config']['num_heads']
+            self.dim_feedforward = self.config['cnn_config']['dim_feedforward']
+            self.num_attention_layers = self.config['cnn_config']['num_attention_layers']
             hidden_layers = self.config['cnn_config']['dqn_hidden_layers']
 
             self.policy_net = OptimizedDQN(self.network_type, self.state_dim,
                                            self.action_dim, hidden_layers,
                                            self.dropout_rate, self.date_length,
-                                           self.num_market_features, self.conv_kernel_size)
+                                           self.num_market_features, self.conv_kernel_size,
+                                           self.cnn_out_channels, self.use_attention, self.num_heads,
+                                           self.dim_feedforward, self.num_attention_layers)
             self.target_net = OptimizedDQN(self.network_type, self.state_dim,
                                            self.action_dim, hidden_layers,
                                            self.dropout_rate, self.date_length,
-                                           self.num_market_features, self.conv_kernel_size)
+                                           self.num_market_features, self.conv_kernel_size,
+                                           self.cnn_out_channels, self.use_attention, self.num_heads,
+                                           self.dim_feedforward, self.num_attention_layers)
         elif self.network_type == "feed_forward":
             self.date_length = None  # Not applicable
             self.num_market_features = None  # Not applicable
@@ -764,9 +828,10 @@ class OptimizedDQNAgent:
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
         print(f"网络已移动到设备: {device_manager.device}")
-        self.optimizer = optim.AdamW(self.policy_net.parameters(), lr=self.learning_rate, \
-                                     weight_decay=self.weight_decay)
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='max', patience=1000, factor=0.8)
+        self.optimizer = optim.AdamW(self.policy_net.parameters(),
+                                     lr=self.learning_rate, weight_decay=self.weight_decay)
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer,
+                                                              mode='max', patience=1000, factor=0.8)
         self.loss_fn = nn.SmoothL1Loss()
         self.learn_step_counter = 0
         print("DQN智能体初始化成功")
@@ -779,8 +844,8 @@ class OptimizedDQNAgent:
         """根据当前状态选择一个动作。"""
         # The last two elements of the state are position_status and unrealized_pnl_pct
         position_status = state[-2]
-        valid_actions = [Actions.HOLD.value, Actions.BUY.value] if position_status == 0 else [Actions.HOLD.value, \
-                                                                                              Actions.SELL.value]
+        valid_actions = [Actions.HOLD.value, Actions.BUY.value] \
+            if position_status == 0 else [Actions.HOLD.value, Actions.SELL.value]
         if random.random() <= self.epsilon:
             return random.choice(valid_actions)
         with torch.no_grad():
@@ -1149,7 +1214,12 @@ def safe_model_save(agent, config, device_manager):
                 'dropout_rate': agent.dropout_rate,
                 'date_length': agent.date_length,
                 'num_market_features': agent.num_market_features,
-                'conv_kernel_size': agent.conv_kernel_size
+                'conv_kernel_size': agent.conv_kernel_size,
+                'cnn_out_channels': agent.cnn_out_channels,
+                'use_attention': agent.use_attention,
+                'num_heads': agent.num_heads,
+                'dim_feedforward': agent.dim_feedforward,
+                'num_attention_layers': agent.num_attention_layers
             }
         }, model_path)
         print(f"Model saved successfully to: {model_path}")
