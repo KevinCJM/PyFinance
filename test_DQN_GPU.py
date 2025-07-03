@@ -110,9 +110,9 @@ CONFIG = {
         },
         # CNN network specific configuration
         "cnn_config": {
-            "date_length": 10,  # Number of historical days to consider for CNN input
+            "date_length": 20,  # Number of historical days to consider for CNN input
             "conv_kernel_size": 3,  # CNN 卷积核的时间长度
-            "dqn_hidden_layers": [512, 256, 128],  # FC layers after CNN
+            "dqn_hidden_layers": [256, 128],  # MLP的隐藏层
         },
         "state_dim": None,  # Will be calculated dynamically
         "num_market_features": None,  # Will be calculated dynamically for CNN
@@ -737,19 +737,27 @@ class OptimizedDQNAgent:
             self.num_market_features = self.config['num_market_features']
             self.conv_kernel_size = self.config['cnn_config']['conv_kernel_size']
             hidden_layers = self.config['cnn_config']['dqn_hidden_layers']
-            self.policy_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
-                                           self.dropout_rate, self.date_length, self.num_market_features,
-                                           self.conv_kernel_size)
-            self.target_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
-                                           self.dropout_rate, self.date_length, self.num_market_features,
-                                           self.conv_kernel_size)
+            cnn_channels = config['agent']['cnn_config']['cnn_out_channels']
+            nhead = config['agent']['cnn_config']['attention_nhead']
+            num_encoder_layers = config['agent']['cnn_config']['attention_num_layers']
+
+            self.policy_net = OptimizedDQN(self.network_type, self.state_dim,
+                                           self.action_dim, hidden_layers,
+                                           self.dropout_rate, self.date_length,
+                                           self.num_market_features, self.conv_kernel_size)
+            self.target_net = OptimizedDQN(self.network_type, self.state_dim,
+                                           self.action_dim, hidden_layers,
+                                           self.dropout_rate, self.date_length,
+                                           self.num_market_features, self.conv_kernel_size)
         elif self.network_type == "feed_forward":
             self.date_length = None  # Not applicable
             self.num_market_features = None  # Not applicable
             hidden_layers = self.config['feed_forward_config']['dqn_hidden_layers']
-            self.policy_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
+            self.policy_net = OptimizedDQN(self.network_type, self.state_dim,
+                                           self.action_dim, hidden_layers,
                                            self.dropout_rate)
-            self.target_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
+            self.target_net = OptimizedDQN(self.network_type, self.state_dim,
+                                           self.action_dim, hidden_layers,
                                            self.dropout_rate)
         else:
             raise ValueError(f"Unsupported network_type: {self.network_type}")
