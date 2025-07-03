@@ -367,7 +367,8 @@ class OptimizedDQN(nn.Module):
         elif self.network_type == "cnn":
             print("使用卷积神经网络 (CNN)")
             if date_length is None or num_market_features is None or conv_kernel_size is None:
-                raise ValueError("For CNN network, date_length, num_market_features and conv_kernel_size must be provided.")
+                raise ValueError(
+                    "For CNN network, date_length, num_market_features and conv_kernel_size must be provided.")
             self.date_length = date_length
             self.num_market_features = num_market_features
             self.conv_kernel_size = conv_kernel_size
@@ -375,12 +376,20 @@ class OptimizedDQN(nn.Module):
 
             # CNN layers for market features
             self.conv_layers = nn.Sequential(
-                nn.Conv2d(self.channels, 32, kernel_size=(self.conv_kernel_size, num_market_features), stride=1, padding=(self.conv_kernel_size // 2, 0)),
+                nn.Conv2d(self.channels, 32,
+                          kernel_size=(self.conv_kernel_size, num_market_features),
+                          stride=1,
+                          padding=(self.conv_kernel_size // 2, 0)),
+                nn.BatchNorm2d(32),  # Added BatchNorm2d
                 nn.ReLU(inplace=True),
-                nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)), # Added MaxPool2d
-                nn.Conv2d(32, 64, kernel_size=(self.conv_kernel_size, 1), stride=1, padding=(self.conv_kernel_size // 2, 0)),
+                nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+                nn.Conv2d(32, 64,
+                          kernel_size=(self.conv_kernel_size, 1),
+                          stride=1,
+                          padding=(self.conv_kernel_size // 2, 0)),
+                nn.BatchNorm2d(64),  # Added BatchNorm2d
                 nn.ReLU(inplace=True),
-                nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)), # Added MaxPool2d
+                nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
                 nn.Flatten()
             )
 
@@ -729,9 +738,11 @@ class OptimizedDQNAgent:
             self.conv_kernel_size = self.config['cnn_config']['conv_kernel_size']
             hidden_layers = self.config['cnn_config']['dqn_hidden_layers']
             self.policy_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
-                                           self.dropout_rate, self.date_length, self.num_market_features, self.conv_kernel_size)
+                                           self.dropout_rate, self.date_length, self.num_market_features,
+                                           self.conv_kernel_size)
             self.target_net = OptimizedDQN(self.network_type, self.state_dim, self.action_dim, hidden_layers, \
-                                           self.dropout_rate, self.date_length, self.num_market_features, self.conv_kernel_size)
+                                           self.dropout_rate, self.date_length, self.num_market_features,
+                                           self.conv_kernel_size)
         elif self.network_type == "feed_forward":
             self.date_length = None  # Not applicable
             self.num_market_features = None  # Not applicable
