@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA  # 新增导入
+from sklearn.decomposition import PCA
 import warnings
 from enum import Enum
 
@@ -425,8 +425,8 @@ class StockTradingEnv(gym.Env):
 
         # 使用当前观察日期的价格来计算未实现盈亏
         current_price_for_pnl = self.prices_array[self.current_step]
-        unrealized_pnl_pct = (
-                                         current_price_for_pnl / self.entry_price) - 1.0 if self.shares > 0 and self.entry_price > 0 else 0.0
+        unrealized_pnl_pct = (current_price_for_pnl / self.entry_price) - 1.0 \
+            if self.shares > 0 and self.entry_price > 0 else 0.0
 
         return np.concatenate([market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
 
