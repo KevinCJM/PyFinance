@@ -737,9 +737,6 @@ class OptimizedDQNAgent:
             self.num_market_features = self.config['num_market_features']
             self.conv_kernel_size = self.config['cnn_config']['conv_kernel_size']
             hidden_layers = self.config['cnn_config']['dqn_hidden_layers']
-            cnn_channels = config['agent']['cnn_config']['cnn_out_channels']
-            nhead = config['agent']['cnn_config']['attention_nhead']
-            num_encoder_layers = config['agent']['cnn_config']['attention_num_layers']
 
             self.policy_net = OptimizedDQN(self.network_type, self.state_dim,
                                            self.action_dim, hidden_layers,
