@@ -35,8 +35,10 @@ class Actions(Enum):
 # --- 1. 配置中心 (CONFIG) ---
 # 将所有超参数和配置集中管理，方便修改和实验
 CONFIG = {
+    # --- 数据相关配置 ---
     "data": {
-        "fund_code": '510050.SH',  # 交易标的：上证50ETF
+        "fund_code": '510050.SH',  # 交易标的：例如 '510050.SH' 代表上证50ETF
+        # 基础行情数据文件路径 (开盘价, 最高价, 最低价, 收盘价, 成交量, 成交额, 对数收益率)
         "basic_info_files": {
             "log": "./Data/wide_log_return_df.parquet",
             "high": "./Data/wide_high_df.parquet",
@@ -46,6 +48,7 @@ CONFIG = {
             "close": "./Data/wide_close_df.parquet",
             "open": "./Data/wide_open_df.parquet",
         },
+        # 各种时间跨度的技术指标数据文件路径
         "metrics_info_files": [
             "./Data/Metrics/2d.parquet",
             "./Data/Metrics/5d.parquet",
@@ -59,72 +62,77 @@ CONFIG = {
             "./Data/Metrics/rolling_metrics.parquet",
         ]
     },
+    # --- 基础设施和硬件配置 ---
     "infra": {
-        "seed": 42,
-        "device": "auto",
-        "use_mixed_precision": True,
-        "pin_memory": True,
-        "non_blocking": True,
-        "compile_model": False,
-        "auto_select_best_gpu": True,
-        "gpu_memory_fraction": 0.8,
-        "enable_cudnn_benchmark": True,
+        "seed": 42,  # 随机种子，用于保证实验结果的可复现性
+        "device": "auto",  # 计算设备, 'auto' 表示自动选择可用的GPU，否则使用CPU
+        "use_mixed_precision": True,  # 是否在GPU上使用混合精度训练 (可大幅加速，需要Tensor Cores支持)
+        "pin_memory": True,  # 是否使用锁页内存，可加速CPU到GPU的数据传输
+        "non_blocking": True,  # 数据传输时是否使用非阻塞模式，配合pin_memory使用
+        "compile_model": False,  # 是否使用 `torch.compile` 编译模型 (PyTorch 2.0+ 特性，可加速)
+        "auto_select_best_gpu": True,  # 在有多张GPU时，是否自动选择显存最大的GPU
+        "gpu_memory_fraction": 0.8,  # 限制单个进程的GPU显存使用比例
+        "enable_cudnn_benchmark": True,  # 是否启用cuDNN的自动调优功能，可加速固定尺寸输入的卷积运算
     },
+    # --- 数据预处理配置 ---
     "preprocessing": {
-        "train_split_ratio": 0.8,
-        "use_gpu_preprocessing": True,
-        "volatility_window": 25,
+        "train_split_ratio": 0.85,  # 训练集占总数据的比例
+        "volatility_window": 25,  # 计算滚动波动率的窗口大小，用于奖励函数
+        # --- PCA降维配置 ---
         "pca": {
-            "enabled": True,  # 是否启用PCA
-            "mode": "variance_ratio",  # "n_components" 或 "variance_ratio"
-            "n_components": 100,  # 如果 mode 为 "n_components"，指定维度数量
-            "variance_ratio": 0.9,  # 如果 mode 为 "variance_ratio"，指定解释方差比例
+            "enabled": True,  # 是否启用PCA进行特征降维
+            "mode": "variance_ratio",  # PCA模式: "n_components" (指定降维后的维度数量) 或 "variance_ratio" (指定希望保留的方差比例)
+            "n_components": 100,  # 如果 mode 为 "n_components"，指定降维后的维度数量
+            "variance_ratio": 0.9,  # 如果 mode 为 "variance_ratio"，指定希望保留的方差比例
         }
     },
+    # --- 模拟交易环境配置 ---
     "environment": {
-        "initial_capital": 100000,
-        "transaction_cost_pct": 0.005,
-        "trade_penalty": 0.15,
-        "hard_stop_loss_pct": -0.05,
-        "trade_price_mode": "close_slippage",  # "extreme", "open_slippage", "close_slippage"
-        "slippage_pct": 0.005,  # 滑点%
+        "initial_capital": 100000,  # 初始资金
+        "transaction_cost_pct": 0.005,  # 单边交易成本（手续费）的百分比
+        "trade_penalty": 0.15,  # 对每次交易行为在奖励函数中施加的额外惩罚项，以抑制过于频繁的交易
+        "hard_stop_loss_pct": -0.05,  # 硬止损百分比，当浮动亏损达到此比例时，环境会强制执行卖出
+        "trade_price_mode": "close_slippage",  # 交易执行价格模式: "extreme"(用当日最高/最低价), "open_slippage"(开盘价+滑点), "close_slippage"(收盘价+滑点)
+        "slippage_pct": 0.005,  # 滑点百分比，模拟实际成交价与理想价之间的偏差
     },
+    # --- DQN智能体配置 ---
     "agent": {
-        "network_type": "cnn",  # "feed_forward" or "cnn"
-        "action_dim": 3,
-        "memory_size": 50000,
-        "batch_size": 256,
-        "gamma": 0.99,
-        "learning_rate": 0.001,
-        "target_update_freq": 100,
-        "epsilon_start": 1.0,
-        "epsilon_min": 0.01,
-        "epsilon_linear_decay_steps": 500000,
-        "gradient_clip": 1.0,
-        "weight_decay": 1e-5,
-        "dropout_rate": 0.3,
+        "network_type": "cnn",  # 神经网络类型: "feed_forward" (全连接网络) 或 "cnn" (卷积神经网络)
+        "action_dim": 3,  # 动作空间的维度 (通常是 买入/卖出/持有，共3个)
+        "memory_size": 50000,  # 经验回放池的大小
+        "batch_size": 256,  # 每次从经验池中采样的批量大小
+        "gamma": 0.99,  # 折扣因子，决定了未来奖励在当前决策中的重要性
+        "learning_rate": 0.001,  # 优化器的学习率
+        "target_update_freq": 100,  # 目标网络(Target Network)的更新频率 (每多少个学习步更新一次)
+        "epsilon_start": 1.0,  # ε-贪心策略的初始探索率
+        "epsilon_min": 0.01,  # ε-贪心策略的最小探索率
+        "epsilon_linear_decay_steps": 500000,  # 探索率从初始值线性衰减到最小值所需要的总步数
+        "gradient_clip": 1.0,  # 梯度裁剪的阈值，用于防止梯度爆炸
+        "weight_decay": 1e-5,  # 权重衰减 (L2正则化)，用于防止模型过拟合
+        "dropout_rate": 0.5,  # 在网络层中使用的Dropout比率，用于防止模型过拟合
 
-        # Feed-forward network specific configuration
+        # --- 全连接网络特定配置 ---
         "feed_forward_config": {
-            "dqn_hidden_layers": [512, 256, 128],
+            "dqn_hidden_layers": [512, 256, 128],  # 定义隐藏层的神经元数量列表
         },
-        # CNN network specific configuration
+        # --- CNN网络特定配置 ---
         "cnn_config": {
-            "date_length": 10,  # Number of historical days to consider for CNN input
-            "conv_kernel_size": 3,  # CNN 卷积核大小
-            "cnn_out_channels": [32, 64],  # 定义CNN通道数
-            "use_attention": True,  # 是否使用注意力机制
-            "num_heads": 8,  # 注意力头数，必须能被d_model整除
-            "dim_feedforward": 256,  # Encoder内部前馈网络的维度
-            "num_attention_layers": 2,  # 堆叠多层Encoder
-            "dqn_hidden_layers": [256, 128],  # FC layers after CNN
+            "date_length": 20,  # CNN输入使用过去多少天的数据作为一个“图像”
+            "conv_kernel_size": 3,  # CNN 卷积核的大小
+            "cnn_out_channels": [32, 64],  # 定义CNN卷积层的输出通道数
+            "use_attention": True,  # 是否在CNN层后使用注意力机制 (Transformer Encoder)
+            "num_heads": 8,  # 注意力机制的头数，必须能被d_model整除
+            "dim_feedforward": 256,  # Transformer Encoder 内部前馈网络的维度
+            "num_attention_layers": 2,  # 堆叠的Transformer Encoder层数
+            "dqn_hidden_layers": [256, 128],  # 经过CNN/Attention特征提取后，连接的全连接隐藏层
         },
-        "state_dim": None,  # Will be calculated dynamically
-        "num_market_features": None,  # Will be calculated dynamically for CNN
+        "state_dim": None,  # 状态空间的维度 (将由环境动态计算并填充)
+        "num_market_features": None,  # 市场特征的数量 (将由环境动态计算并填充)
     },
+    # --- 训练过程配置 ---
     "training": {
-        "num_episodes": 5,
-        "update_frequency": 4,
+        "num_episodes": 5,  # 训练的总回合数 (一个回合指从头到尾完整地跑完一次数据集)
+        "update_frequency": 4,  # 智能体在环境中每行动多少步(step)就执行一次学习(replay)
     }
 }
 
