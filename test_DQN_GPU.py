@@ -257,7 +257,8 @@ def preprocess_and_split_data(df, config):
     start_date = max(dt for dt in first_valid_indices if dt is not None)
     print(f"DEBUG: preprocess_and_split_data - Max first valid index (start_date): {start_date}")
     df = df.loc[start_date:].copy()
-    print(f"DEBUG: preprocess_and_split_data - After start_date filter df date range: {df.index.min()} to {df.index.max()}")
+    print(
+        f"DEBUG: preprocess_and_split_data - After start_date filter df date range: {df.index.min()} to {df.index.max()}")
 
     vol_window = config['preprocessing']['volatility_window']
     df['reward_volatility'] = df['log'].rolling(window=vol_window, min_periods=vol_window).std()
@@ -270,8 +271,10 @@ def preprocess_and_split_data(df, config):
     train_df = df.iloc[:split_index].copy()
     test_df = df.iloc[split_index:].copy()
 
-    print(f"DEBUG: preprocess_and_split_data - Initial train_df date range: {train_df.index.min()} to {train_df.index.max()}")
-    print(f"DEBUG: preprocess_and_split_data - Initial test_df date range: {test_df.index.min()} to {test_df.index.max()}")
+    print(
+        f"DEBUG: preprocess_and_split_data - Initial train_df date range: {train_df.index.min()} to {train_df.index.max()}")
+    print(
+        f"DEBUG: preprocess_and_split_data - Initial test_df date range: {test_df.index.min()} to {test_df.index.max()}")
 
     # 确保 'open' 列不被当作特征列处理
     feature_cols = df.columns.drop(['close', 'high', 'low', 'open', 'reward_volatility'])
@@ -286,8 +289,10 @@ def preprocess_and_split_data(df, config):
     train_scaled.dropna(inplace=True)
     test_scaled.dropna(inplace=True)
 
-    print(f"DEBUG: preprocess_and_split_data - Final train_scaled date range: {train_scaled.index.min()} to {train_scaled.index.max()}")
-    print(f"DEBUG: preprocess_and_split_data - Final test_scaled date range: {test_scaled.index.min()} to {test_scaled.index.max()}")
+    print(
+        f"DEBUG: preprocess_and_split_data - Final train_scaled date range: {train_scaled.index.min()} to {train_scaled.index.max()}")
+    print(
+        f"DEBUG: preprocess_and_split_data - Final test_scaled date range: {test_scaled.index.min()} to {test_scaled.index.max()}")
 
     # PCA 降维
     pca_config = config['preprocessing']['pca']
@@ -417,11 +422,12 @@ class StockTradingEnv(gym.Env):
 
         market_obs = self.features_array[self.current_step]
         position_status = 1.0 if self.shares > 0 else 0.0
-        
+
         # 使用当前观察日期的价格来计算未实现盈亏
         current_price_for_pnl = self.prices_array[self.current_step]
-        unrealized_pnl_pct = (current_price_for_pnl / self.entry_price) - 1.0 if self.shares > 0 and self.entry_price > 0 else 0.0
-        
+        unrealized_pnl_pct = (
+                                         current_price_for_pnl / self.entry_price) - 1.0 if self.shares > 0 and self.entry_price > 0 else 0.0
+
         return np.concatenate([market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
 
     def step(self, action_from_agent):
@@ -435,16 +441,16 @@ class StockTradingEnv(gym.Env):
 
         # 2. 推进到下一个时间步，这个时间步将是动作的执行日
         self.current_step += 1
-        
+
         # 检查是否到达数据末尾
         done = self.current_step >= len(self.df)
         if done:
             # 如果数据结束，返回最终状态和信息
             final_obs = np.zeros(self.observation_space.shape, dtype=np.float32)
             final_info = {
-                'date': self.df.index[-1], # 使用最后一个有效日期
+                'date': self.df.index[-1],  # 使用最后一个有效日期
                 'portfolio_value': self.portfolio_value,
-                'action': Actions.HOLD.value, # 结束时默认为HOLD
+                'action': Actions.HOLD.value,  # 结束时默认为HOLD
                 'price': self.prices_array[-1],
                 'reward': 0.0
             }
@@ -460,23 +466,24 @@ class StockTradingEnv(gym.Env):
         if self.shares > 0 and self.entry_price > 0:
             unrealized_pnl = (price_for_execution_day / self.entry_price) - 1
         if self.shares > 0 and unrealized_pnl < self.hard_stop_loss_pct:
-            self.pending_action = Actions.SELL.value # 强制卖出
+            self.pending_action = Actions.SELL.value  # 强制卖出
 
         # 5. 执行前一个时间步（self.current_step - 1）决策的动作，使用当前时间步（执行日）的价格
-        prev_portfolio_value = self.portfolio_value # 记录执行动作前的净值
+        prev_portfolio_value = self.portfolio_value  # 记录执行动作前的净值
         self._take_action(self.pending_action, execution_day_index)
 
         # 6. 计算执行日结束时的投资组合净值
         self.portfolio_value = self.cash + self.shares * price_for_execution_day
 
         # 7. 计算执行日的奖励
-        reward = self._calculate_reward(prev_portfolio_value, price_for_execution_day, self.pending_action, execution_day_index)
+        reward = self._calculate_reward(prev_portfolio_value, price_for_execution_day, self.pending_action,
+                                        execution_day_index)
 
         # 8. 记录执行日的信息
         info = {
             'date': self.df.index[execution_day_index],
             'portfolio_value': self.portfolio_value,
-            'action': self.pending_action, # 记录实际执行的动作
+            'action': self.pending_action,  # 记录实际执行的动作
             'price': price_for_execution_day,
             'reward': reward
         }
@@ -507,7 +514,7 @@ class StockTradingEnv(gym.Env):
             if execution_day_index > 0:
                 previous_price = self.prices_array[execution_day_index - 1]
             else:
-                previous_price = current_price_for_reward # 第一个执行日，假设没有基准收益
+                previous_price = current_price_for_reward  # 第一个执行日，假设没有基准收益
 
             if previous_price > 0 and current_price_for_reward > 0:
                 benchmark_log_return = np.log(current_price_for_reward / previous_price)
@@ -515,24 +522,25 @@ class StockTradingEnv(gym.Env):
                 benchmark_log_return = 0
 
             # 市场波动率：使用执行日的波动率
-            market_volatility = self.volatility_array[execution_day_index] if execution_day_index < len(self.volatility_array) else self.volatility_array[-1]
+            market_volatility = self.volatility_array[execution_day_index] if execution_day_index < len(
+                self.volatility_array) else self.volatility_array[-1]
 
             excess_return = portfolio_log_return - benchmark_log_return
             if market_volatility > 1e-9:
                 reward = excess_return / market_volatility
             else:
                 reward = excess_return
-        
+
         # 交易惩罚
         if action == Actions.BUY.value or action == Actions.SELL.value:
             reward -= self.trade_penalty
-        
+
         # 持有奖励（如果持有且盈利）
         if action == Actions.HOLD.value and self.shares > 0 and self.entry_price > 0:
             unrealized_pnl_pct = (current_price_for_reward / self.entry_price) - 1.0
             holding_reward_factor = 0.5
             reward += unrealized_pnl_pct * holding_reward_factor
-        
+
         return reward
 
     def _take_action(self, action, execution_day_index):
@@ -820,13 +828,15 @@ def plot_results(history, config, benchmark_df, title, training_losses=None, epi
     # Plot DQN Agent Portfolio Value (starts at 1)
     # 使用对齐后的数据进行归一化
     normalized_portfolio_value = history_df_aligned['portfolio_value'] / initial_capital
-    ax1.plot(history_df_aligned.index, normalized_portfolio_value, label='DQN Agent Portfolio', color='blue', linewidth=2,
+    ax1.plot(history_df_aligned.index, normalized_portfolio_value, label='DQN Agent Portfolio', color='blue',
+             linewidth=2,
              zorder=2)
 
     # Plot Normalized ETF Price (starts at 1 on the same day as the agent)
     # 使用对齐后的数据进行归一化
     normalized_benchmark = benchmark_df_aligned['close'] / benchmark_df_aligned['close'].iloc[0]
-    ax1.plot(benchmark_df_aligned.index, normalized_benchmark, label='Normalized ETF Price', color='grey', linestyle='--',
+    ax1.plot(benchmark_df_aligned.index, normalized_benchmark, label='Normalized ETF Price', color='grey',
+             linestyle='--',
              linewidth=2, zorder=1)
 
     ax1.set_ylabel('Normalized Net Value (Start=1)')
@@ -868,16 +878,16 @@ def plot_results(history, config, benchmark_df, title, training_losses=None, epi
         action_on_current_date = history_df_aligned['action'].iloc[i]
 
         if action_on_current_date == Actions.BUY.value:
-            if not position_active: # 只有在没有持仓时才开始新的持仓
+            if not position_active:  # 只有在没有持仓时才开始新的持仓
                 position_active = True
                 last_buy_time = current_date
                 print(f"DEBUG: BUY action on {current_date}. last_buy_time set to {last_buy_time}")
         elif action_on_current_date == Actions.SELL.value:
-            if position_active and last_buy_time: # 只有在有持仓时才进行卖出
+            if position_active and last_buy_time:  # 只有在有持仓时才进行卖出
                 # 如果在 current_date 卖出，则持仓到 current_date 的前一天结束。
                 # 确保有前一天，避免索引错误
                 if i > 0:
-                    end_date_for_span = history_df_aligned.index[i-1]
+                    end_date_for_span = history_df_aligned.index[i - 1]
                 else:
                     # 如果在第一个交易日就卖出，则没有有效的持仓区间
                     end_date_for_span = None
@@ -886,12 +896,14 @@ def plot_results(history, config, benchmark_df, title, training_losses=None, epi
                     label = 'Long Position' if not legend_added else ""
                     ax3.axvspan(last_buy_time, end_date_for_span, color='green', alpha=0.3, label=label)
                     legend_added = True
-                    print(f"DEBUG: SELL action on {current_date}. Plotting span from {last_buy_time} to {end_date_for_span}")
+                    print(
+                        f"DEBUG: SELL action on {current_date}. Plotting span from {last_buy_time} to {end_date_for_span}")
                 else:
-                    print(f"DEBUG: SELL action on {current_date}. No span plotted (last_buy_time={last_buy_time}, end_date_for_span={end_date_for_span})")
-                
+                    print(
+                        f"DEBUG: SELL action on {current_date}. No span plotted (last_buy_time={last_buy_time}, end_date_for_span={end_date_for_span})")
+
                 position_active = False
-                last_buy_time = None # 卖出后重置买入时间
+                last_buy_time = None  # 卖出后重置买入时间
 
     # 处理在评估期结束时仍持有的仓位
     if position_active and last_buy_time:
