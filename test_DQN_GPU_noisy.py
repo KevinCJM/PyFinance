@@ -152,15 +152,23 @@ CONFIG = {
         "transaction_cost_pct": 0.005,  # 单边交易成本（手续费）的百分比
         "trade_penalty": 0.15,  # 对每次交易行为在奖励函数中施加的额外惩罚项，以抑制过于频繁的交易
         "hard_stop_loss_pct": -0.05,  # 硬止损百分比，当浮动亏损达到此比例时，环境会强制执行卖出
-        "trade_price_mode": "close_slippage",  # 交易执行价格模式: "extreme"(用当日最高/最低价), "open_slippage"(开盘价+滑点), "close_slippage"(收盘价+滑点)
+        "trade_price_mode": "close_slippage",
+        # 交易执行价格模式: "extreme"(用当日最高/最低价), "open_slippage"(开盘价+滑点), "close_slippage"(收盘价+滑点)
         "slippage_pct": 0.005,  # 滑点百分比，模拟实际成交价与理想价之间的偏差
     },
     # --- DQN智能体配置 ---
     "agent": {
+        # --- 新的奖励函数配置 ---
+        "reward_config": {
+            "holding_reward_factor": 1.0,  # 持仓时（无论盈亏），奖励/惩罚的基准乘数
+            "missing_trend_penalty_factor": 1.0,  # 空仓时，对错过上涨的惩罚和躲过下跌的奖励的基准乘数
+            "dynamic_trade_penalty_factor": 0.1,  # 动态交易惩罚乘数（乘以波动率）
+            "fixed_trade_penalty": 0.05  # 固定的交易惩罚值
+        },
         # --- N-Step Learning 配置 ---
         "n_step_learning": {
-            "enabled": False,  # 是否启用 N-step learning
-            "n_steps": 5      # N的值，即向前看多少步
+            "enabled": True,  # 是否启用 N-step learning
+            "n_steps": 5  # N的值，即向前看多少步
         },
         "exploration_method": "noisy",  # 探索策略: "epsilon_greedy" 或 "noisy"
         "noisy_std_init": 0.5,  # NoisyLinear层的初始标准差
@@ -341,7 +349,7 @@ def preprocess_and_split_data(df, config):
     1. 处理无穷值和缺失值。
     2. 计算用于奖励函数的滚动波动率。
     3. 划分训练集和测试集。
-    4. 对特征进行标准化。
+    4. 对特征进行标准化和PCA降维，同时保留环境所需的原始数据。
     """
     print(f"DEBUG: preprocess_and_split_data - Initial df date range: {df.index.min()} to {df.index.max()}")
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -363,61 +371,56 @@ def preprocess_and_split_data(df, config):
     train_df = df.iloc[:split_index].copy()
     test_df = df.iloc[split_index:].copy()
 
-    print(
-        f"DEBUG: preprocess_and_split_data - Initial train_df date range: {train_df.index.min()} to {train_df.index.max()}")
-    print(
-        f"DEBUG: preprocess_and_split_data - Initial test_df date range: {test_df.index.min()} to {test_df.index.max()}")
+    # 定义环境所需的原始数据列
+    env_cols = ['close', 'high', 'low', 'open', 'reward_volatility', 'log']
+    # 定义需要输入给模型进行学习的特征列 (这里我们使用所有列作为特征)
+    feature_cols = df.columns.tolist()
 
-    # 确保 'open' 列不被当作特征列处理
-    feature_cols = df.columns.drop(['close', 'high', 'low', 'open', 'reward_volatility'])
+    # 初始化scaler和pca
     scaler = StandardScaler()
-    scaler.fit(train_df[feature_cols])
-    train_scaled = pd.DataFrame(scaler.transform(train_df[feature_cols]), index=train_df.index, columns=feature_cols)
-    train_scaled[['close', 'high', 'low', 'open', 'reward_volatility']] = train_df[
-        ['close', 'high', 'low', 'open', 'reward_volatility']]
-    test_scaled = pd.DataFrame(scaler.transform(test_df[feature_cols]), index=test_df.index, columns=feature_cols)
-    test_scaled[['close', 'high', 'low', 'open', 'reward_volatility']] = test_df[
-        ['close', 'high', 'low', 'open', 'reward_volatility']]
-    train_scaled.dropna(inplace=True)
-    test_scaled.dropna(inplace=True)
-
-    print(
-        f"DEBUG: preprocess_and_split_data - Final train_scaled date range: {train_scaled.index.min()} to {train_scaled.index.max()}")
-    print(
-        f"DEBUG: preprocess_and_split_data - Final test_scaled date range: {test_scaled.index.min()} to {test_scaled.index.max()}")
-
-    # PCA 降维
     pca_config = config['preprocessing']['pca']
+    pca = None
     if pca_config['enabled']:
         print("开始进行PCA降维...")
-        pca_n_components = None
-        if pca_config['mode'] == 'n_components':
-            pca_n_components = pca_config['n_components']
-        elif pca_config['mode'] == 'variance_ratio':
-            pca_n_components = pca_config['variance_ratio']
-        else:
-            raise ValueError("PCA mode must be 'n_components' or 'variance_ratio'")
-
+        pca_n_components = pca_config.get('n_components', 0.9) if pca_config['mode'] == 'variance_ratio' else pca_config.get('n_components')
         pca = PCA(n_components=pca_n_components)
 
-        # 拟合PCA模型并转换训练数据
-        train_features_pca = pca.fit_transform(train_scaled[feature_cols])
-        train_scaled_pca_df = pd.DataFrame(train_features_pca, index=train_scaled.index)
-
-        # 转换测试数据
-        test_features_pca = pca.transform(test_scaled[feature_cols])
-        test_scaled_pca_df = pd.DataFrame(test_features_pca, index=test_scaled.index)
-
-        # 重新组合数据
-        train_scaled = pd.concat(
-            [train_scaled_pca_df, train_scaled[['close', 'high', 'low', 'open', 'reward_volatility']]], axis=1)
-        test_scaled = pd.concat(
-            [test_scaled_pca_df, test_scaled[['close', 'high', 'low', 'open', 'reward_volatility']]], axis=1)
-
+    # --- 处理训练数据 ---
+    # 1. 复制环境所需原始数据
+    train_env_data = train_df[env_cols].copy()
+    # 2. 标准化所有特征
+    train_scaled_features = pd.DataFrame(scaler.fit_transform(train_df[feature_cols]), index=train_df.index, columns=feature_cols)
+    # 3. PCA降维（如果启用）
+    if pca:
+        train_transformed_features = pca.fit_transform(train_scaled_features)
+        train_features_df = pd.DataFrame(train_transformed_features, index=train_df.index)
         print(f"PCA降维完成。原始特征维度: {len(feature_cols)}，降维后维度: {pca.n_components_}")
         print(f"解释方差比例: {pca.explained_variance_ratio_.sum():.4f}")
+    else:
+        train_features_df = train_scaled_features
+    # 4. 合并处理后的模型特征和原始环境数据
+    train_final = pd.concat([train_features_df, train_env_data], axis=1)
+    train_final.dropna(inplace=True)
 
-    return train_scaled, test_scaled
+    # --- 处理测试数据 ---
+    # 1. 复制环境所需原始数据
+    test_env_data = test_df[env_cols].copy()
+    # 2. 标准化所有特征 (使用训练集拟合的scaler)
+    test_scaled_features = pd.DataFrame(scaler.transform(test_df[feature_cols]), index=test_df.index, columns=feature_cols)
+    # 3. PCA降维（如果启用，使用训练集拟合的pca）
+    if pca:
+        test_transformed_features = pca.transform(test_scaled_features)
+        test_features_df = pd.DataFrame(test_transformed_features, index=test_df.index)
+    else:
+        test_features_df = test_scaled_features
+    # 4. 合并
+    test_final = pd.concat([test_features_df, test_env_data], axis=1)
+    test_final.dropna(inplace=True)
+
+    print(f"最终训练数据维度: {train_final.shape}, 日期范围: {train_final.index.min()} to {train_final.index.max()}")
+    print(f"最终测试数据维度: {test_final.shape}, 日期范围: {test_final.index.min()} to {test_final.index.max()}")
+
+    return train_final, test_final
 
 
 # --- 3. 优化的DQN网络 ---
@@ -441,13 +444,17 @@ class OptimizedDQN(nn.Module):
             layers = []
             prev_dim = input_dim
             for i, hidden_dim in enumerate(hidden_layers):
-                layers.append(LinearLayer(prev_dim, hidden_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(prev_dim, hidden_dim))
+                layers.append(
+                    LinearLayer(prev_dim, hidden_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(
+                        prev_dim, hidden_dim))
                 layers.append(nn.LayerNorm(hidden_dim))
                 layers.append(nn.ReLU(inplace=True))
                 if self.dropout_rate > 0:
                     layers.append(nn.Dropout(self.dropout_rate))
                 prev_dim = hidden_dim
-            layers.append(LinearLayer(prev_dim, output_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(prev_dim, output_dim))
+            layers.append(
+                LinearLayer(prev_dim, output_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(prev_dim,
+                                                                                                             output_dim))
             self.decision_mlp = nn.Sequential(*layers)
         elif self.network_type == "cnn":
             print("使用卷积神经网络 (CNN)")
@@ -510,13 +517,17 @@ class OptimizedDQN(nn.Module):
             layers = []
             prev_dim = fc_input_dim
             for i, hidden_dim in enumerate(hidden_layers):
-                layers.append(LinearLayer(prev_dim, hidden_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(prev_dim, hidden_dim))
+                layers.append(
+                    LinearLayer(prev_dim, hidden_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(
+                        prev_dim, hidden_dim))
                 layers.append(nn.LayerNorm(hidden_dim))
                 layers.append(nn.ReLU(inplace=True))
                 if self.dropout_rate > 0:
                     layers.append(nn.Dropout(self.dropout_rate))
                 prev_dim = hidden_dim
-            layers.append(LinearLayer(prev_dim, output_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(prev_dim, output_dim))
+            layers.append(
+                LinearLayer(prev_dim, output_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(prev_dim,
+                                                                                                             output_dim))
             self.decision_mlp = nn.Sequential(*layers)
         else:
             raise ValueError(f"Unsupported network_type: {network_type}")
@@ -579,19 +590,27 @@ class StockTradingEnv(gym.Env):
     def __init__(self, df, config, device_manager=None):
         super(StockTradingEnv, self).__init__()
         self.df = df
-        self.feature_df = df.drop(columns=['close', 'high', 'low', 'open', 'reward_volatility'], errors='ignore')
+        
+        # 分离模型特征和环境所需的原始数据
+        self.env_cols = ['close', 'high', 'low', 'open', 'reward_volatility', 'log']
+        self.feature_df = df.drop(columns=[col for col in self.env_cols if col in df.columns])
+        
+        # 获取环境所需的原始数据序列
         self.price_series = df['close']
         self.high_series = df['high']
         self.low_series = df['low']
         self.open_series = df['open']
         self.volatility_series = df['reward_volatility']
+        self.log_return_series = df['log']
+        
         self.device_manager = device_manager
         self.config = config
         self.env_config = config['environment']
+        self.reward_config = config['agent']['reward_config']
+
         self.hard_stop_loss_pct = self.env_config['hard_stop_loss_pct']
         self.initial_capital = self.env_config['initial_capital']
         self.transaction_cost_pct = self.env_config['transaction_cost_pct']
-        self.trade_penalty = self.env_config['trade_penalty']
         self.trade_price_mode = self.env_config['trade_price_mode']
         self.slippage_pct = self.env_config['slippage_pct']
         self.action_space = spaces.Discrete(len(Actions))
@@ -603,7 +622,7 @@ class StockTradingEnv(gym.Env):
             self.date_length = config['agent']['cnn_config']['date_length']
             self.total_state_dim = (self.date_length * self.num_market_features) + 2
         elif self.network_type == "feed_forward":
-            self.date_length = 1  # Not used for feed_forward, but set for consistency if needed elsewhere
+            self.date_length = 1
             self.total_state_dim = self.num_market_features + 2
         else:
             raise ValueError(f"Unsupported network_type: {self.network_type}")
@@ -624,6 +643,7 @@ class StockTradingEnv(gym.Env):
         self.lows_array = self.low_series.values.astype(np.float32)
         self.opens_array = self.open_series.values.astype(np.float32)
         self.volatility_array = self.volatility_series.values.astype(np.float32)
+        self.log_return_array = self.log_return_series.values.astype(np.float32)  # 新增：预计算对数收益率数组
         print(f"已预计算特征和环境数据数组，维度: {self.features_array.shape}")
 
     def reset(self):
@@ -645,7 +665,8 @@ class StockTradingEnv(gym.Env):
 
         position_status = 1.0 if self.shares > 0 else 0.0
         current_price_for_pnl = self.prices_array[self.current_step]
-        unrealized_pnl_pct = (                     (current_price_for_pnl / self.entry_price) - 1.0             ) if self.shares > 0 and self.entry_price > 0 else 0.0
+        unrealized_pnl_pct = ((
+                                          current_price_for_pnl / self.entry_price) - 1.0) if self.shares > 0 and self.entry_price > 0 else 0.0
 
         if self.network_type == "cnn":
             # Determine the start index for the window
@@ -707,6 +728,7 @@ class StockTradingEnv(gym.Env):
             self.pending_action = Actions.SELL.value  # 强制卖出
 
         # 5. 执行前一个时间步（self.current_step - 1）决策的动作，使用当前时间步（执行日）的价格
+        was_holding_before_action = self.shares > 0  # 关键修复：在执行动作前记录持仓状态
         prev_portfolio_value = self.portfolio_value  # 记录执行动作前的净值
         self._take_action(self.pending_action, execution_day_index)
 
@@ -714,7 +736,7 @@ class StockTradingEnv(gym.Env):
         self.portfolio_value = self.cash + self.shares * price_for_execution_day
 
         # 7. 计算执行日的奖励
-        reward = self._calculate_reward(prev_portfolio_value, price_for_execution_day, self.pending_action,
+        reward = self._calculate_reward(was_holding_before_action, self.pending_action,
                                         execution_day_index)
 
         # 8. 记录执行日的信息
@@ -735,49 +757,37 @@ class StockTradingEnv(gym.Env):
 
         return obs, reward, done, info
 
-    def _calculate_reward(self, prev_portfolio_value, current_price_for_reward, action, execution_day_index):
+    def _calculate_reward(self, was_holding_stock, action, execution_day_index):
         """
-        计算当前时间步（执行日）的奖励。
-        current_price_for_reward: 执行日的收盘价。
-        action: 实际执行的动作。
-        execution_day_index: 动作执行的日期索引。
+        根据新的趋势交易理念计算奖励。
         """
+        # 1. 获取基础数据
+        market_log_return = self.log_return_array[execution_day_index]
+        market_volatility = self.volatility_array[execution_day_index]
+
+        # 2. 标准化市场收益率（统一量纲）
+        # 使用波动率对收益率进行标准化，得到风险调整后的趋势强度
+        # 添加一个极小值 epsilon 来防止除以零
+        normalized_market_return = market_log_return / (market_volatility + 1e-9)
+
         reward = 0.0
-        if prev_portfolio_value > 0:
-            portfolio_log_return = np.log(
-                self.portfolio_value / prev_portfolio_value) if self.portfolio_value > 0 and prev_portfolio_value > 0 else 0
 
-            # 基准收益计算：使用执行日的价格和前一天的价格
-            # 确保索引不越界，对于第一个执行日，前一天价格可以认为是当天价格
-            if execution_day_index > 0:
-                previous_price = self.prices_array[execution_day_index - 1]
-            else:
-                previous_price = current_price_for_reward  # 第一个执行日，假设没有基准收益
+        # 3. 根据持仓状态计算核心奖励/惩罚
+        if was_holding_stock:
+            # 持仓时：抓住趋势则奖励，承受回撤则惩罚
+            reward += normalized_market_return * self.reward_config['holding_reward_factor']
+        else:  # 空仓时
+            # 空仓时：躲过下跌则奖励，错过上涨则惩罚
+            reward -= normalized_market_return * self.reward_config['missing_trend_penalty_factor']
 
-            if previous_price > 0 and current_price_for_reward > 0:
-                benchmark_log_return = np.log(current_price_for_reward / previous_price)
-            else:
-                benchmark_log_return = 0
-
-            # 市场波动率：使用执行日的波动率
-            market_volatility = self.volatility_array[execution_day_index] if execution_day_index < len(
-                self.volatility_array) else self.volatility_array[-1]
-
-            excess_return = portfolio_log_return - benchmark_log_return
-            if market_volatility > 1e-9:
-                reward = excess_return / market_volatility
-            else:
-                reward = excess_return
-
-        # 交易惩罚
+        # 4. 计算交易惩罚
         if action == Actions.BUY.value or action == Actions.SELL.value:
-            reward -= self.trade_penalty
-
-        # 持有奖励（如果持有且盈利）
-        if action == Actions.HOLD.value and self.shares > 0 and self.entry_price > 0:
-            unrealized_pnl_pct = (current_price_for_reward / self.entry_price) - 1.0
-            holding_reward_factor = 0.5
-            reward += unrealized_pnl_pct * holding_reward_factor
+            # 固定惩罚 + 动态惩罚（与波动率正相关）
+            trade_penalty = (
+                    self.reward_config['fixed_trade_penalty'] +
+                    self.reward_config['dynamic_trade_penalty_factor'] * market_volatility
+            )
+            reward -= trade_penalty
 
         return reward
 
@@ -930,7 +940,8 @@ class OptimizedDQNAgent:
     def act(self, state):
         """根据当前状态和探索策略选择一个动作。"""
         position_status = state[-2]
-        valid_actions = [Actions.HOLD.value, Actions.BUY.value]             if position_status == 0 else [Actions.HOLD.value, Actions.SELL.value]
+        valid_actions = [Actions.HOLD.value, Actions.BUY.value] if position_status == 0 else [Actions.HOLD.value,
+                                                                                              Actions.SELL.value]
 
         if not self.use_noisy_net and random.random() <= self.epsilon:
             return random.choice(valid_actions)
@@ -1035,7 +1046,7 @@ class OptimizedDQNAgent:
             with torch.no_grad():
                 best_next_actions = self.policy_net(n_step_next_states).argmax(1).unsqueeze(1)
                 next_q_values = self.target_net(n_step_next_states).gather(1, best_next_actions)
-            
+
             next_q_values[n_step_dones] = 0.0
             target_q_values = n_step_rewards + (self.gamma ** self.n_steps) * next_q_values
             loss = self.loss_fn(current_q_values, target_q_values)
