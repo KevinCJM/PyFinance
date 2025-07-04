@@ -162,7 +162,7 @@ CONFIG = {
     "agent": {
         # --- 新的奖励函数配置 ---
         "reward_config": {
-            "strategy": "downside_risk_adjusted",  # 可选: "trend_based", "pnl_based", "downside_risk_adjusted"
+            "strategy": "pnl_based",  # 可选: "trend_based", "pnl_based", "downside_risk_adjusted"
             "strategy_descriptions": {
                 "trend_based": "奖励基于市场的对数收益率，旨在捕捉趋势。持仓时奖励与市场同向，空仓时与市场反向。有固定的交易惩罚。",
                 "pnl_based": "奖励直接基于每日的投资组合净值变化百分比。更直接地反映盈利目标，但可能导致对短期波动的过度反应。",
@@ -191,7 +191,7 @@ CONFIG = {
             "enabled": True,  # 是否启用 N-step learning
             "n_steps": 5  # N的值，即向前看多少步
         },
-        "exploration_method": "epsilon_greedy",  # 探索策略: "epsilon_greedy" 或 "noisy"
+        "exploration_method": "noisy",  # 探索策略: "epsilon_greedy" 或 "noisy"
         "noisy_std_init": 0.5,  # NoisyLinear层的初始标准差
         "network_type": "cnn",  # 神经网络类型: "feed_forward" (全连接网络) 或 "cnn" (卷积神经网络)
         "action_dim": 3,  # 动作空间的维度 (通常是 买入/卖出/持有，共3个)
