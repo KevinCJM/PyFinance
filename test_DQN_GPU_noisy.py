@@ -16,6 +16,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import warnings
 from enum import Enum
+import traceback
 
 warnings.filterwarnings('ignore')
 
@@ -206,6 +207,32 @@ CONFIG = {
         "weight_decay": 1e-5,  # 权重衰减 (L2正则化)，用于防止模型过拟合
         "dropout_rate": 0.5,  # 在网络层中使用的Dropout比率，用于防止模型过拟合
 
+        # --- 辅助任务配置 (Multi-task Learning) ---
+        "auxiliary_tasks": {
+            "enabled": False,  # 是否启用辅助任务
+            "configs": {
+                "future_log_return_5d": {
+                    "type": "regression",
+                    "horizon": 5,
+                    "loss_weight": 0.1,
+                    "output_dim": 1
+                },
+                "future_trend_10d": {
+                    "type": "classification",
+                    "horizon": 10,
+                    "loss_weight": 0.05,
+                    "output_dim": 1,
+                    "activation": "sigmoid"
+                },
+                "future_volatility_20d": {
+                    "type": "regression",
+                    "horizon": 20,
+                    "loss_weight": 0.02,
+                    "output_dim": 1
+                }
+            }
+        },
+
         # --- 全连接网络特定配置 ---
         "feed_forward_config": {
             "dqn_hidden_layers": [512, 256, 128],  # 定义隐藏层的神经元数量列表
@@ -293,6 +320,7 @@ class DeviceManager:
                     print("CuDNN 确定性模式 已启用")
             except Exception as e:
                 print(f"警告: GPU优化设置失败: {e}")
+                print(traceback.format_exc())
 
     def to_device(self, tensor, non_blocking=None):
         """将张量移动到选定的设备。"""
@@ -302,6 +330,7 @@ class DeviceManager:
             return tensor.to(self.device, non_blocking=non_blocking)
         except Exception as e:
             print(f"警告: 非阻塞模式移动张量失败 (non_blocking={non_blocking}), 尝试阻塞模式。错误: {e}")
+            print(traceback.format_exc())
             return tensor.to(self.device, non_blocking=False)
 
     def print_memory_usage(self):
@@ -315,6 +344,7 @@ class DeviceManager:
                 print(f"GPU显存使用率: {(allocated / total) * 100:.1f}%")
             except Exception as e:
                 print(f"警告: 无法获取GPU显存信息: {e}")
+                print(traceback.format_exc())
 
 
 def set_seeds(seed):
@@ -347,6 +377,8 @@ def get_data(config):
             print(f"已加载 {file_type} 数据: {fund_data.shape}")
         except Exception as e:
             print(f"警告: 加载 {file_type} 数据失败，路径: {file_path}: {e}")
+            print(traceback.format_exc())
+
     print("开始加载指标数据...")
     for i, file_path in enumerate(metrics_info_files):
         try:
@@ -359,6 +391,7 @@ def get_data(config):
             print(f"已加载指标文件 {i + 1}/{len(metrics_info_files)}: {df.shape}")
         except Exception as e:
             print(f"警告: 加载指标数据失败，路径: {file_path}: {e}")
+            print(traceback.format_exc())
     print(f"最终合并数据维度: {the_final_df.shape}")
     return the_final_df
 
@@ -387,12 +420,39 @@ def preprocess_and_split_data(df, config):
     df.dropna(inplace=True)
     print(f"DEBUG: preprocess_and_split_data - After dropna df date range: {df.index.min()} to {df.index.max()}")
 
+    # === 新增代码：计算未来辅助任务的目标值 ===
+    aux_task_configs = config['agent']['auxiliary_tasks']['configs']
+    max_horizon = 0
+    if aux_task_configs:
+        for task_name, task_config in aux_task_configs.items():
+            horizon = task_config['horizon']
+            max_horizon = max(max_horizon, horizon)
+            if task_config['type'] == 'regression':
+                # 例如：未来N天对数收益率
+                df[task_name] = np.log(df['close'].shift(-horizon) / df['close'])
+            elif task_config['type'] == 'classification':
+                # 例如：未来N天趋势方向 (1为上涨，0为下跌)
+                df[task_name] = (df['close'].shift(-horizon) > df['close']).astype(int)
+            # 可以根据需要添加其他类型
+
+    # 由于计算未来奖励会导致最后几行数据无效，必须在这里丢弃它们
+    # 以确保所有数据都是对齐且有效的
+    if max_horizon > 0:
+        df.dropna(inplace=True)
+        print(f"DEBUG: 计算并丢弃无效辅助任务目标后, df日期范围: {df.index.min()} to {df.index.max()}")
+    # === 新增代码结束 ===
+
     split_index = int(len(df) * config['preprocessing']['train_split_ratio'])
     train_df = df.iloc[:split_index].copy()
     test_df = df.iloc[split_index:].copy()
 
     # 定义环境所需的原始数据列
     env_cols = ['close', 'high', 'low', 'open', 'reward_volatility', 'log']
+    # 动态添加辅助任务的列到 env_cols
+    if config['agent']['auxiliary_tasks']['enabled']:
+        for task_name in config['agent']['auxiliary_tasks']['configs'].keys():
+            env_cols.append(task_name)
+
     # 定义需要输入给模型进行学习的特征列 (这里我们使用所有列作为特征)
     feature_cols = df.columns.tolist()
 
@@ -455,34 +515,40 @@ class OptimizedDQN(nn.Module):
     def __init__(self, network_type, input_dim, output_dim, hidden_layers, dropout_rate=0.1, date_length=None,
                  num_market_features=None, conv_kernel_size=None, cnn_out_channels=None,
                  use_attention=False, num_heads=None, dim_feedforward=None, num_attention_layers=None,
-                 use_noisy_net=False, noisy_std_init=0.5):
+                 use_noisy_net=False, noisy_std_init=0.5, enable_aux_tasks=False, aux_task_configs=None):
         super(OptimizedDQN, self).__init__()
         self.network_type = network_type
         self.output_dim = output_dim
         self.dropout_rate = dropout_rate
         self.use_noisy_net = use_noisy_net
+        self.enable_aux_tasks = enable_aux_tasks
+        self.aux_task_configs = aux_task_configs if aux_task_configs is not None else {}
+        print(f"DEBUG: OptimizedDQN __init__ - enable_aux_tasks: {self.enable_aux_tasks}")
+        print(f"DEBUG: OptimizedDQN __init__ - aux_task_configs (input): {aux_task_configs}")
+        print(f"DEBUG: OptimizedDQN __init__ - self.aux_task_configs: {self.aux_task_configs}")
 
         LinearLayer = NoisyLinear if self.use_noisy_net else nn.Linear
 
+        # 共享特征提取器 (Shared Feature Extractor)
+        # 根据网络类型构建共享主干
         if self.network_type == "feed_forward":
-            print("使用全连接前馈神经网络")
-            layers = []
+            print("使用全连接前馈神经网络作为共享主干")
+            shared_layers = []
             prev_dim = input_dim
             for i, hidden_dim in enumerate(hidden_layers):
-                layers.append(
+                shared_layers.append(
                     LinearLayer(prev_dim, hidden_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(
                         prev_dim, hidden_dim))
-                layers.append(nn.LayerNorm(hidden_dim))
-                layers.append(nn.ReLU(inplace=True))
+                shared_layers.append(nn.LayerNorm(hidden_dim))
+                shared_layers.append(nn.ReLU(inplace=True))
                 if self.dropout_rate > 0:
-                    layers.append(nn.Dropout(self.dropout_rate))
+                    shared_layers.append(nn.Dropout(self.dropout_rate))
                 prev_dim = hidden_dim
-            layers.append(
-                LinearLayer(prev_dim, output_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(prev_dim,
-                                                                                                             output_dim))
-            self.decision_mlp = nn.Sequential(*layers)
+            self.shared_feature_extractor = nn.Sequential(*shared_layers)
+            self.shared_feature_dim = prev_dim
+
         elif self.network_type == "cnn":
-            print("使用卷积神经网络 (CNN)")
+            print("使用卷积神经网络 (CNN) 作为共享主干")
             if date_length is None or num_market_features is None or conv_kernel_size is None or cnn_out_channels is None:
                 raise ValueError(
                     "For CNN network, date_length, num_market_features, conv_kernel_size and cnn_out_channels must be provided.")
@@ -495,10 +561,6 @@ class OptimizedDQN(nn.Module):
             self.dim_feedforward = dim_feedforward
             self.num_attention_layers = num_attention_layers
             self.channels = 1  # Assuming single channel for market features
-
-            self.cnn_extractor = None
-            self.attention_encoder = None
-            self.decision_mlp = None
 
             cnn_layers = [
                 nn.Conv2d(self.channels, self.cnn_out_channels[0],
@@ -535,27 +597,42 @@ class OptimizedDQN(nn.Module):
                                                            batch_first=True)
                 self.attention_encoder = nn.TransformerEncoder(encoder_layer,
                                                                num_layers=self.num_attention_layers)
-                fc_input_dim = d_model * sequence_length + 2
+                self.shared_feature_dim = d_model * sequence_length + 2  # 加上position_status和unrealized_pnl_pct
             else:
-                fc_input_dim = cnn_output_shape[1] * cnn_output_shape[2] * cnn_output_shape[3] + 2
+                self.shared_feature_dim = cnn_output_shape[1] * cnn_output_shape[2] * cnn_output_shape[3] + 2
 
-            layers = []
-            prev_dim = fc_input_dim
+            # CNN主干后连接的MLP层，作为共享特征提取器的最后部分
+            shared_mlp_layers = []
+            prev_dim = self.shared_feature_dim
             for i, hidden_dim in enumerate(hidden_layers):
-                layers.append(
+                shared_mlp_layers.append(
                     LinearLayer(prev_dim, hidden_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(
                         prev_dim, hidden_dim))
-                layers.append(nn.LayerNorm(hidden_dim))
-                layers.append(nn.ReLU(inplace=True))
+                shared_mlp_layers.append(nn.LayerNorm(hidden_dim))
+                shared_mlp_layers.append(nn.ReLU(inplace=True))
                 if self.dropout_rate > 0:
-                    layers.append(nn.Dropout(self.dropout_rate))
+                    shared_mlp_layers.append(nn.Dropout(self.dropout_rate))
                 prev_dim = hidden_dim
-            layers.append(
-                LinearLayer(prev_dim, output_dim, std_init=noisy_std_init) if use_noisy_net else LinearLayer(prev_dim,
-                                                                                                             output_dim))
-            self.decision_mlp = nn.Sequential(*layers)
+            self.shared_feature_extractor = nn.Sequential(*shared_mlp_layers)
+            self.shared_feature_dim = prev_dim
+
         else:
             raise ValueError(f"Unsupported network_type: {network_type}")
+
+        # Q-Value Head (主任务)
+        self.q_value_head = LinearLayer(self.shared_feature_dim, output_dim,
+                                        std_init=noisy_std_init) if use_noisy_net else nn.Linear(
+            self.shared_feature_dim, output_dim)
+
+        # Auxiliary Task Heads (辅助任务)
+        self.aux_heads = nn.ModuleDict()
+        if self.enable_aux_tasks and self.aux_task_configs:
+            for task_name, config in self.aux_task_configs.items():
+                output_dim = config.get('output_dim', 1)
+                self.aux_heads[task_name] = LinearLayer(self.shared_feature_dim, output_dim,
+                                                        std_init=noisy_std_init) if use_noisy_net else nn.Linear(
+                    self.shared_feature_dim, output_dim)
+        print(f"DEBUG: OptimizedDQN __init__ - self.aux_heads (after build): {self.aux_heads}")
 
         self._initialize_weights()
 
@@ -564,7 +641,31 @@ class OptimizedDQN(nn.Module):
             return 0
         with torch.no_grad():
             dummy_input = torch.zeros(1, self.channels, self.date_length, self.num_market_features)
-            output_shape = self.cnn_extractor(dummy_input).shape
+            # 确保 cnn_extractor 存在
+            if self.cnn_extractor is None:
+                # 临时构建一个用于形状推断的 cnn_extractor
+                cnn_layers = [
+                    nn.Conv2d(self.channels, self.cnn_out_channels[0],
+                              kernel_size=(self.conv_kernel_size, self.num_market_features),
+                              stride=1,
+                              padding=(self.conv_kernel_size // 2, 0)),
+                    nn.BatchNorm2d(self.cnn_out_channels[0]),
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+                    nn.Conv2d(self.cnn_out_channels[0], self.cnn_out_channels[1],
+                              kernel_size=(self.conv_kernel_size, 1),
+                              stride=1,
+                              padding=(self.conv_kernel_size // 2, 0)),
+                    nn.BatchNorm2d(self.cnn_out_channels[1]),
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1)),
+                ]
+                if not self.use_attention:
+                    cnn_layers.append(nn.Flatten())
+                temp_cnn_extractor = nn.Sequential(*cnn_layers)
+                output_shape = temp_cnn_extractor(dummy_input).shape
+            else:
+                output_shape = self.cnn_extractor(dummy_input).shape
             return output_shape
 
     def _initialize_weights(self):
@@ -583,8 +684,9 @@ class OptimizedDQN(nn.Module):
                 module.reset_noise()
 
     def forward(self, x):
+        # 共享特征提取
         if self.network_type == "feed_forward":
-            return self.decision_mlp(x)
+            shared_features = self.shared_feature_extractor(x)
         elif self.network_type == "cnn":
             x_market = x[:, :-2].reshape(-1, self.channels, self.date_length, self.num_market_features)
             x_additional = x[:, -2:]
@@ -597,12 +699,29 @@ class OptimizedDQN(nn.Module):
                 d_model = cnn_output.shape[1] * cnn_output.shape[3]
                 cnn_output = cnn_output.permute(0, 2, 1, 3).contiguous().view(batch_size, sequence_length, d_model)
                 attention_output = self.attention_encoder(cnn_output)
-                processed_features = attention_output.view(batch_size, -1)
+                processed_features_cnn = attention_output.view(batch_size, -1)
             else:
-                processed_features = cnn_output
+                processed_features_cnn = cnn_output.view(cnn_output.size(0), -1)  # Flatten
 
-            combined_input = torch.cat((processed_features, x_additional), dim=1)
-            return self.decision_mlp(combined_input)
+            # 将CNN/Attention的输出与额外特征拼接，然后送入共享MLP
+            combined_input = torch.cat((processed_features_cnn, x_additional), dim=1)
+            shared_features = self.shared_feature_extractor(combined_input)
+
+        # Q-Value Head
+        q_values = self.q_value_head(shared_features)
+
+        # Auxiliary Task Heads
+        aux_predictions = {}
+        if self.enable_aux_tasks:
+            if self.aux_heads: # 只有当 aux_heads 被正确初始化时才遍历
+                for task_name, head in self.aux_heads.items():
+                    pred = head(shared_features)
+                    # 应用激活函数（如果配置了）
+                    if self.aux_task_configs[task_name].get('activation') == 'sigmoid':
+                        pred = torch.sigmoid(pred)
+                    aux_predictions[task_name] = pred
+
+        return q_values, aux_predictions
 
 
 # --- 4. 交易环境 ---
@@ -986,6 +1105,20 @@ class OptimizedDQNAgent:
         self.dropout_rate = self.config['dropout_rate']
         self.network_type = self.config['network_type']
 
+        # --- 辅助任务配置 ---
+        self.enable_aux_tasks = self.config['auxiliary_tasks']['enabled']
+        self.aux_task_configs = self.config['auxiliary_tasks']['configs'] if self.enable_aux_tasks else {}
+        self.aux_loss_fns = nn.ModuleDict()  # 使用ModuleDict来存储损失函数，以便它们能被正确地移动到设备
+        if self.enable_aux_tasks:
+            for task_name, task_config in self.aux_task_configs.items():
+                if task_config['type'] == 'regression':
+                    self.aux_loss_fns[task_name] = nn.MSELoss()
+                elif task_config['type'] == 'classification':
+                    self.aux_loss_fns[task_name] = nn.BCELoss()  # 二分类交叉熵
+                else:
+                    raise ValueError(f"不支持的辅助任务类型: {task_config['type']}")
+            self.aux_loss_fns = device_manager.to_device(self.aux_loss_fns)
+
         self.memory = collections.deque(maxlen=self.memory_size)
 
         print(f"初始化DQN网络，输入维度={self.state_dim}, 输出维度={self.action_dim}, 网络类型={self.network_type}")
@@ -998,7 +1131,9 @@ class OptimizedDQNAgent:
             "output_dim": self.action_dim,
             "dropout_rate": self.dropout_rate,
             "use_noisy_net": self.use_noisy_net,
-            "noisy_std_init": noisy_std_init
+            "noisy_std_init": noisy_std_init,
+            "enable_aux_tasks": self.enable_aux_tasks,
+            "aux_task_configs": self.aux_task_configs
         }
 
         if self.network_type == "cnn":
@@ -1040,9 +1175,9 @@ class OptimizedDQNAgent:
         self.learn_step_counter = 0
         print("DQN智能体初始化成功")
 
-    def remember(self, state, action, reward, next_state, done):
+    def remember(self, state, action, reward, next_state, done, aux_targets=None):
         """将经验存入回放缓冲区。"""
-        self.memory.append((state, action, reward, next_state, done))
+        self.memory.append((state, action, reward, next_state, done, aux_targets))
 
     def reset_noise(self):
         """重置策略网络和目标网络中的噪声。"""
@@ -1064,10 +1199,27 @@ class OptimizedDQNAgent:
 
         with torch.no_grad():
             state_tensor = self.device_manager.to_device(torch.FloatTensor(state).unsqueeze(0))
-            q_values = self.policy_net(state_tensor)
-            for i in range(self.action_dim):
-                if i not in valid_actions:
-                    q_values[0][i] = -float('inf')
+            q_values, _ = self.policy_net(state_tensor)
+            # 确保 q_values 是 (1, action_dim) 的形状
+            if q_values.shape != (1, self.action_dim):
+                # 如果形状不匹配，尝试进行修正。这通常意味着网络输出有问题。
+                # 警告：如果这里频繁触发，说明网络结构或初始化存在深层问题。
+                print(f"警告: q_values 形状异常: {q_values.shape}。期望 (1, {self.action_dim})。尝试修正...")
+                try:
+                    q_values = q_values.view(1, self.action_dim) # 强制转换为期望形状
+                except RuntimeError as e:
+                    print(traceback.format_exc())
+                    raise RuntimeError(f"无法将 q_values 从 {q_values.shape} 修正为 (1, {self.action_dim}): {e}")
+
+            # 创建一个布尔掩码，初始全部为True
+            invalid_actions_mask = torch.ones_like(q_values, dtype=torch.bool)
+            # 将有效动作对应的位置设置为False
+            for i in valid_actions:
+                invalid_actions_mask[0][i] = False
+
+            # 使用 masked_fill_ 将无效动作的Q值设置为负无穷
+            q_values.masked_fill_(invalid_actions_mask, -float('inf'))
+            
             return torch.argmax(q_values[0]).item()
 
     def replay(self, global_step):
@@ -1086,7 +1238,7 @@ class OptimizedDQNAgent:
             self.reset_noise()
 
         minibatch = random.sample(self.memory, self.batch_size)
-        states, actions, rewards, next_states, dones = zip(*minibatch)
+        states, actions, rewards, next_states, dones, aux_targets_list = zip(*minibatch)
 
         states = self.device_manager.to_device(torch.FloatTensor(np.array(states)))
         actions = self.device_manager.to_device(torch.LongTensor(actions).unsqueeze(1))
@@ -1094,19 +1246,45 @@ class OptimizedDQNAgent:
         next_states = self.device_manager.to_device(torch.FloatTensor(np.array(next_states)))
         dones = self.device_manager.to_device(torch.BoolTensor(dones).unsqueeze(1))
 
+        # 辅助任务目标值转换为张量
+        aux_targets_tensors = {}
+        if self.enable_aux_tasks:
+            for task_name, task_config in self.aux_task_configs.items():
+                # 确保数据类型正确，特别是分类任务
+                if task_config['type'] == 'classification':
+                    aux_targets_tensors[task_name] = self.device_manager.to_device(
+                        torch.FloatTensor([d[task_name] for d in aux_targets_list]).unsqueeze(1))
+                else:
+                    aux_targets_tensors[task_name] = self.device_manager.to_device(
+                        torch.FloatTensor([d[task_name] for d in aux_targets_list]).unsqueeze(1))
+
         with autocast(enabled=self.device_manager.use_amp):
-            current_q_values = self.policy_net(states).gather(1, actions)
+            # 网络现在返回Q值和辅助预测
+            current_q_values_all, aux_predictions = self.policy_net(states)
+            current_q_values = current_q_values_all.gather(1, actions)
+
             with torch.no_grad():
-                best_next_actions = self.policy_net(next_states).argmax(1).unsqueeze(1)
-                next_q_values_for_best_actions = self.target_net(next_states).gather(1, best_next_actions)
+                best_next_actions = self.policy_net(next_states)[0].argmax(1).unsqueeze(1)  # [0] for q_values
+                next_q_values_for_best_actions = self.target_net(next_states)[0].gather(1, best_next_actions)
             next_q_values_for_best_actions[dones] = 0.0
             target_q_values = rewards + (self.gamma * next_q_values_for_best_actions)
-            loss = self.loss_fn(current_q_values, target_q_values)
+            rl_loss = self.loss_fn(current_q_values, target_q_values)
 
-        self._optimize_model(loss)
+            # 计算辅助任务损失
+            total_aux_loss = 0.0
+            if self.enable_aux_tasks:
+                for task_name, task_config in self.aux_task_configs.items():
+                    aux_pred = aux_predictions[task_name]
+                    aux_target = aux_targets_tensors[task_name]
+                    aux_loss = self.aux_loss_fns[task_name](aux_pred, aux_target)
+                    total_aux_loss += aux_loss * task_config['loss_weight']
+
+            total_loss = rl_loss + total_aux_loss
+
+        self._optimize_model(total_loss)
         self._update_epsilon(global_step)
         self._update_target_net()
-        return loss.item()
+        return total_loss.item()
 
     def _replay_n_step(self, global_step):
         """N-step Double DQN学习。"""
@@ -1120,20 +1298,21 @@ class OptimizedDQNAgent:
         indices = random.sample(range(len(self.memory) - self.n_steps), self.batch_size)
 
         # 准备N-step经验
-        states, actions, n_step_rewards, n_step_next_states, n_step_dones = [], [], [], [], []
+        states, actions, n_step_rewards, n_step_next_states, n_step_dones, aux_targets_list = [], [], [], [], [], []
 
         for idx in indices:
             # 获取初始状态和动作
-            state, action, _, _, _ = self.memory[idx]
+            state, action, _, _, _, aux_target_dict = self.memory[idx]
             states.append(state)
             actions.append(action)
+            aux_targets_list.append(aux_target_dict)
 
             # 计算N-step累计奖励和最终状态
             G = 0.0
             gamma_power = 1.0
             final_done = True
             for i in range(self.n_steps):
-                _, _, reward, next_s, done = self.memory[idx + i]
+                _, _, reward, next_s, done, _ = self.memory[idx + i]
                 G += gamma_power * reward
                 gamma_power *= self.gamma
                 if done:
@@ -1154,20 +1333,45 @@ class OptimizedDQNAgent:
         n_step_next_states = self.device_manager.to_device(torch.FloatTensor(np.array(n_step_next_states)))
         n_step_dones = self.device_manager.to_device(torch.BoolTensor(n_step_dones).unsqueeze(1))
 
+        # 辅助任务目标值转换为张量
+        aux_targets_tensors = {}
+        if self.enable_aux_tasks:
+            for task_name, task_config in self.aux_task_configs.items():
+                if task_config['type'] == 'classification':
+                    aux_targets_tensors[task_name] = self.device_manager.to_device(
+                        torch.FloatTensor([d[task_name] for d in aux_targets_list]).unsqueeze(1))
+                else:
+                    aux_targets_tensors[task_name] = self.device_manager.to_device(
+                        torch.FloatTensor([d[task_name] for d in aux_targets_list]).unsqueeze(1))
+
         with autocast(enabled=self.device_manager.use_amp):
-            current_q_values = self.policy_net(states).gather(1, actions)
+            # 网络现在返回Q值和辅助预测
+            current_q_values_all, aux_predictions = self.policy_net(states)
+            current_q_values = current_q_values_all.gather(1, actions)
+
             with torch.no_grad():
-                best_next_actions = self.policy_net(n_step_next_states).argmax(1).unsqueeze(1)
-                next_q_values = self.target_net(n_step_next_states).gather(1, best_next_actions)
+                best_next_actions = self.policy_net(n_step_next_states)[0].argmax(1).unsqueeze(1)
+                next_q_values = self.target_net(n_step_next_states)[0].gather(1, best_next_actions)
 
             next_q_values[n_step_dones] = 0.0
             target_q_values = n_step_rewards + (self.gamma ** self.n_steps) * next_q_values
-            loss = self.loss_fn(current_q_values, target_q_values)
+            rl_loss = self.loss_fn(current_q_values, target_q_values)
 
-        self._optimize_model(loss)
+            # 计算辅助任务损失
+            total_aux_loss = 0.0
+            if self.enable_aux_tasks:
+                for task_name, task_config in self.aux_task_configs.items():
+                    aux_pred = aux_predictions[task_name]
+                    aux_target = aux_targets_tensors[task_name]
+                    aux_loss = self.aux_loss_fns[task_name](aux_pred, aux_target)
+                    total_aux_loss += aux_loss * task_config['loss_weight']
+
+            total_loss = rl_loss + total_aux_loss
+
+        self._optimize_model(total_loss)
         self._update_epsilon(global_step)
         self._update_target_net()
-        return loss.item()
+        return total_loss.item()
 
     def _optimize_model(self, loss):
         """执行一次模型优化步骤。"""
@@ -1244,7 +1448,15 @@ def train_dqn(config, train_df, device_manager):
                 global_step_counter += 1
                 action = agent.act(state)
                 next_state, reward, done, info = env.step(action)
-                agent.remember(state, action, reward, next_state, done)
+
+                # 获取当前时间步的辅助任务目标值
+                aux_targets = {}
+                if agent.enable_aux_tasks:
+                    current_date_idx = env.current_step - 1  # env.current_step 已经推进到下一天，所以要减1
+                    for task_name in agent.aux_task_configs.keys():
+                        aux_targets[task_name] = env.df[task_name].iloc[current_date_idx]
+
+                agent.remember(state, action, reward, next_state, done, aux_targets)
                 state = next_state
                 episode_reward += reward
                 step_count += 1
@@ -1255,6 +1467,8 @@ def train_dqn(config, train_df, device_manager):
                             episode_loss += loss
                     except Exception as replay_error:
                         print(f"警告: Replay失败于步骤 {global_step_counter}: {replay_error}")
+                        import traceback
+                        print(traceback.format_exc())
             training_losses.append(episode_loss / max(step_count / update_frequency, 1))
             episode_rewards.append(episode_reward)
             if (e + 1) % 10 == 0 or e == num_episodes - 1:
