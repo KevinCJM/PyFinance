@@ -161,9 +161,29 @@ CONFIG = {
     "agent": {
         # --- 新的奖励函数配置 ---
         "reward_config": {
-            "holding_reward_factor": 1.0,  # 持仓时，奖励/惩罚的基准乘数 (乘以对数收益率)
-            "missing_trend_penalty_factor": 1.0,  # 空仓时，对错过上涨的惩罚和躲过下跌的奖励的基准乘数 (乘以对数收益率)
-            "fixed_trade_penalty": 0.05  # 固定的交易惩罚值
+            "strategy": "downside_risk_adjusted",  # 可选: "trend_based", "pnl_based", "downside_risk_adjusted"
+            "strategy_descriptions": {
+                "trend_based": "奖励基于市场的对数收益率，旨在捕捉趋势。持仓时奖励与市场同向，空仓时与市场反向。有固定的交易惩罚。",
+                "pnl_based": "奖励直接基于每日的投资组合净值变化百分比。更直接地反映盈利目标，但可能导致对短期波动的过度反应。",
+                "downside_risk_adjusted": "该策略结合了每日PnL奖励和卖出时的风险调整收益奖励，以平衡学习效率和长期目标。",
+            },
+            # --- trend_based 策略的参数 ---
+            "trend_based_params": {
+                "holding_reward_factor": 1.0,
+                "missing_trend_penalty_factor": 1.0,
+                "fixed_trade_penalty": 0.05
+            },
+            # --- pnl_based 策略的参数 ---
+            "pnl_based_params": {
+                "pnl_scaling_factor": 100.0,  # 将PnL变化放大，使其成为更有效的奖励信号
+                "fixed_trade_penalty": 0.05
+            },
+            # --- downside_risk_adjusted 策略的参数 ---
+            "downside_risk_adjusted_params": {
+                "daily_pnl_factor": 0.1,  # 每日PnL奖励的缩放因子
+                "downside_risk_bonus_factor": 10.0,  # 卖出时下行风险调整收益的奖励因子
+                "fixed_trade_penalty": 0.05  # 固定的交易惩罚值
+            }
         },
         # --- N-Step Learning 配置 ---
         "n_step_learning": {
@@ -206,7 +226,7 @@ CONFIG = {
     },
     # --- 训练过程配置 ---
     "training": {
-        "num_episodes": 5,  # 训练的总回合数 (一个回合指从头到尾完整地跑完一次数据集)
+        "num_episodes": 2,  # 训练的总回合数 (一个回合指从头到尾完整地跑完一次数据集)
         "update_frequency": 4,  # 智能体在环境中每行动多少步(step)就执行一次学习(replay)
     }
 }
@@ -382,14 +402,17 @@ def preprocess_and_split_data(df, config):
     pca = None
     if pca_config['enabled']:
         print("开始进行PCA降维...")
-        pca_n_components = pca_config.get('n_components', 0.9) if pca_config['mode'] == 'variance_ratio' else pca_config.get('n_components')
+        pca_n_components = pca_config.get('n_components',
+                                          0.9) if pca_config['mode'] == 'variance_ratio' else pca_config.get(
+            'n_components')
         pca = PCA(n_components=pca_n_components)
 
     # --- 处理训练数据 ---
     # 1. 复制环境所需原始数据
     train_env_data = train_df[env_cols].copy()
     # 2. 标准化所有特征
-    train_scaled_features = pd.DataFrame(scaler.fit_transform(train_df[feature_cols]), index=train_df.index, columns=feature_cols)
+    train_scaled_features = pd.DataFrame(scaler.fit_transform(train_df[feature_cols]), index=train_df.index,
+                                         columns=feature_cols)
     # 3. PCA降维（如果启用）
     if pca:
         train_transformed_features = pca.fit_transform(train_scaled_features)
@@ -406,7 +429,9 @@ def preprocess_and_split_data(df, config):
     # 1. 复制环境所需原始数据
     test_env_data = test_df[env_cols].copy()
     # 2. 标准化所有特征 (使用训练集拟合的scaler)
-    test_scaled_features = pd.DataFrame(scaler.transform(test_df[feature_cols]), index=test_df.index, columns=feature_cols)
+    test_scaled_features = pd.DataFrame(scaler.transform(test_df[feature_cols]),
+                                        index=test_df.index,
+                                        columns=feature_cols)
     # 3. PCA降维（如果启用，使用训练集拟合的pca）
     if pca:
         test_transformed_features = pca.transform(test_scaled_features)
@@ -590,11 +615,11 @@ class StockTradingEnv(gym.Env):
     def __init__(self, df, config, device_manager=None):
         super(StockTradingEnv, self).__init__()
         self.df = df
-        
+
         # 分离模型特征和环境所需的原始数据
         self.env_cols = ['close', 'high', 'low', 'open', 'reward_volatility', 'log']
         self.feature_df = df.drop(columns=[col for col in self.env_cols if col in df.columns])
-        
+
         # 获取环境所需的原始数据序列
         self.price_series = df['close']
         self.high_series = df['high']
@@ -602,11 +627,22 @@ class StockTradingEnv(gym.Env):
         self.open_series = df['open']
         self.volatility_series = df['reward_volatility']
         self.log_return_series = df['log']
-        
+
         self.device_manager = device_manager
         self.config = config
         self.env_config = config['environment']
         self.reward_config = config['agent']['reward_config']
+
+        # --- 奖励策略分发器设置 ---
+        self.reward_strategy = self.reward_config['strategy']
+        # 初始化奖励函数调度器，用于根据不同的策略计算奖励
+        self._reward_function_dispatcher = {
+            'trend_based': self._calculate_reward_trend_based,
+            'pnl_based': self._calculate_reward_pnl_based,
+            'downside_risk_adjusted': self._calculate_reward_downside_risk_adjusted
+        }
+        print(
+            f"使用奖励策略: {self.reward_strategy} - {self.reward_config['strategy_descriptions'].get(self.reward_strategy, '无描述')}")
 
         self.hard_stop_loss_pct = self.env_config['hard_stop_loss_pct']
         self.initial_capital = self.env_config['initial_capital']
@@ -655,6 +691,7 @@ class StockTradingEnv(gym.Env):
         self.portfolio_value = self.initial_capital
         self.history = []
         self.entry_price = 0
+        self.current_holding_log_returns = []  # 用于存储当前持仓期间的每日对数收益率
         self.pending_action = None  # 新增：存储前一个时间步的决策，用于T+1执行
         return self._get_observation()
 
@@ -666,23 +703,22 @@ class StockTradingEnv(gym.Env):
 
         position_status = 1.0 if self.shares > 0 else 0.0
         current_price_for_pnl = self.prices_array[self.current_step]
-        unrealized_pnl_pct = ((
-                                          current_price_for_pnl / self.entry_price) - 1.0) if self.shares > 0 and self.entry_price > 0 else 0.0
+        unrealized_pnl_pct = (
+                (current_price_for_pnl / self.entry_price) - 1.0) if self.shares > 0 and self.entry_price > 0 else 0.0
 
         if self.network_type == "cnn":
             # Determine the start index for the window
             start_idx = max(0, self.current_step - self.date_length + 1)
 
-            # Extract market observations for the window
-            # Pad with zeros if the window is not full at the beginning
+            # 为窗口提取市场观察, 如果窗口在开始时没有满，则用零填充
             market_obs_window = np.zeros((self.date_length, self.num_market_features), dtype=np.float32)
             actual_window_len = self.current_step - start_idx + 1
             market_obs_window[-actual_window_len:] = self.features_array[start_idx:self.current_step + 1]
 
-            # Flatten the market observation window
+            # 平铺市场观察窗口
             flattened_market_obs = market_obs_window.flatten()
 
-            # Concatenate flattened market observations with current position/PnL
+            # 将扁平化的市场观察与当前头寸/PnL联系起来
             return np.concatenate([flattened_market_obs, [position_status, unrealized_pnl_pct]]).astype(np.float32)
         elif self.network_type == "feed_forward":
             market_obs = self.features_array[self.current_step]
@@ -720,8 +756,7 @@ class StockTradingEnv(gym.Env):
         execution_day_index = self.current_step
         price_for_execution_day = self.prices_array[execution_day_index]
 
-        # 4. 硬止损检查：在执行动作前检查是否触发止损
-        #    如果触发，则强制执行卖出动作
+        # 4. 硬止损检查：在执行动作前检查是否触发止损; 如果触发，则强制执行卖出动作
         unrealized_pnl = 0
         if self.shares > 0 and self.entry_price > 0:
             unrealized_pnl = (price_for_execution_day / self.entry_price) - 1
@@ -736,9 +771,20 @@ class StockTradingEnv(gym.Env):
         # 6. 计算执行日结束时的投资组合净值
         self.portfolio_value = self.cash + self.shares * price_for_execution_day
 
+        # 跟踪持仓期间的对数收益率
+        if self.shares > 0 and execution_day_index < len(self.log_return_array):
+            self.current_holding_log_returns.append(self.log_return_array[execution_day_index])
+        elif self.shares == 0 and was_holding_before_action:  # 如果卖出了，清空持仓记录
+            self.current_holding_log_returns = []
+
         # 7. 计算执行日的奖励
-        reward = self._calculate_reward(was_holding_before_action, self.pending_action,
-                                        execution_day_index)
+        reward = self._calculate_reward(
+            was_holding_stock=was_holding_before_action,
+            action=self.pending_action,
+            execution_day_index=execution_day_index,
+            prev_portfolio_value=prev_portfolio_value,
+            current_portfolio_value=self.portfolio_value
+        )
 
         # 8. 记录执行日的信息
         info = {
@@ -758,27 +804,98 @@ class StockTradingEnv(gym.Env):
 
         return obs, reward, done, info
 
-    def _calculate_reward(self, was_holding_stock, action, execution_day_index):
+    def _calculate_reward(self, **kwargs):
         """
-        根据新的简化版趋势交易理念计算奖励。
+        奖励计算分发器。
+        根据配置的策略，调用相应的奖励函数。
+        """
+        # 根据当前的奖励策略获取对应的奖励函数
+        reward_function = self._reward_function_dispatcher.get(self.reward_strategy)
+        if reward_function:
+            # 如果找到了对应的奖励函数，则调用该函数并返回计算结果
+            return reward_function(**kwargs)
+        else:
+            # 如果没有找到对应的奖励函数，则抛出异常提示未知的奖励策略
+            raise ValueError(f"未知的奖励策略: {self.reward_strategy}")
+
+    def _calculate_reward_trend_based(self, was_holding_stock, action, execution_day_index, **kwargs):
+        """
+        策略1: 基于市场趋势的奖励。
         奖励直接基于市场的对数收益率，移除了风险调整项。
         """
-        # 1. 获取基础数据：市场的原始对数收益率
+        params = self.reward_config['trend_based_params']
         market_log_return = self.log_return_array[execution_day_index]
-
         reward = 0.0
 
-        # 2. 根据持仓状态计算核心奖励/惩罚
         if was_holding_stock:
-            # 持仓时：抓住趋势则奖励，承受回撤则惩罚
-            reward += market_log_return * self.reward_config['holding_reward_factor']
-        else:  # 空仓时
-            # 空仓时：躲过下跌则奖励，错过上涨则惩罚
-            reward -= market_log_return * self.reward_config['missing_trend_penalty_factor']
+            reward += market_log_return * params['holding_reward_factor']
+        else:
+            reward -= market_log_return * params['missing_trend_penalty_factor']
 
-        # 3. 计算交易惩罚 (仅固定惩罚)
         if action == Actions.BUY.value or action == Actions.SELL.value:
-            reward -= self.reward_config['fixed_trade_penalty']
+            reward -= params['fixed_trade_penalty']
+
+        return reward
+
+    def _calculate_reward_pnl_based(self, action, prev_portfolio_value, current_portfolio_value, **kwargs):
+        """
+        策略2: 基于投资组合净值变化的奖励。
+        """
+        params = self.reward_config['pnl_based_params']
+        # 计算净值变化的百分比
+        pnl_pct = (current_portfolio_value / prev_portfolio_value) - 1.0 if prev_portfolio_value > 0 else 0.0
+
+        # 核心奖励是经过缩放的净值变化
+        reward = pnl_pct * params['pnl_scaling_factor']
+
+        # 对交易行为施加固定惩罚
+        if action == Actions.BUY.value or action == Actions.SELL.value:
+            reward -= params['fixed_trade_penalty']
+
+        return reward
+
+    def _calculate_reward_downside_risk_adjusted(self, was_holding_stock, action, execution_day_index,
+                                                 prev_portfolio_value, current_portfolio_value, **kwargs):
+        """
+        策略3: 基于下行风险调整后的收益率的奖励。
+        混合奖励：每日基于PnL变化，卖出时额外给予持仓期间的风险调整收益奖励。
+        """
+        params = self.reward_config['downside_risk_adjusted_params']
+        reward = 0.0
+
+        # 1. 每日奖励：基于投资组合净值变化
+        pnl_pct = (current_portfolio_value / prev_portfolio_value) - 1.0 if prev_portfolio_value > 0 else 0.0
+        reward += pnl_pct * params['daily_pnl_factor']
+
+        # 2. 卖出时的终端奖励：基于持仓期间的下行风险调整收益
+        if action == Actions.SELL.value and was_holding_stock:  # 确保是平仓操作
+            if self.entry_price > 0 and len(self.current_holding_log_returns) > 0:
+                # 计算持仓期间总收益率
+                # 注意：self.portfolio_value 已经是卖出后的净值，self.cash 是卖出后的现金
+                # 这里的总收益率应该基于买入价和卖出价
+                sell_price_for_calc = self.prices_array[execution_day_index]  # 使用收盘价作为卖出价
+                holding_period_return = (sell_price_for_calc / self.entry_price) - 1.0
+
+                # 计算持仓期间的下行波动率
+                negative_returns = [r for r in self.current_holding_log_returns if r < 0]
+                downside_volatility = np.std(negative_returns) if len(negative_returns) > 1 else 0.0
+
+                # 避免除以零
+                if downside_volatility > 1e-9:
+                    risk_adjusted_return = holding_period_return / downside_volatility
+                    reward += risk_adjusted_return * params['downside_risk_bonus_factor']
+                else:
+                    # 如果没有下行波动，且有正收益，给予奖励；否则不额外奖励
+                    if holding_period_return > 0:
+                        reward += holding_period_return * params['downside_risk_bonus_factor']  # 简单奖励正收益
+
+            # 清空持仓记录，为下一次买入做准备
+            self.current_holding_log_returns = []
+            self.entry_price = 0
+
+        # 3. 交易惩罚
+        if action == Actions.BUY.value or action == Actions.SELL.value:
+            reward -= params['fixed_trade_penalty']
 
         return reward
 
