@@ -209,28 +209,33 @@ CONFIG = {
 
         # --- 辅助任务配置 (Multi-task Learning) ---
         "auxiliary_tasks": {
-            "enabled": False,  # 是否启用辅助任务
-            "configs": {
-                "future_log_return_5d": {
-                    "type": "regression",
+            "enabled": True,  # 是否启用辅助任务
+            "definitions": [  # 辅助任务定义列表
+                {
+                    "name": "future_log_return_5d",
+                    "operator": "log_return",  # 算子：对数收益率
                     "horizon": 5,
-                    "loss_weight": 0.1,
-                    "output_dim": 1
+                    "source_column": "close",  # 计算依据的原始列
+                    "params": {},  # 算子参数
+                    "loss_weight": 0.1
                 },
-                "future_trend_10d": {
-                    "type": "classification",
+                {
+                    "name": "future_trend_10d",
+                    "operator": "trend_direction",  # 算子：趋势方向
                     "horizon": 10,
-                    "loss_weight": 0.05,
-                    "output_dim": 1,
-                    "activation": "sigmoid"
+                    "source_column": "close",
+                    "params": {"trend_threshold": 0.001},  # 趋势判断阈值
+                    "loss_weight": 0.05
                 },
-                "future_volatility_20d": {
-                    "type": "regression",
+                {
+                    "name": "future_volatility_20d",
+                    "operator": "volatility",  # 算子：波动率
                     "horizon": 20,
-                    "loss_weight": 0.02,
-                    "output_dim": 1
+                    "source_column": "log",  # 基于对数收益率计算波动率
+                    "params": {},
+                    "loss_weight": 0.02
                 }
-            }
+            ]
         },
 
         # --- 全连接网络特定配置 ---
@@ -420,22 +425,61 @@ def preprocess_and_split_data(df, config):
     df.dropna(inplace=True)
     print(f"DEBUG: preprocess_and_split_data - After dropna df date range: {df.index.min()} to {df.index.max()}")
 
-    # === 新增代码：计算未来辅助任务的目标值 ===
-    aux_task_configs = config['agent']['auxiliary_tasks']['configs']
+    # === 计算未来辅助任务的目标值 ===
+    aux_task_definitions = config['agent']['auxiliary_tasks'].get('definitions', [])
     max_horizon = 0
-    if aux_task_configs:
-        for task_name, task_config in aux_task_configs.items():
-            horizon = task_config['horizon']
-            max_horizon = max(max_horizon, horizon)
-            if task_config['type'] == 'regression':
-                # 例如：未来N天对数收益率
-                df[task_name] = np.log(df['close'].shift(-horizon) / df['close'])
-            elif task_config['type'] == 'classification':
-                # 例如：未来N天趋势方向 (1为上涨，0为下跌)
-                df[task_name] = (df['close'].shift(-horizon) > df['close']).astype(int)
-            # 可以根据需要添加其他类型 ...
 
-    # 由于计算未来奖励会导致最后几行数据无效，必须在这里丢弃它们; 以确保所有数据都是对齐且有效的
+    # 动态计算辅助任务目标值
+    def _calculate_aux_target(df_col, operator, horizon, params=None):
+        if params is None: params = {}
+        if operator == "log_return":
+            return np.log(df_col.shift(-horizon) / df_col)
+        elif operator == "trend_direction":
+            threshold = params.get("trend_threshold", 0.0)
+            return ((df_col.shift(-horizon) / df_col - 1) > threshold).astype(int)
+        elif operator == "volatility":
+            # 计算未来N天的滚动标准差
+            return df_col.rolling(window=horizon).std().shift(-horizon + 1)
+        else:
+            raise ValueError(f"不支持的辅助任务算子: {operator}")
+
+    # 动态构建 aux_task_configs
+    dynamic_aux_task_configs = {}
+    if aux_task_definitions:
+        for task_def in aux_task_definitions:
+            task_name = task_def['name']
+            operator = task_def['operator']
+            horizon = task_def['horizon']
+            source_column = task_def['source_column']
+            params = task_def.get('params', {})
+            loss_weight = task_def['loss_weight']
+
+            max_horizon = max(max_horizon, horizon)
+
+            # 计算目标值并添加到df
+            df[task_name] = _calculate_aux_target(df[source_column], operator, horizon, params)
+
+            # 根据算子推断类型和激活函数
+            task_type = "regression"
+            output_dim = 1
+            activation = None
+            if operator == "trend_direction":
+                task_type = "classification"
+                activation = "sigmoid"
+
+            dynamic_aux_task_configs[task_name] = {
+                "type": task_type,
+                "horizon": horizon,
+                "loss_weight": loss_weight,
+                "output_dim": output_dim,
+                "activation": activation
+            }
+
+    # 更新CONFIG中的 aux_task_configs
+    config['agent']['auxiliary_tasks']['configs'] = dynamic_aux_task_configs
+
+    # 由于计算未来奖励会导致最后几行数据无效，必须在这里丢弃它们
+    # 以确保所有数据都是对齐且有效的
     if max_horizon > 0:
         df.dropna(inplace=True)
         print(f"DEBUG: 计算并丢弃无效辅助任务目标后, df日期范围: {df.index.min()} to {df.index.max()}")
@@ -448,7 +492,7 @@ def preprocess_and_split_data(df, config):
     # 定义环境所需的原始数据列
     env_cols = ['close', 'high', 'low', 'open', 'reward_volatility', 'log']
     # 动态添加辅助任务的列到 env_cols
-    if config['agent']['auxiliary_tasks']['enabled']:
+    if config['agent']['auxiliary_tasks']['enabled'] and config['agent']['auxiliary_tasks']['configs']:
         for task_name in config['agent']['auxiliary_tasks']['configs'].keys():
             env_cols.append(task_name)
 
@@ -522,9 +566,6 @@ class OptimizedDQN(nn.Module):
         self.use_noisy_net = use_noisy_net
         self.enable_aux_tasks = enable_aux_tasks
         self.aux_task_configs = aux_task_configs if aux_task_configs is not None else {}
-        print(f"DEBUG: OptimizedDQN __init__ - enable_aux_tasks: {self.enable_aux_tasks}")
-        print(f"DEBUG: OptimizedDQN __init__ - aux_task_configs (input): {aux_task_configs}")
-        print(f"DEBUG: OptimizedDQN __init__ - self.aux_task_configs: {self.aux_task_configs}")
 
         LinearLayer = NoisyLinear if self.use_noisy_net else nn.Linear
 
@@ -712,12 +753,13 @@ class OptimizedDQN(nn.Module):
         # Auxiliary Task Heads
         aux_predictions = {}
         if self.enable_aux_tasks:
-            if self.aux_heads: # 只有当 aux_heads 被正确初始化时才遍历
+            if self.aux_heads:  # 只有当 aux_heads 被正确初始化时才遍历
                 for task_name, head in self.aux_heads.items():
                     pred = head(shared_features)
                     # 应用激活函数（如果配置了）
-                    if self.aux_task_configs[task_name].get('activation') == 'sigmoid':
-                        pred = torch.sigmoid(pred)
+                    # BCEWithLogitsLoss 内部处理 sigmoid，所以这里不需要显式应用
+                    # if self.aux_task_configs[task_name].get('activation') == 'sigmoid':
+                    #     pred = torch.sigmoid(pred)
                     aux_predictions[task_name] = pred
 
         return q_values, aux_predictions
@@ -1106,14 +1148,30 @@ class OptimizedDQNAgent:
 
         # --- 辅助任务配置 ---
         self.enable_aux_tasks = self.config['auxiliary_tasks']['enabled']
-        self.aux_task_configs = self.config['auxiliary_tasks']['configs'] if self.enable_aux_tasks else {}
+        # 从 definitions 构建 configs 字典
+        self.aux_task_configs = {}
+        if self.enable_aux_tasks:
+            for task_def in self.config['auxiliary_tasks'].get('definitions', []):
+                task_name = task_def['name']
+                task_type = "regression"
+                activation = None
+                if task_def['operator'] == "trend_direction":
+                    task_type = "classification"
+                    activation = "sigmoid"
+                self.aux_task_configs[task_name] = {
+                    "type": task_type,
+                    "horizon": task_def['horizon'],
+                    "loss_weight": task_def['loss_weight'],
+                    "output_dim": 1,  # 默认输出维度为1
+                    "activation": activation
+                }
         self.aux_loss_fns = nn.ModuleDict()  # 使用ModuleDict来存储损失函数，以便它们能被正确地移动到设备
         if self.enable_aux_tasks:
             for task_name, task_config in self.aux_task_configs.items():
                 if task_config['type'] == 'regression':
                     self.aux_loss_fns[task_name] = nn.MSELoss()
                 elif task_config['type'] == 'classification':
-                    self.aux_loss_fns[task_name] = nn.BCELoss()  # 二分类交叉熵
+                    self.aux_loss_fns[task_name] = nn.BCEWithLogitsLoss()  # 二分类交叉熵，对混合精度更安全
                 else:
                     raise ValueError(f"不支持的辅助任务类型: {task_config['type']}")
             self.aux_loss_fns = device_manager.to_device(self.aux_loss_fns)
@@ -1205,7 +1263,7 @@ class OptimizedDQNAgent:
                 # 警告：如果这里频繁触发，说明网络结构或初始化存在深层问题。
                 print(f"警告: q_values 形状异常: {q_values.shape}。期望 (1, {self.action_dim})。尝试修正...")
                 try:
-                    q_values = q_values.view(1, self.action_dim) # 强制转换为期望形状
+                    q_values = q_values.view(1, self.action_dim)  # 强制转换为期望形状
                 except RuntimeError as e:
                     print(traceback.format_exc())
                     raise RuntimeError(f"无法将 q_values 从 {q_values.shape} 修正为 (1, {self.action_dim}): {e}")
@@ -1218,7 +1276,7 @@ class OptimizedDQNAgent:
 
             # 使用 masked_fill_ 将无效动作的Q值设置为负无穷
             q_values.masked_fill_(invalid_actions_mask, -float('inf'))
-            
+
             return torch.argmax(q_values[0]).item()
 
     def replay(self, global_step):
@@ -1453,7 +1511,12 @@ def train_dqn(config, train_df, device_manager):
                 if agent.enable_aux_tasks:
                     current_date_idx = env.current_step - 1  # env.current_step 已经推进到下一天，所以要减1
                     for task_name in agent.aux_task_configs.keys():
-                        aux_targets[task_name] = env.df[task_name].iloc[current_date_idx]
+                        # 确保索引在有效范围内
+                        if current_date_idx < len(env.df):
+                            aux_targets[task_name] = env.df[task_name].iloc[current_date_idx]
+                        else:
+                            # 如果超出范围，则使用默认值或跳过
+                            aux_targets[task_name] = 0.0  # 或者根据任务类型设置合适默认值
 
                 agent.remember(state, action, reward, next_state, done, aux_targets)
                 state = next_state
