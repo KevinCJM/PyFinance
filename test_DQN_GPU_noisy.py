@@ -161,9 +161,8 @@ CONFIG = {
     "agent": {
         # --- 新的奖励函数配置 ---
         "reward_config": {
-            "holding_reward_factor": 1.0,  # 持仓时（无论盈亏），奖励/惩罚的基准乘数
-            "missing_trend_penalty_factor": 1.0,  # 空仓时，对错过上涨的惩罚和躲过下跌的奖励的基准乘数
-            "dynamic_trade_penalty_factor": 0.1,  # 动态交易惩罚乘数（乘以波动率）
+            "holding_reward_factor": 1.0,  # 持仓时，奖励/惩罚的基准乘数 (乘以对数收益率)
+            "missing_trend_penalty_factor": 1.0,  # 空仓时，对错过上涨的惩罚和躲过下跌的奖励的基准乘数 (乘以对数收益率)
             "fixed_trade_penalty": 0.05  # 固定的交易惩罚值
         },
         # --- N-Step Learning 配置 ---
@@ -171,7 +170,7 @@ CONFIG = {
             "enabled": True,  # 是否启用 N-step learning
             "n_steps": 5  # N的值，即向前看多少步
         },
-        "exploration_method": "noisy",  # 探索策略: "epsilon_greedy" 或 "noisy"
+        "exploration_method": "epsilon_greedy",  # 探索策略: "epsilon_greedy" 或 "noisy"
         "noisy_std_init": 0.5,  # NoisyLinear层的初始标准差
         "network_type": "cnn",  # 神经网络类型: "feed_forward" (全连接网络) 或 "cnn" (卷积神经网络)
         "action_dim": 3,  # 动作空间的维度 (通常是 买入/卖出/持有，共3个)
@@ -197,7 +196,7 @@ CONFIG = {
             "conv_kernel_size": 3,  # CNN 卷积核的大小
             "cnn_out_channels": [32, 64],  # 定义CNN卷积层的输出通道数
             "use_attention": True,  # 是否在CNN层后使用注意力机制 (Transformer Encoder)
-            "num_heads": 8,  # 注意力机制的头数，必须能被d_model整除
+            "num_heads": 16,  # 注意力机制的头数，必须能被d_model整除
             "dim_feedforward": 256,  # Transformer Encoder 内部前馈网络的维度
             "num_attention_layers": 2,  # 堆叠的Transformer Encoder层数
             "dqn_hidden_layers": [256, 128],  # 经过CNN/Attention特征提取后，连接的全连接隐藏层
@@ -761,35 +760,25 @@ class StockTradingEnv(gym.Env):
 
     def _calculate_reward(self, was_holding_stock, action, execution_day_index):
         """
-        根据新的趋势交易理念计算奖励。
+        根据新的简化版趋势交易理念计算奖励。
+        奖励直接基于市场的对数收益率，移除了风险调整项。
         """
-        # 1. 获取基础数据
+        # 1. 获取基础数据：市场的原始对数收益率
         market_log_return = self.log_return_array[execution_day_index]
-        market_volatility = self.volatility_array[execution_day_index]
-
-        # 2. 标准化市场收益率（统一量纲）
-        # 使用波动率对收益率进行标准化，得到风险调整后的趋势强度
-        # 添加一个极小值 epsilon 来防止除以零
-        normalized_market_return = market_log_return / (market_volatility + 1e-9)
 
         reward = 0.0
 
-        # 3. 根据持仓状态计算核心奖励/惩罚
+        # 2. 根据持仓状态计算核心奖励/惩罚
         if was_holding_stock:
             # 持仓时：抓住趋势则奖励，承受回撤则惩罚
-            reward += normalized_market_return * self.reward_config['holding_reward_factor']
+            reward += market_log_return * self.reward_config['holding_reward_factor']
         else:  # 空仓时
             # 空仓时：躲过下跌则奖励，错过上涨则惩罚
-            reward -= normalized_market_return * self.reward_config['missing_trend_penalty_factor']
+            reward -= market_log_return * self.reward_config['missing_trend_penalty_factor']
 
-        # 4. 计算交易惩罚
+        # 3. 计算交易惩罚 (仅固定惩罚)
         if action == Actions.BUY.value or action == Actions.SELL.value:
-            # 固定惩罚 + 动态惩罚（与波动率正相关）
-            trade_penalty = (
-                    self.reward_config['fixed_trade_penalty'] +
-                    self.reward_config['dynamic_trade_penalty_factor'] * market_volatility
-            )
-            reward -= trade_penalty
+            reward -= self.reward_config['fixed_trade_penalty']
 
         return reward
 
