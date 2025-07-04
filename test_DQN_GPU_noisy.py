@@ -433,10 +433,9 @@ def preprocess_and_split_data(df, config):
             elif task_config['type'] == 'classification':
                 # 例如：未来N天趋势方向 (1为上涨，0为下跌)
                 df[task_name] = (df['close'].shift(-horizon) > df['close']).astype(int)
-            # 可以根据需要添加其他类型
+            # 可以根据需要添加其他类型 ...
 
-    # 由于计算未来奖励会导致最后几行数据无效，必须在这里丢弃它们
-    # 以确保所有数据都是对齐且有效的
+    # 由于计算未来奖励会导致最后几行数据无效，必须在这里丢弃它们; 以确保所有数据都是对齐且有效的
     if max_horizon > 0:
         df.dropna(inplace=True)
         print(f"DEBUG: 计算并丢弃无效辅助任务目标后, df日期范围: {df.index.min()} to {df.index.max()}")
