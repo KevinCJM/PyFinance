@@ -162,11 +162,13 @@ CONFIG = {
     "agent": {
         # --- 新的奖励函数配置 ---
         "reward_config": {
-            "strategy": "pnl_based",  # 可选: "trend_based", "pnl_based", "downside_risk_adjusted"
+            "strategy": "trade_cycle_shaping",
+            # 可选: "trend_based", "pnl_based", "downside_risk_adjusted", "trade_cycle_shaping"
             "strategy_descriptions": {
                 "trend_based": "奖励基于市场的对数收益率，旨在捕捉趋势。持仓时奖励与市场同向，空仓时与市场反向。有固定的交易惩罚。",
                 "pnl_based": "奖励直接基于每日的投资组合净值变化百分比。更直接地反映盈利目标，但可能导致对短期波动的过度反应。",
                 "downside_risk_adjusted": "该策略结合了每日PnL奖励和卖出时的风险调整收益奖励，以平衡学习效率和长期目标。",
+                "trade_cycle_shaping": "在交易结束时，根据Pnl结合整个交易周期的夏普比率和最大回撤计算一个综合性奖励，旨在塑造高质量的交易行为。",
             },
             # --- trend_based 策略的参数 ---
             "trend_based_params": {
@@ -184,6 +186,12 @@ CONFIG = {
                 "daily_pnl_factor": 0.1,  # 每日PnL奖励的缩放因子
                 "downside_risk_bonus_factor": 10.0,  # 卖出时下行风险调整收益的奖励因子
                 "fixed_trade_penalty": 0.05  # 固定的交易惩罚值
+            },
+            # --- trade_cycle_shaping 策略的参数 ---
+            "trade_cycle_params": {
+                "daily_pnl_factor": 0.05,  # 每日PnL奖励的缩放因子 (保持一个较小值)
+                "sharpe_ratio_bonus_factor": 2.0,  # 夏普比率奖励的乘数
+                "max_drawdown_penalty_factor": 2.0  # 交易内最大回撤的惩罚乘数
             }
         },
         # --- N-Step Learning 配置 ---
@@ -799,10 +807,11 @@ class StockTradingEnv(gym.Env):
         self._reward_function_dispatcher = {
             'trend_based': self._calculate_reward_trend_based,
             'pnl_based': self._calculate_reward_pnl_based,
-            'downside_risk_adjusted': self._calculate_reward_downside_risk_adjusted
+            'downside_risk_adjusted': self._calculate_reward_downside_risk_adjusted,
+            'trade_cycle_shaping': self._calculate_reward_trade_cycle
         }
-        print(
-            f"使用奖励策略: {self.reward_strategy} - {self.reward_config['strategy_descriptions'].get(self.reward_strategy, '无描述')}")
+        print(f"使用奖励策略: {self.reward_strategy} - "
+              f"{self.reward_config['strategy_descriptions'].get(self.reward_strategy, '无描述')}")
 
         self.hard_stop_loss_pct = self.env_config['hard_stop_loss_pct']
         self.initial_capital = self.env_config['initial_capital']
@@ -853,6 +862,12 @@ class StockTradingEnv(gym.Env):
         self.entry_price = 0
         self.current_holding_log_returns = []  # 用于存储当前持仓期间的每日对数收益率
         self.pending_action = None  # 新增：存储前一个时间步的决策，用于T+1执行
+
+        # --- 新增：交易周期跟踪变量 ---
+        self.current_trade_portfolio_values = []  # 存储当前交易周期内的每日组合净值
+        self.current_trade_peak_value = 0  # 当前交易周期内的峰值净值，用于计算最大回撤
+        self.current_trade_entry_step = 0  # 当前交易周期的起始步数
+        self.current_trade_max_drawdown = 0 # 当前交易周期内，实时记录的最大回撤值
         return self._get_observation()
 
     def _get_observation(self):
@@ -930,6 +945,16 @@ class StockTradingEnv(gym.Env):
 
         # 6. 计算执行日结束时的投资组合净值
         self.portfolio_value = self.cash + self.shares * price_for_execution_day
+
+        # --- 新增：更新交易周期跟踪变量 ---
+        if self.shares > 0:  # 如果正在持仓
+            self.current_trade_portfolio_values.append(self.portfolio_value)
+            # 更新峰值
+            self.current_trade_peak_value = max(self.current_trade_peak_value, self.portfolio_value)
+            # 实时计算并更新当前交易周期的最大回撤
+            if self.current_trade_peak_value > 0:
+                drawdown = (self.current_trade_peak_value - self.portfolio_value) / self.current_trade_peak_value
+                self.current_trade_max_drawdown = max(self.current_trade_max_drawdown, drawdown)
 
         # 跟踪持仓期间的对数收益率
         if self.shares > 0 and execution_day_index < len(self.log_return_array):
@@ -1059,6 +1084,38 @@ class StockTradingEnv(gym.Env):
 
         return reward
 
+    def _calculate_reward_trade_cycle(self, was_holding_stock, action, prev_portfolio_value, current_portfolio_value,
+                                      **kwargs):
+        """
+        策略4: 基于完整交易周期的塑造奖励。
+        """
+        params = self.reward_config['trade_cycle_params']
+        reward = 0.0
+
+        # 1. 每日奖励：基于投资组合净值变化的微小奖励，以提供即时反馈
+        pnl_pct = (current_portfolio_value / prev_portfolio_value) - 1.0 if prev_portfolio_value > 0 else 0.0
+        reward += pnl_pct * params['daily_pnl_factor']
+
+        # 2. 交易结束时的终局奖励：在卖出时计算
+        if action == Actions.SELL.value and was_holding_stock:
+            # a. 计算夏普比率
+            trade_returns = pd.Series(self.current_trade_portfolio_values).pct_change().dropna()
+            if len(trade_returns) > 1 and trade_returns.std() > 1e-9:
+                # 年化夏普比率 (假设每日数据)
+                sharpe_ratio = trade_returns.mean() / trade_returns.std() * np.sqrt(252)
+                reward += sharpe_ratio * params['sharpe_ratio_bonus_factor']
+
+            # b. 使用实时计算的最大回撤进行惩罚
+            reward -= self.current_trade_max_drawdown * params['max_drawdown_penalty_factor']
+
+            # c. 重置交易周期变量
+            self.current_trade_portfolio_values = []
+            self.current_trade_peak_value = 0
+            self.current_trade_entry_step = 0
+            self.current_trade_max_drawdown = 0
+
+        return reward
+
     def _take_action(self, action, execution_day_index):
         """
         根据动作执行交易。
@@ -1095,6 +1152,12 @@ class StockTradingEnv(gym.Env):
                 self.shares = buy_capital / buy_price
                 self.cash = 0
                 self.entry_price = buy_price
+                # --- 新增：开始新的交易周期跟踪 (已修正) ---
+                # 在更新持仓和现金后，记录精确的交易起始净值 (即扣除手续费后的资本)
+                self.current_trade_entry_step = execution_day_index
+                self.current_trade_portfolio_values = [buy_capital]
+                self.current_trade_peak_value = buy_capital
+                self.current_trade_max_drawdown = 0  # 重置最大回撤
         elif action == Actions.SELL.value and self.shares > 0:
             proceeds = self.shares * sell_price
             cost = proceeds * self.transaction_cost_pct
