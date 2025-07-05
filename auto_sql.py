@@ -121,45 +121,58 @@ def get_locator_from_ai(html_source, element_description):
 
 
 def scrape_table_details(driver):
-    """从表详情页HTML中抓取所有信息(v14.0 Selenium直接提取版)"""
+    """从表详情页HTML中抓取所有信息(v14.4 终极修正提取与格式)"""
     print("🔎 正在使用Selenium直接提取页面元素...")
     scraped_data = {"basic_info": {}, "columns_data": [], "notes_map": {}}
 
-    # 1. 提取基本信息 (使用Selenium直接提取)
-    basic_info_labels = {
-        '表中文名': 'tableChineseName',
-        '状态': 'status'
-    }
-    for label_text, key_name in basic_info_labels.items():
-        try:
-            # 查找包含标签文本的元素，然后获取其兄弟节点
-            label_element = driver.find_element(By.XPATH,
-                                                f"//span[contains(text(), '{label_text}')] | //div[contains(text(), '{label_text}')] | //dt[contains(text(), '{label_text}')] ")
-            value_element = label_element.find_element(By.XPATH, "following-sibling::*")
-            scraped_data["basic_info"][key_name] = value_element.text.strip()
-        except Exception:
-            pass  # 忽略找不到的标签
+    # --- 终极修正 1: 使用更精确的XPath提取基本信息 ---
+    # 尝试提取“表中文名”
+    try:
+        # 查找包含“表中文名”文本的任何元素，然后获取其父元素的全部文本，再进行解析
+        chinese_name_label_element = driver.find_element(By.XPATH, "//*[contains(text(), '表中文名')]")
+        # Get the text of its parent element
+        parent_text = chinese_name_label_element.find_element(By.XPATH, "..").text.strip()
+        # Extract the value by removing the label text and any colon
+        value = parent_text.replace(chinese_name_label_element.text.strip(), "").replace(":", "").strip()
+        scraped_data["basic_info"]["tableChiName"] = value
+    except Exception:
+        print("⚠️ 未能提取到'表中文名'。")
 
-    # 2. 提取列信息 (使用Selenium直接获取outerHTML)
+    # 尝试提取“状态”
+    try:
+        # Find the element containing "状态" text
+        status_label_element = driver.find_element(By.XPATH, "//*[contains(text(), '状态')]")
+        # Get the text of its parent element
+        parent_text = status_label_element.find_element(By.XPATH, "..").text.strip()
+        # Extract the value by removing the label text and any colon
+        value = parent_text.replace(status_label_element.text.strip(), "").replace(":", "").strip()
+        scraped_data["basic_info"]["status"] = value
+    except Exception:
+        print("⚠️ 未能提取到'状态'。")
+
+    # 2. 提取列信息 (逻辑不变)
     try:
         column_table_element = driver.find_element(By.CSS_SELECTOR, 'table.table-column.table-interval-bg')
         column_table_html = driver.execute_script("return arguments[0].outerHTML;", column_table_element)
         soup_column_table = BeautifulSoup(column_table_html, 'html.parser')
-
+        
         headers = [th.text.strip() for th in soup_column_table.find('thead').find_all('th')]
-        rows = soup_column_table.find('tbody').find_all('tr', attrs={'ng-repeat': re.compile(r'column in columns')})
-
+        # 修正：ng-repeat可能在tbody上，而不是tr上，查找所有tr更稳妥
+        rows = soup_column_table.find('tbody').find_all('tr')
+        
         for row in rows:
             cells = row.find_all('td')
+            if not cells: continue # 跳过空行或表头内的行
             col_dict = {}
             for i, header in enumerate(headers):
                 if i < len(cells):
                     col_dict[header] = cells[i].text.strip()
-            scraped_data["columns_data"].append(col_dict)
+            if col_dict: # 确保不是空字典
+                scraped_data["columns_data"].append(col_dict)
     except Exception as e:
         print(f"⚠️ 未能使用 Selenium 定位到列表格或提取列数据。错误: {e}")
 
-    # 3. 提取备注信息 (使用Selenium直接获取outerHTML)
+    # --- 核心修正 2: 修正备注信息提取 ---
     try:
         remark_table_element = driver.find_element(By.CSS_SELECTOR, 'table.table-remark')
         remark_table_html = driver.execute_script("return arguments[0].outerHTML;", remark_table_element)
@@ -167,48 +180,54 @@ def scrape_table_details(driver):
 
         rows = soup_remark_table.find('tbody').find_all('tr')
         for row in rows:
-            key_cell = None
-            value_cell = None
-            try:
-                key_cell = row.find_element(By.CSS_SELECTOR, 'td.center')
-                value_cell = row.find_element(By.CSS_SELECTOR, 'td:not(.center)')  # 查找非center类的td
-            except Exception:
-                pass  # 忽略找不到的单元格
-
-            if key_cell and value_cell:
-                key = key_cell.text.strip().replace('[', '').replace(']', '').strip()
-                value = value_cell.text.strip()
-                scraped_data["notes_map"][key] = value
+            # 使用BeautifulSoup的find方法，而不是Selenium的find_element
+            cells = row.find_all('td')
+            if len(cells) == 2:
+                # 假设第一列是key，第二列是value
+                key = cells[0].text.strip().replace('[', '').replace(']', '').strip()
+                value = cells[1].text.strip()
+                if key: # 确保key不为空
+                    scraped_data["notes_map"][key] = value
     except Exception as e:
         print(f"⚠️ 未能使用 Selenium 定位到备注表格或提取备注数据。错误: {e}")
 
     print(f"✅ 抓取完成：找到 {len(scraped_data['columns_data'])} 列数据，{len(scraped_data['notes_map'])} 条备注。")
     return scraped_data
 
-
 def organize_data_with_ai(table_name, scraped_data):
     print("🤖 正在调用大模型进行数据整合与清洗...")
     try:
         http_client = httpx.Client(verify=False)
         client = OpenAI(api_key=CONFIG["api_key"], base_url=CONFIG["base_url"], http_client=http_client)
+        
+        # --- 终极修正 2: 固化对AI的指令，强制其遵循JSON格式 ---
         system_prompt = (
-            "You are a data structuring expert. Your job is to assemble raw, pre-scraped data parts into a final, clean JSON object representing a database table definition."
+            "You are a data structuring expert. Your job is to assemble raw, pre-scraped data parts into a final, clean JSON object representing a database table definition. "
+            "You MUST strictly follow the output format specified in the user prompt."
         )
+        
+        # 预处理columns，替换备注
+        processed_columns = []
+        for col in scraped_data["columns_data"]:
+            processed_col = col.copy()
+            remark_key = processed_col.get("备注")
+            if remark_key and remark_key in scraped_data["notes_map"]:
+                processed_col["备注"] = scraped_data["notes_map"][remark_key]
+            processed_columns.append(processed_col)
+
         user_prompt = (
-            f"Please assemble the following data for the table named '{table_name}'.\n\n"
-            f"1. Basic table information:\n"
-            f"```json\n{json.dumps(scraped_data['basic_info'], indent=2, ensure_ascii=False)}\n```\n\n"
-            f"2. A list of table columns:\n"
-            f"```json\n{json.dumps(scraped_data['columns_data'], indent=2, ensure_ascii=False)}\n```\n\n"
-            f"3. A mapping of note keys to their full explanatory text:\n"
-            f"```json\n{json.dumps(scraped_data['notes_map'], indent=2, ensure_ascii=False)}\n```\n\n"
-            "Your tasks:\n"
-            "- Create a single JSON object.\n"
-            "- The root object must have a 'tableName' key with the value '{table_name}'.\n"
-            "- Merge the 'basic_info' into the root object.\n"
-            "- Add a 'columns' key to the root, containing the list of columns.\n"
-            "- For each column in the 'columns' array, if its '备注' value (e.g., '注1') is a key in the notes mapping, replace that value with the full text from the mapping.\n"
-            "- Return ONLY the final, assembled JSON object and nothing else."
+            f"Generate a JSON object for the table '{table_name}' with the following structure and data.\n"
+            f"Use the provided basic_info, columns_data, and notes_map to populate the fields.\n"
+            f"Ensure that the '备注' field in each column object contains the full, replaced remark text from notes_map.\n\n"
+            "```json\n"
+            f"    \"{table_name}\": {{\n"
+            "        \"tableName\": \"{table_name}\",\n"
+            "        \"tableChiName\": \"" + scraped_data["basic_info"].get("tableChiName", "") + "\",\n"
+            "        \"status\": \"" + scraped_data["basic_info"].get("status", "") + "\",\n"
+            f"        \"columns\": {json.dumps(processed_columns, indent=4, ensure_ascii=False).replace('\n', '\n').replace('"', '"')}\n"
+            "    }}\n"
+            "```\n"
+            "Return ONLY the final, assembled JSON object and nothing else. Do NOT add any extra text or explanations."
         )
         response = client.chat.completions.create(
             model=CONFIG["model_name"],
