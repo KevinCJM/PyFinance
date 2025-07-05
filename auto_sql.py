@@ -60,6 +60,7 @@ def find_element_safely(driver, by, value, timeout=CONFIG["explicit_wait_timeout
         by_obj = getattr(By, by.upper())
         return wait.until(EC.presence_of_element_located((by_obj, value)))
     except Exception:
+        print(traceback.format_exc())
         return None
 
 
@@ -136,6 +137,7 @@ def scrape_table_details(driver):
         else:
             print("⚠️ 未能提取到'表中文名'。")
     except Exception as e:
+        print(traceback.format_exc())
         print(f"⚠️ 提取中文表名时发生错误: {e}")
 
     # 2. 提取列信息 (逻辑不变)
@@ -159,6 +161,7 @@ def scrape_table_details(driver):
             if col_dict:  # 确保不是空字典
                 scraped_data["columns_data"].append(col_dict)
     except Exception as e:
+        print(traceback.format_exc())
         print(f"⚠️ 未能使用 Selenium 定位到列表格或提取列数据。错误: {e}")
 
     # --- 核心修正 2: 修正备注信息提取 ---
@@ -178,6 +181,7 @@ def scrape_table_details(driver):
                 if key:  # 确保key不为空
                     scraped_data["notes_map"][key] = value
     except Exception as e:
+        print(traceback.format_exc())
         print(f"⚠️ 未能使用 Selenium 定位到备注表格或提取备注数据。错误: {e}")
 
     print(f"✅ 抓取完成：找到 {len(scraped_data['columns_data'])} 列数据，{len(scraped_data['notes_map'])} 条备注。")
@@ -230,9 +234,10 @@ def organize_data_with_ai(table_name, scraped_data):
         )
         response_text = response.choices[0].message.content
         json_part = response_text[response_text.find('{'):response_text.rfind('}') + 1]
-        return json.loads(json_part)
+        return json.loads(json_part)[table_name]
     except Exception as e:
         print(f"❌ 调用大模型进行数据整理时发生错误: {e}")
+        print(traceback.format_exc())
         return None
 
 
@@ -252,6 +257,7 @@ def process_table_details_page(driver, table_name):
         print("--- 列表格内容已加载，开始抓取数据 --- ")
     except Exception as e:
         print(f"❌ 在等待时间内未能找到列表格内容 ({table_row_locator})。页面可能加载失败或结构已改变。错误: {e}")
+        print(traceback.format_exc())
         # 调试步骤：保存当前页面HTML，以便分析
         debug_file = "debug_page_source.html"
         with open(debug_file, "w", encoding="utf-8") as f:
@@ -341,6 +347,7 @@ def login_and_search(driver):
 
     except Exception as e:
         print(f"⚠️ 在查找、导航或处理 '{table_name}' 时失败: {e}")
+        print(traceback.format_exc())
         # 保存失败时的页面快照，以便调试
         debug_file = "debug_page_source_final.html"
         with open(debug_file, "w", encoding="utf-8") as f:
