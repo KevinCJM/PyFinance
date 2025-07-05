@@ -13,12 +13,18 @@ from webdriver_manager.chrome import ChromeDriverManager
 from openai import OpenAI
 from bs4 import BeautifulSoup
 import time
+import random
 
 # --- 配置中心 ---
 CONFIG = {
     "login_url": "https://dd.gildata.com/#/login",
-    "table_to_search": "SecuMain",
-    "api_key": "xxxx",
+    "table_to_search": [
+        "HK_SecuMain", "SecuMain", "MF_FundArchives", "MF_FundType", "MF_Transformation",
+        "MF_KeyStockPortfolio", "MF_QDIIPortfolioDetail", "MF_BondPortifolioDetail", "MF_QDIIPortfolioDetail",
+        "MF_FundPortifolioDetail", "MF_QDIIPortfolioDetail", "MF_BalanceSheetNew", "MF_BondPortifolioStru",
+        "MF_AssetAllocationNew", "MF_StockPortfolioDetail", "LC_DIndicesForValuation"
+    ],
+    "api_key": "sk-a221b0c62c8a460693fe00a627d4598e",
     "base_url": "https://api.deepseek.com",
     "model_name": "deepseek-chat",
     "window_size": (1920, 1080),
@@ -26,6 +32,8 @@ CONFIG = {
     "final_observe_time": 5,
     "element_cache_file": "element_cache.json",
     "output_json_file": "table_definitions.json",
+    "min_sleep_time": 0.5,
+    "max_sleep_time": 2.5,
 }
 
 
@@ -43,6 +51,12 @@ def load_json_file(file_path):
 def save_json_file(data, file_path):
     with open(file_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def random_sleep():
+    sleep_time = random.uniform(CONFIG["min_sleep_time"], CONFIG["max_sleep_time"])
+    print(f"😴 休眠 {sleep_time:.2f} 秒...")
+    time.sleep(sleep_time)
 
 
 # --- 浏览器与元素操作 ---
@@ -127,7 +141,7 @@ def scrape_table_details(driver):
     scraped_data = {"basic_info": {}, "columns_data": [], "notes_map": {}}
 
     # --- 终极修正 1: 使用更精确的XPath提取基本信息 ---
-    # 尝试提取“表中文名”
+    # 尝试提取“表中文名”及其他基本信息
     try:
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         # 查找包含中文表名的span标签
@@ -136,9 +150,31 @@ def scrape_table_details(driver):
             scraped_data["basic_info"]["tableChiName"] = chinese_name_span.get_text(strip=True)
         else:
             print("⚠️ 未能提取到'表中文名'。")
+
+        # 提取 description
+        description_span = soup.find('span', {'ng-bind-html': re.compile(r'table\.description')})
+        if description_span:
+            scraped_data["basic_info"]["description"] = description_span.get_text(strip=True)
+        else:
+            print("⚠️ 未能提取到'description'。")
+
+        # 提取 tableUpdateTime
+        table_update_time_span = soup.find('span', {'ng-bind': 'table.tableUpdateTime'})
+        if table_update_time_span:
+            scraped_data["basic_info"]["tableUpdateTime"] = table_update_time_span.get_text(strip=True)
+        else:
+            print("⚠️ 未能提取到'tableUpdateTime'。")
+
+        # 提取 key (业务唯一性)
+        key_span = soup.find('span', {'ng-bind': "index.columnName || '无'"})
+        if key_span:
+            scraped_data["basic_info"]["key"] = key_span.get_text(strip=True)
+        else:
+            print("⚠️ 未能提取到'key'。")
+
     except Exception as e:
         print(traceback.format_exc())
-        print(f"⚠️ 提取中文表名时发生错误: {e}")
+        print(f"⚠️ 提取基本信息时发生错误: {e}")
 
     # 2. 提取列信息 (逻辑不变)
     try:
@@ -186,6 +222,37 @@ def scrape_table_details(driver):
 
     print(f"✅ 抓取完成：找到 {len(scraped_data['columns_data'])} 列数据，{len(scraped_data['notes_map'])} 条备注。")
     return scraped_data
+
+
+def organize_data_locally(table_name, scraped_data):
+    """
+    使用纯Python代码将抓取的数据整理成最终的JSON结构。
+    这是对 organize_data_with_ai 函数的直接替代。
+    """
+    print("🐍 正在使用本地代码进行数据整合与清洗...")
+
+    # 1. 预处理列数据：将备注ID替换为实际备注内容
+    processed_columns = []
+    notes_map = scraped_data.get("notes_map", {})
+    for col in scraped_data.get("columns_data", []):
+        processed_col = col.copy()  # 创建副本以避免修改原始数据
+        remark_key = processed_col.get("备注")
+        if remark_key and remark_key in notes_map:
+            processed_col["备注"] = notes_map[remark_key]
+        processed_columns.append(processed_col)
+
+    # 2. 构建最终的JSON对象
+    final_table_definition = {
+        "tableName": table_name,
+        "tableChiName": scraped_data.get("basic_info", {}).get("tableChiName", ""),
+        "description": scraped_data.get("basic_info", {}).get("description", ""),
+        "tableUpdateTime": scraped_data.get("basic_info", {}).get("tableUpdateTime", ""),
+        "key": scraped_data.get("basic_info", {}).get("key", ""),
+        "columns": processed_columns
+    }
+
+    print("✅ 本地数据整理完成。")
+    return final_table_definition
 
 
 def organize_data_with_ai(table_name, scraped_data):
@@ -245,33 +312,51 @@ def organize_data_with_ai(table_name, scraped_data):
 def process_table_details_page(driver, table_name):
     """处理表详情页，提取、整理并保存数据"""
     print("--- 导航到详情页成功，开始数据提取流程 --- ")
-    # 增加一个短暂的固定等待，给JS初始化留出时间
-    time.sleep(3)
-    table_row_locator = None
-    try:
-        wait = WebDriverWait(driver, CONFIG["explicit_wait_timeout"])
-        # 等待表格内部至少一个tr出现即可，放宽对ng-repeat的严格要求
-        table_row_locator = (By.CSS_SELECTOR, "table.table-column.table-interval-bg tbody tr")
-        print(f"⏳ 正在等待元素出现: {table_row_locator}")
-        wait.until(EC.presence_of_element_located(table_row_locator))
-        print("--- 列表格内容已加载，开始抓取数据 --- ")
-    except Exception as e:
-        print(f"❌ 在等待时间内未能找到列表格内容 ({table_row_locator})。页面可能加载失败或结构已改变。错误: {e}")
-        print(traceback.format_exc())
-        # 调试步骤：保存当前页面HTML，以便分析
-        debug_file = "debug_page_source.html"
-        with open(debug_file, "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-        print(f"ℹ️ 为了便于调试，当前的页面HTML已保存到: {os.path.abspath(debug_file)}")
+    scraped_data = {"columns_data": []}  # 初始化为空，确保即使失败也有此键
+    table_row_locator = (By.CSS_SELECTOR, "table.table-column.table-interval-bg tbody tr")
+
+    for attempt in range(3):  # 最多尝试3次
+        try:
+            wait = WebDriverWait(driver, CONFIG["explicit_wait_timeout"])
+            print(f"⏳ 尝试 {attempt + 1}/3: 正在等待元素出现: {table_row_locator}")
+            wait.until(EC.presence_of_element_located(table_row_locator))
+            random_sleep()  # 增加随机等待，确保页面完全渲染
+            print("--- 列表格内容已加载，开始抓取数据 --- ")
+
+            scraped_data = scrape_table_details(driver)
+            if scraped_data and len(scraped_data.get("columns_data", [])) >= 2:
+                print(f"✅ 尝试 {attempt + 1}/3: 成功抓取到 {len(scraped_data['columns_data'])} 条列信息。")
+                break  # 成功抓取到足够数据，跳出循环
+            else:
+                print(
+                    f"⚠️ 尝试 {attempt + 1}/3: 抓取到的列信息不足2条 ({len(scraped_data.get('columns_data', []))} 条)。")
+                if attempt < 2:  # 如果不是最后一次尝试，则刷新页面重试
+                    print("🔄 刷新页面并重试...")
+                    driver.refresh()
+                    random_sleep()  # 刷新后等待页面重新加载
+                else:
+                    print("❌ 达到最大重试次数，将使用当前抓取到的数据。")
+        except Exception as e:
+            print(f"❌ 尝试 {attempt + 1}/3: 在等待或抓取过程中发生错误: {e}")
+            print(traceback.format_exc())
+            if attempt < 2:
+                print("🔄 刷新页面并重试...")
+                driver.refresh()
+                random_sleep()
+            else:
+                print("❌ 达到最大重试次数，无法继续。")
+                # 调试步骤：保存当前页面HTML，以便分析
+                debug_file = "debug_page_source.html"
+                with open(debug_file, "w", encoding="utf-8") as f:
+                    f.write(driver.page_source)
+                print(f"ℹ️ 为了便于调试，当前的页面HTML已保存到: {os.path.abspath(debug_file)}")
+                return  # 彻底失败，返回
+
+    if not scraped_data or not scraped_data.get("columns_data"):
+        print("❌ 最终未能从页面抓取到任何列信息，无法继续。")
         return
 
-    # 直接将driver传递给scrape_table_details，由其直接从DOM中提取数据
-    scraped_data = scrape_table_details(driver)
-    if not scraped_data or not scraped_data["columns_data"]:
-        print("❌ 未能从页面抓取到列信息，无法继续。")
-        return
-
-    final_table_json = organize_data_with_ai(table_name, scraped_data)
+    final_table_json = organize_data_locally(table_name, scraped_data)
     if final_table_json:
         print("💾 正在以增量/更新模式保存数据...")
         database = load_json_file(CONFIG["output_json_file"])
@@ -286,8 +371,6 @@ def login_and_search(driver):
     driver.get(CONFIG["login_url"])
     cache = load_json_file(CONFIG["element_cache_file"])
     input("请手动完成登录后，回到终端按回车继续...")
-    table_name = CONFIG["table_to_search"]
-    print(f"登录完成，开始查找表：{table_name}")
 
     search_box_locator = cache.get("search_box")
     search_box = None
@@ -313,47 +396,59 @@ def login_and_search(driver):
         return
 
     print("✅ 成功定位到搜索框。")
-    search_box.clear()
-    search_box.send_keys(table_name)
-    search_box.send_keys(Keys.ENTER)
 
-    print(f"正在搜索 '{table_name}' 的链接...")
-    try:
-        wait = WebDriverWait(driver, CONFIG["explicit_wait_timeout"])
-        # 定位到我们想要点击的那个精确的链接
-        link_xpath = f"//a[contains(@href, '/tableShow/') and normalize-space(.)='{table_name}']"
-        link_element = wait.until(EC.presence_of_element_located((By.XPATH, link_xpath)))
+    for table_name in CONFIG["table_to_search"]:
+        print(f"开始查找表：{table_name}")
+        search_box.clear()
+        search_box.send_keys(table_name)
+        search_box.send_keys(Keys.ENTER)
 
-        # --- 终极解决方案：放弃模拟点击，直接提取href并导航 ---
-        target_url = link_element.get_attribute('href')
-        print(f"✅ 成功定位链接，提取到目标URL: {target_url}")
+        print(f"正在搜索 '{table_name}' 的链接...")
+        try:
+            wait = WebDriverWait(driver, CONFIG["explicit_wait_timeout"])
+            # 定位到我们想要点击的那个精确的链接
+            link_xpath = f"//a[contains(@href, '/tableShow/') and normalize-space(.)='{table_name}']"
+            link_element = wait.until(EC.presence_of_element_located((By.XPATH, link_xpath)))
 
-        if not target_url:
-            print("❌ 无法从链接元素中提取到href属性，程序终止。")
-            return
+            # --- 直接提取href并导航 ---
+            target_url = link_element.get_attribute('href')
+            print(f"✅ 成功定位链接，提取到目标URL: {target_url}")
 
-        print("🚀 正在直接导航到目标URL...")
-        driver.get(target_url)
+            if not target_url:
+                print("❌ 无法从链接元素中提取到href属性，程序终止。")
+                continue  # 继续处理下一个表
 
-        # 直接导航后，我们仍然需要等待新视图的标志性元素出现
-        print("⏳ 正在等待详情页加载...")
-        details_page_identifier = (By.CSS_SELECTOR, "table.table-column.table-interval-bg")
-        wait.until(EC.presence_of_element_located(details_page_identifier))
-        print("✅ 详情页加载成功。")
+            print("🚀 正在直接导航到目标URL...")
+            driver.get(target_url)
 
-        # 现在可以安全地调用详情页处理函数
-        process_table_details_page(driver, table_name)
-        print("--- 数据提取流程结束 ---")
+            # 直接导航后，我们仍然需要等待新视图的标志性元素出现
+            print("⏳ 正在等待详情页加载...")
+            details_page_identifier = (By.CSS_SELECTOR, "table.table-column.table-interval-bg")
+            wait.until(EC.presence_of_element_located(details_page_identifier))
+            print("✅ 详情页加载成功。")
 
-    except Exception as e:
-        print(f"⚠️ 在查找、导航或处理 '{table_name}' 时失败: {e}")
-        print(traceback.format_exc())
-        # 保存失败时的页面快照，以便调试
-        debug_file = "debug_page_source_final.html"
-        with open(debug_file, "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-        print(f"ℹ️ 为了便于调试，最终失败时的页面HTML已保存到: {os.path.abspath(debug_file)}")
-        print(traceback.format_exc())
+            # 现在可以安全地调用详情页处理函数
+            process_table_details_page(driver, table_name)
+            print(f"--- 表 '{table_name}' 数据提取流程结束 ---")
+
+        except Exception as e:
+            print(f"⚠️ 在查找、导航或处理 '{table_name}' 时失败: {e}")
+            print(traceback.format_exc())
+            # 保存失败时的页面快照，以便调试
+            debug_file = f"debug_page_source_final_{table_name}.html"
+            with open(debug_file, "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+            print(f"ℹ️ 为了便于调试，最终失败时的页面HTML已保存到: {os.path.abspath(debug_file)}")
+            print(traceback.format_exc())
+        finally:
+            # 每次处理完一个表后，返回到搜索页面，以便搜索下一个表
+            driver.get(CONFIG["login_url"])
+            # 重新定位搜索框，因为页面可能刷新了
+            search_box = find_element_safely(driver, search_box_locator["by"], search_box_locator["value"])
+            if not search_box:
+                print("❌ 重新定位搜索框失败，无法继续处理后续表。")
+                break  # 退出循环
+            random_sleep()  # 在处理下一个表之前休眠随机时间
 
 
 def main():
@@ -361,7 +456,7 @@ def main():
     try:
         driver = launch_browser()
         login_and_search(driver)
-        print(f"\n操作完成，页面将保持打开 {CONFIG['final_observe_time']} 秒...")
+        print(f"操作完成，页面将保持打开{CONFIG['final_observe_time']} 秒... ")
         time.sleep(CONFIG['final_observe_time'])
     except Exception as e:
         print(f"程序发生意外错误: {e}")
