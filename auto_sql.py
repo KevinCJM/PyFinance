@@ -128,46 +128,35 @@ def scrape_table_details(driver):
     # --- 终极修正 1: 使用更精确的XPath提取基本信息 ---
     # 尝试提取“表中文名”
     try:
-        # 查找包含“表中文名”文本的任何元素，然后获取其父元素的全部文本，再进行解析
-        chinese_name_label_element = driver.find_element(By.XPATH, "//*[contains(text(), '表中文名')]")
-        # Get the text of its parent element
-        parent_text = chinese_name_label_element.find_element(By.XPATH, "..").text.strip()
-        # Extract the value by removing the label text and any colon
-        value = parent_text.replace(chinese_name_label_element.text.strip(), "").replace(":", "").strip()
-        scraped_data["basic_info"]["tableChiName"] = value
-    except Exception:
-        print("⚠️ 未能提取到'表中文名'。")
-
-    # 尝试提取“状态”
-    try:
-        # Find the element containing "状态" text
-        status_label_element = driver.find_element(By.XPATH, "//*[contains(text(), '状态')]")
-        # Get the text of its parent element
-        parent_text = status_label_element.find_element(By.XPATH, "..").text.strip()
-        # Extract the value by removing the label text and any colon
-        value = parent_text.replace(status_label_element.text.strip(), "").replace(":", "").strip()
-        scraped_data["basic_info"]["status"] = value
-    except Exception:
-        print("⚠️ 未能提取到'状态'。")
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        # 查找包含中文表名的span标签
+        chinese_name_span = soup.find('span', {'ng-bind-html': re.compile(r'table\.tableChiName')})
+        if chinese_name_span:
+            scraped_data["basic_info"]["tableChiName"] = chinese_name_span.get_text(strip=True)
+        else:
+            print("⚠️ 未能提取到'表中文名'。")
+    except Exception as e:
+        print(f"⚠️ 提取中文表名时发生错误: {e}")
 
     # 2. 提取列信息 (逻辑不变)
     try:
         column_table_element = driver.find_element(By.CSS_SELECTOR, 'table.table-column.table-interval-bg')
         column_table_html = driver.execute_script("return arguments[0].outerHTML;", column_table_element)
         soup_column_table = BeautifulSoup(column_table_html, 'html.parser')
-        
+
         headers = [th.text.strip() for th in soup_column_table.find('thead').find_all('th')]
         # 修正：ng-repeat可能在tbody上，而不是tr上，查找所有tr更稳妥
         rows = soup_column_table.find('tbody').find_all('tr')
-        
+
         for row in rows:
             cells = row.find_all('td')
-            if not cells: continue # 跳过空行或表头内的行
+            if not cells:
+                continue  # 跳过空行或表头内的行
             col_dict = {}
             for i, header in enumerate(headers):
                 if i < len(cells):
                     col_dict[header] = cells[i].text.strip()
-            if col_dict: # 确保不是空字典
+            if col_dict:  # 确保不是空字典
                 scraped_data["columns_data"].append(col_dict)
     except Exception as e:
         print(f"⚠️ 未能使用 Selenium 定位到列表格或提取列数据。错误: {e}")
@@ -186,7 +175,7 @@ def scrape_table_details(driver):
                 # 假设第一列是key，第二列是value
                 key = cells[0].text.strip().replace('[', '').replace(']', '').strip()
                 value = cells[1].text.strip()
-                if key: # 确保key不为空
+                if key:  # 确保key不为空
                     scraped_data["notes_map"][key] = value
     except Exception as e:
         print(f"⚠️ 未能使用 Selenium 定位到备注表格或提取备注数据。错误: {e}")
@@ -194,18 +183,19 @@ def scrape_table_details(driver):
     print(f"✅ 抓取完成：找到 {len(scraped_data['columns_data'])} 列数据，{len(scraped_data['notes_map'])} 条备注。")
     return scraped_data
 
+
 def organize_data_with_ai(table_name, scraped_data):
     print("🤖 正在调用大模型进行数据整合与清洗...")
     try:
         http_client = httpx.Client(verify=False)
         client = OpenAI(api_key=CONFIG["api_key"], base_url=CONFIG["base_url"], http_client=http_client)
-        
+
         # --- 终极修正 2: 固化对AI的指令，强制其遵循JSON格式 ---
         system_prompt = (
             "You are a data structuring expert. Your job is to assemble raw, pre-scraped data parts into a final, clean JSON object representing a database table definition. "
             "You MUST strictly follow the output format specified in the user prompt."
         )
-        
+
         # 预处理columns，替换备注
         processed_columns = []
         for col in scraped_data["columns_data"]:
@@ -216,18 +206,19 @@ def organize_data_with_ai(table_name, scraped_data):
             processed_columns.append(processed_col)
 
         user_prompt = (
-            f"Generate a JSON object for the table '{table_name}' with the following structure and data.\n"
-            f"Use the provided basic_info, columns_data, and notes_map to populate the fields.\n"
-            f"Ensure that the '备注' field in each column object contains the full, replaced remark text from notes_map.\n\n"
-            "```json\n"
-            f"    \"{table_name}\": {{\n"
-            "        \"tableName\": \"{table_name}\",\n"
-            "        \"tableChiName\": \"" + scraped_data["basic_info"].get("tableChiName", "") + "\",\n"
-            "        \"status\": \"" + scraped_data["basic_info"].get("status", "") + "\",\n"
-            f"        \"columns\": {json.dumps(processed_columns, indent=4, ensure_ascii=False).replace('\n', '\n').replace('"', '"')}\n"
-            "    }}\n"
-            "```\n"
-            "Return ONLY the final, assembled JSON object and nothing else. Do NOT add any extra text or explanations."
+                f"Generate a JSON object for the table '{table_name}' with the following structure and data.\n"
+                f"Use the provided basic_info, columns_data, and notes_map to populate the fields.\n"
+                f"Ensure that the '备注' field in each column object contains the full, replaced remark text from notes_map.\n\n"
+                "```json\n"
+                f"    \"{table_name}\": {{\n"
+                "        \"tableName\": \"{table_name}\",\n"
+                "        \"tableChiName\": \"" + scraped_data["basic_info"].get("tableChiName", "") + "\",\n"
+                                                                                                      "        \"status\": \"" +
+                scraped_data["basic_info"].get("status", "") + "\",\n"
+                                                               f"        \"columns\": {json.dumps(processed_columns, indent=4, ensure_ascii=False).replace('\n', '\n').replace('"', '"')}\n"
+                                                               "    }}\n"
+                                                               "```\n"
+                                                               "Return ONLY the final, assembled JSON object and nothing else. Do NOT add any extra text or explanations."
         )
         response = client.chat.completions.create(
             model=CONFIG["model_name"],
@@ -251,7 +242,7 @@ def process_table_details_page(driver, table_name):
     print("--- 导航到详情页成功，开始数据提取流程 --- ")
     # 增加一个短暂的固定等待，给JS初始化留出时间
     time.sleep(3)
-
+    table_row_locator = None
     try:
         wait = WebDriverWait(driver, CONFIG["explicit_wait_timeout"])
         # 等待表格内部至少一个tr出现即可，放宽对ng-repeat的严格要求
