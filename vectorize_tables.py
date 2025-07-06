@@ -3,7 +3,7 @@
 @File: vectorize_tables.py
 @Modify Time: 2025/7/5
 @Author: KevinChen
-@Descriptions: 本脚本用于读取 table_definitions.json 文件,
+@Descriptions: 本脚本用于读取 table_definitions_bck.json 文件,
 将其中的每个表的结构信息转换为文本块, 然后使用 sentence-transformers
 模型生成向量嵌入, 并最终使用 FAISS 库将这些向量保存到本地索引文件中,
 为后续的 RAG (Retrieval-Augmented Generation) 应用做准备。

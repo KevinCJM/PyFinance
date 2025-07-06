@@ -42,7 +42,10 @@ def build_prompt(query, hits, table_definitions):
             f"表名: {tbl}（{info['tableChiName']}）\n"
             f"说明: {info['description']}\n"
             f"主键: {info['key']}\n"
-            f"字段: {', '.join([c['列名'] for c in info['columns'][:15] if '列名' in c])} ...\n"
+            f"字段:\n" + "\n".join([
+                f"  - 列名: {c.get('列名', 'N/A')}, 数据类型: {c.get('数据类型', 'N/A')}, 备注: {c.get('备注', '无')}"
+                for c in info['columns'][:15]
+            ]) + "\n"
         )
         context_blocks.append(block)
     context = "\n\n".join(context_blocks)
@@ -69,7 +72,14 @@ def call_llm(prompt):
     resp = client.chat.completions.create(
         model=CONFIG["llm_model"],
         messages=[
-            {"role": "system", "content": "You are a senior SQL expert."},
+            {"role": "system", "content": """
+你是一名资深数据工程师，精通 SQL 编写。请严格遵循以下原则：
+1.  **数据类型和值映射：** 如果字段备注中提到与 `CT_SystemConst` 表关联，或明确给出值到描述的映射（例如：`7-指数型, 8-优化指数型, 16-非指数型`），请务必将用户查询中的中文描述转换为对应的数字代码或英文缩写进行过滤。例如，如果用户查询“QDII类型”，而备注中说明 `InvestmentType` 字段 `7-QDII`，则应使用 `InvestmentType = 7`。
+2.  **表选择：** 优先选择包含用户所需信息的表。对于日期相关的查询（如清盘日期），请优先考虑 `MF_FundArchives` 表中的 `ExpireDate` 或 `LastOperationDate` 字段，而不是 `MF_Transformation` 等不包含此类信息的表。
+3.  **SQL 语法：** 生成的 SQL 必须是 ANSI SQL-92 兼容的。
+4.  **JOIN 条件：** 必要时请合理 JOIN，JOIN 条件优先使用主键/外键 InnerCode 等。
+5.  **输出格式：** 只返回 SQL 代码，不要附带任何解释或额外文字。
+"""},
             {"role": "user", "content": prompt}
         ],
         temperature=0.1

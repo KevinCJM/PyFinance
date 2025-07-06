@@ -3,6 +3,8 @@ import traceback
 import os
 import httpx
 import re
+import subprocess
+import sys
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -19,7 +21,8 @@ import random
 CONFIG = {
     "login_url": "https://dd.gildata.com/#/login",
     "table_to_search": [
-        "HK_SecuMain", "SecuMain", "MF_FundArchives", "MF_FundType", "MF_Transformation",
+        "SecuMain",
+        "HK_SecuMain", "MF_FundArchives", "MF_FundType", "MF_Transformation",
         "MF_KeyStockPortfolio", "MF_QDIIPortfolioDetail", "MF_BondPortifolioDetail", "MF_QDIIPortfolioDetail",
         "MF_FundPortifolioDetail", "MF_QDIIPortfolioDetail", "MF_BalanceSheetNew", "MF_BondPortifolioStru",
         "MF_AssetAllocationNew", "MF_StockPortfolioDetail", "LC_DIndicesForValuation"
@@ -203,17 +206,38 @@ def scrape_table_details(driver):
     # --- 核心修正 2: 修正备注信息提取 ---
     try:
         remark_table_element = driver.find_element(By.CSS_SELECTOR, 'table.table-remark')
-        remark_table_html = driver.execute_script("return arguments[0].outerHTML;", remark_table_element)
-        soup_remark_table = BeautifulSoup(remark_table_html, 'html.parser')
+        rows = remark_table_element.find_elements(By.TAG_NAME, 'tr')
 
-        rows = soup_remark_table.find('tbody').find_all('tr')
         for row in rows:
-            # 使用BeautifulSoup的find方法，而不是Selenium的find_element
-            cells = row.find_all('td')
+            cells = row.find_elements(By.TAG_NAME, 'td')
             if len(cells) == 2:
-                # 假设第一列是key，第二列是value
-                key = cells[0].text.strip().replace('[', '').replace(']', '').strip()
-                value = cells[1].text.strip()
+                key_element = cells[0]
+                value_element = cells[1]  # This is the WebElement for the remark content
+
+                key = key_element.text.strip().replace('[', '').replace(']', '').strip()
+                initial_value = value_element.text.strip()
+
+                # Check for "更多" button and click if present
+                more_button = None
+                try:
+                    # Look for a span or a tag with text '更多' within the value_element
+                    more_button = value_element.find_element(By.XPATH, ".//span[text()='更多']")
+                except:
+                    try:
+                        more_button = value_element.find_element(By.XPATH, ".//a[text()='更多']")
+                    except:
+                        pass  # No '更多' button found
+
+                if more_button:
+                    print(f"ℹ️ 发现备注 '{key}' 存在 '更多' 按钮，尝试点击展开...")
+                    driver.execute_script("arguments[0].click();", more_button)  # Use JS click for robustness
+                    time.sleep(1)  # Give time for content to expand
+                    # Re-get the text after expansion
+                    value = value_element.text.strip()
+                    print(f"✅ 备注 '{key}' 已展开。")
+                else:
+                    value = initial_value  # No '更多' button, use initial value
+
                 if key:  # 确保key不为空
                     scraped_data["notes_map"][key] = value
     except Exception as e:
@@ -224,24 +248,76 @@ def scrape_table_details(driver):
     return scraped_data
 
 
+def simplify_comment_with_llm(comment_text):
+    print(comment_text)
+    """
+    使用大模型简化单个备注信息，根据内容选择不同的提示词，并优先使用正则表达式提取值映射。
+    """
+    if not comment_text or comment_text.strip() == "":
+        return ""
+
+    print(f"🤖 正在处理备注: '{comment_text[:50]}...' ")
+
+    # 优先使用正则表达式提取“数字-描述”列表
+    if "CT_SystemConst" in comment_text and "DM字段" in comment_text:
+        value_pairs = re.findall(r'(\d+)[-—]([^\s,，。；；\n\r]+)', comment_text)
+        if value_pairs:
+            formatted = [f"{code}-{desc}" for code, desc in value_pairs]
+            extracted_values = ", ".join(formatted)
+            print(f"✅ 正则表达式提取到值映射: '{extracted_values[:50]}...' ")
+            return extracted_values
+
+    # Fallback to LLM if regex doesn't apply or doesn't find anything
+    try:
+        http_client = httpx.Client(verify=False)
+        client = OpenAI(api_key=CONFIG["api_key"], base_url=CONFIG["base_url"], http_client=http_client)
+
+        system_prompt = (
+            "你是一个专业的数据库文档助手。你的任务是简化数据库字段的备注信息。"
+            "你会收到一个备注文本。"
+            "请用最简洁的语言总结其核心含义、与其他表的关联或关键业务逻辑，去除冗余的解释性文字。"
+            "如果备注已经非常简洁，请直接返回原始备注。"
+            "只返回简化后的文本，不要添加任何额外说明。"
+        )
+        user_prompt = f"请简化以下备注：\n\n{comment_text}"
+
+        response = client.chat.completions.create(
+            model=CONFIG["model_name"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,  # 较低的温度以获得更确定的结果
+            stream=False
+        )
+        simplified_text = response.choices[0].message.content.strip()
+        print(f"✅ 大模型简化完成: '{simplified_text[:50]}...' ")
+        return simplified_text
+    except Exception as e:
+        print(f"❌ 调用大模型简化备注时发生错误: {e}")
+        print(traceback.format_exc())
+        return comment_text  # 失败时返回原始备注
+
+
 def organize_data_locally(table_name, scraped_data):
     """
-    使用纯Python代码将抓取的数据整理成最终的JSON结构。
-    这是对 organize_data_with_ai 函数的直接替代。
+    使用纯Python代码将抓取的数据整理成最终的JSON结构，并对每个备注调用大模型进行简化。
     """
     print("🐍 正在使用本地代码进行数据整合与清洗...")
 
-    # 1. 预处理列数据：将备注ID替换为实际备注内容
     processed_columns = []
     notes_map = scraped_data.get("notes_map", {})
+
     for col in scraped_data.get("columns_data", []):
         processed_col = col.copy()  # 创建副本以避免修改原始数据
         remark_key = processed_col.get("备注")
         if remark_key and remark_key in notes_map:
-            processed_col["备注"] = notes_map[remark_key]
+            original_remark = notes_map[remark_key]
+            simplified_remark = simplify_comment_with_llm(original_remark)
+            processed_col["备注"] = simplified_remark
         processed_columns.append(processed_col)
 
-    # 2. 构建最终的JSON对象
+    # 构建最终的JSON对象
     final_table_definition = {
         "tableName": table_name,
         "tableChiName": scraped_data.get("basic_info", {}).get("tableChiName", ""),
@@ -253,59 +329,6 @@ def organize_data_locally(table_name, scraped_data):
 
     print("✅ 本地数据整理完成。")
     return final_table_definition
-
-
-def organize_data_with_ai(table_name, scraped_data):
-    print("🤖 正在调用大模型进行数据整合与清洗...")
-    try:
-        http_client = httpx.Client(verify=False)
-        client = OpenAI(api_key=CONFIG["api_key"], base_url=CONFIG["base_url"], http_client=http_client)
-
-        # --- 终极修正 2: 固化对AI的指令，强制其遵循JSON格式 ---
-        system_prompt = (
-            "You are a data structuring expert. Your job is to assemble raw, pre-scraped data parts into a final, clean JSON object representing a database table definition. "
-            "You MUST strictly follow the output format specified in the user prompt."
-        )
-
-        # 预处理columns，替换备注
-        processed_columns = []
-        for col in scraped_data["columns_data"]:
-            processed_col = col.copy()
-            remark_key = processed_col.get("备注")
-            if remark_key and remark_key in scraped_data["notes_map"]:
-                processed_col["备注"] = scraped_data["notes_map"][remark_key]
-            processed_columns.append(processed_col)
-
-        user_prompt = (
-                f"Generate a JSON object for the table '{table_name}' with the following structure and data.\n"
-                f"Use the provided basic_info, columns_data, and notes_map to populate the fields.\n"
-                f"Ensure that the '备注' field in each column object contains the full, replaced remark text from notes_map.\n\n"
-                "```json\n"
-                f"    \"{table_name}\": {{\n"
-                "        \"tableName\": \"{table_name}\",\n"
-                "        \"tableChiName\": \"" + scraped_data["basic_info"].get("tableChiName", "") + "\",\n"
-                                                                                                      "        \"status\": \"" +
-                scraped_data["basic_info"].get("status", "") + "\",\n"
-                                                               f"        \"columns\": {json.dumps(processed_columns, indent=4, ensure_ascii=False).replace('\n', '\n').replace('"', '"')}\n"
-                                                               "    }}\n"
-                                                               "```\n"
-                                                               "Return ONLY the final, assembled JSON object and nothing else. Do NOT add any extra text or explanations."
-        )
-        response = client.chat.completions.create(
-            model=CONFIG["model_name"],
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            stream=False
-        )
-        response_text = response.choices[0].message.content
-        json_part = response_text[response_text.find('{'):response_text.rfind('}') + 1]
-        return json.loads(json_part)[table_name]
-    except Exception as e:
-        print(f"❌ 调用大模型进行数据整理时发生错误: {e}")
-        print(traceback.format_exc())
-        return None
 
 
 # --- 核心业务逻辑 ---
@@ -452,6 +475,15 @@ def login_and_search(driver):
 
 
 def main():
+    caffeinate_process = None
+    if sys.platform == "darwin":
+        print(" 检测到macOS，启动caffeinate命令防止系统休眠...")
+        # -d: 防止显示器休眠
+        # -i: 防止系统空闲时休眠
+        # -m: 防止磁盘空闲时休眠
+        # -s: 在连接电源时防止系统休眠
+        caffeinate_process = subprocess.Popen(["caffeinate", "-d", "-i", "-m", "-s"])
+
     driver = None
     try:
         driver = launch_browser()
@@ -466,6 +498,14 @@ def main():
             print("关闭浏览器。")
             driver.quit()
 
+        if caffeinate_process:
+            print(" 正在终止caffeinate进程...")
+            caffeinate_process.terminate()
+            caffeinate_process.wait()
+            print("✅ caffeinate进程已终止，系统可正常休眠。")
+
 
 if __name__ == "__main__":
     main()
+    # str = '''证券市场(SecuMarket)与(CT_SystemConst)表中的DM字段关联，令LB = 201 AND DM IN (10,12,13,14,15,16,18,40,49,50,52,54,55,56,65,66,67,68,69,70,71,72,73,75,76,77,78,79,80,81,83,84,85,86,87,88,89,90,93,94,95,96,99,100,101,102,103,104,105,106,107,110,161,162,180,200,202,210,230,240,260,280,310,320,390,400,620,630,631,640,641,650,653,654,655,657,658,659,660,661,662,663,664,666,667,66302,66303,66305)，得到证券市场的具体描述：10-上海期货交易所，12-中国银行间外汇市场，13-大连商品交易所，14-上海黄金交易所，15-郑州商品交易所，16-上海票据交易所，18-北京证券交易所，40-芝加哥商业交易所，49-澳大利亚证券交易所，50-新西兰证券交易所，52-埃及开罗及亚历山大证券交易所，54-阿根廷布宜诺斯艾利斯证券交易所，55-巴西圣保罗证券交易所，56-墨西哥证券交易所，65-印度尼西亚证券交易所，66-泰国证券交易所，67-韩国首尔证券交易所，68-东京证券交易所，69-新加坡证券交易所，70-台湾证券交易所，71-柜台交易市场，72-香港联交所，73-一级市场，75-亚洲其他交易所，76-美国证券交易所，77-美国纳斯达克证券交易所，78-纽约证券交易所，79-美国其他交易市场，80-加拿大多伦多证券交易所，81-三板市场，83-上海证券交易所，84-其他市场，85-伦敦证券交易所，86-法国巴黎证券交易所，87-德国法兰克福证券交易所，88-欧洲其他交易所，89-银行间债券市场，90-深圳证券交易所，93-上海银行间同业拆借市场，94-瑞士证券交易所，95-荷兰阿姆斯特丹证券交易所，96-约翰内斯堡证券交易所，99-东京同业拆借市场，100-美国国债回购市场，101-伦敦银行同业拆借市场，102-香港银行同业拆借市场，103-新加坡银行同业拆借市场，104-中国银行同业拆借市场，105-欧元银行同业拆借市场，106-布鲁塞尔证券交易所，107-雅加达证券交易所，110-以色列特拉维夫证券交易所，161-意大利证券交易所，162-哥本哈根证券交易所，180-挪威奥斯陆证券交易所，200-斯德哥尔摩证券交易所，202-伊斯坦布尔证券交易所，210-印度国家证券交易所，230-奥地利维也纳证券交易所，240-西班牙马德里证券交易所，260-爱尔兰证券交易所，280-菲律宾证券交易所，310-机构间私募产品报价与服务系统，320-俄罗斯莫斯科证券交易所，390-里斯本证券交易所，400-芝加哥期权交易所，620-胡志明市证券交易所，630-沪市代理深市市场，631-沪市代理港交所市场，640-深市代理沪市市场，641-深市代理港交所市场，650-国际外汇市场(晨星)，653-上海环境能源交易所，654-北京绿色交易所，655-天津碳排放权交易中心，657-湖北碳排放权交易中心，658-重庆碳排放权交易中心，659-四川联合环境交易所，660-广州碳排放权交易所，661-海峡股权交易中心，662-深圳排放权交易所，663-欧洲能源交易所，664-全国碳排放权交易，666-布达佩斯证券交易所，667-全国温室气体自愿减排交易市场，66302-韩国ETS，66303-加拿大魁北克Cap-and-Trade(CaT)，66305-美国区域温室气体倡议（RGGI）。收起'''
+    # print(simplify_comment_with_llm(str))
