@@ -128,6 +128,37 @@ def _convert_string_numbers_to_actual_numbers(obj):
     else:
         return obj
 
+def _pre_process_llm_response_string(llm_response_str: str) -> str:
+    """
+    预处理LLM响应字符串，以处理JSON解析前的潜在问题。
+    包括：
+    1. 修复LaTeX中可能存在的双重转义反斜杠。
+    2. 尝试将特定键的未加引号的数字转换为带引号的字符串。
+       这是一种脆弱的基于正则表达式的方法，应谨慎使用。
+       理想情况下，LLM应直接将这些值作为字符串输出。
+    """
+    # 1. 修复LaTeX中可能存在的双重转义反斜杠
+    if "\\" in llm_response_str:
+        llm_response_str = llm_response_str.replace("\\", "\\")
+
+    # 2. 尝试将特定键的未加引号的数字转换为带引号的字符串。
+    #    这是针对LLM可能不严格遵循AST示例中数字字符串表示的变通方法。
+    keys_to_quote = ["axis", "ddof", "window", "span", "halflife", "q"]
+    for key in keys_to_quote:
+        # 此正则表达式查找：
+        #   - 双引号后跟键名
+        #   - 可选的空白字符
+        #   - 冒号
+        #   - 可选的空白字符
+        #   - 一个数字（整数或浮点数）
+        #   - 一个前瞻断言，确保其后跟逗号或闭合括号/方括号
+        # 这仍然不是万无一失的，但尝试更具体。
+        llm_response_str = re.sub(
+            rf'("{key}"\s*:\s*)(\d+(\.\d+)?)(?=[\],}}])',
+            r'\1"\2"',
+            llm_response_str
+        )
+    return llm_response_str
 
 def call_llm_api(sys_prompt: str, prompt: str, temperature: float = 0.7) -> str:
     """
@@ -290,7 +321,9 @@ class FinancialMathematicianAgent:
                 prompt=user_prompt,
                 temperature=self.temperature
             )
-            # 尝试解析JSON
+            # 在尝试解析JSON之前，对LLM响应字符串进行预处理
+            llm_response_str = _pre_process_llm_response_string(llm_response_str)
+            print(llm_response_str)
             response_json = json.loads(llm_response_str)
             # 将AST中的字符串数字转换为实际数字
             response_json = _convert_string_numbers_to_actual_numbers(response_json)
