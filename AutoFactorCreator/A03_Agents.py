@@ -128,6 +128,7 @@ def _convert_string_numbers_to_actual_numbers(obj):
     else:
         return obj
 
+
 def _pre_process_llm_response_string(llm_response_str: str) -> str:
     """
     预处理LLM响应字符串，以处理JSON解析前的潜在问题。
@@ -159,6 +160,7 @@ def _pre_process_llm_response_string(llm_response_str: str) -> str:
             llm_response_str
         )
     return llm_response_str
+
 
 def call_llm_api(sys_prompt: str, prompt: str, temperature: float = 0.7) -> str:
     """
