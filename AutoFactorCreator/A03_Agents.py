@@ -105,8 +105,9 @@ def call_llm_api(sys_prompt: str, prompt: str, temperature: float = 0.7) -> str:
             resp = requests.post(base_url, headers=headers, data=json.dumps(payload))
             resp.raise_for_status()  # 检查HTTP响应状态码
             response_data = resp.json()
-            # 假设lightcode-ui的响应结构与OpenAI类似
-            return response_data["choices"][0]["message"]["content"]
+            # 解析lightcode的返回结果
+            json_inner = response_data["choices"][0]["message"]["content"]
+            return re.sub(r"^```json\n|```$", "", json_inner.strip(), flags=re.MULTILINE)
         except requests.exceptions.RequestException as e:
             raise Exception(f"lightcode-ui API request failed: {e}")
         except (KeyError, IndexError) as e:
@@ -191,6 +192,7 @@ class FinancialMathematicianAgent:
             user_prompt += "\n请根据这些结果，提出一个改进的因子或一个全新的因子。"
 
         print("\n--- 金融数学家智能体正在构思... ---")
+        llm_response_str = None
         try:
             llm_response_str = call_llm_api(
                 sys_prompt=sys_prompt,
@@ -216,12 +218,16 @@ class FinancialMathematicianAgent:
 
         except json.JSONDecodeError as e:
             print(f"Error: LLM response is not valid JSON. {e}\nResponse: {llm_response_str}")
+            print(traceback.format_exc())
             return {"error": "Invalid JSON response from LLM", "raw_response": llm_response_str}
         except ValueError as e:
             print(f"Error: Invalid LLM response structure. {e}\nResponse: {llm_response_str}")
+            print(traceback.format_exc())
             return {"error": "Invalid LLM response structure", "raw_response": llm_response_str}
         except Exception as e:
             print(f"Error calling LLM API: {e}")
+            print(f"Response: {llm_response_str}")
+            print(traceback.format_exc())
             return {"error": f"LLM API call failed: {e}"}
 
     def add_history_factor_result(self, factor_result: dict):
@@ -230,109 +236,6 @@ class FinancialMathematicianAgent:
         """
         # 可以在这里对factor_result进行摘要处理，避免历史信息过长导致token超限
         self.history_factor_results.append(factor_result)
-
-
-class SeniorPythonEngineerAgent:
-    """资深Python工程师智能体：负责代码审查、缺陷修改、新算子开发与测试。"""
-
-    def __init__(self, temperature: float = 0.5):
-        self.temperature = temperature
-        # 模拟可用的工具，实际需要一个工具执行器来调用这些函数
-        self.available_tools = {
-            "ReadFile": "读取文件内容。参数：file_path (str)",
-            "SearchText": "在文件中搜索文本。参数：file_path (str), pattern (str)",
-            "FindFile": "查找文件。参数：pattern (str)",
-            "EditFile": "编辑文件内容。参数：file_path (str), old_string (str), new_string (str)",
-            "CreateFile": "创建新文件。参数：file_path (str), content (str)",
-            "Shell": "执行shell命令。参数：command (str)"
-        }
-
-    def _execute_tool_call(self, tool_name: str, **kwargs):
-        """
-        模拟工具调用执行。实际中，这里会调用真正的文件系统或shell命令。
-        """
-        print(f"[模拟工具执行] 调用工具: {tool_name}, 参数: {kwargs}")
-        # 实际的工具执行逻辑会在这里实现
-        # 例如：
-        # if tool_name == "ReadFile":
-        #     with open(kwargs["file_path"], 'r') as f:
-        #         return f.read()
-        # elif tool_name == "EditFile":
-        #     # ... 实际的文件修改逻辑
-        #     pass
-        # ...
-        return f"Tool {tool_name} executed successfully (mock)."
-
-    def fix_code_or_develop_operator(self, task_description: dict) -> dict:
-        """
-        根据任务描述（错误信息或新算子需求）修复代码或开发新算子。
-
-        Args:
-            task_description (dict): 任务描述，可以是错误信息字典或新算子需求字典。
-                                     例如：{"type": "error", "message": "...", "file": "...", "line": ...}
-                                     或 {"action": "CreateNewCalFunc", ...}
-
-        Returns:
-            dict: 包含任务执行结果，例如成功/失败，或新算子开发完成信息。
-        """
-        sys_prompt = f"""你是一个资深的Python工程师，精通代码审查、缺陷修改和新功能开发。你的任务是根据用户提供的任务描述，利用你可用的工具来完成任务。你必须严格按照以下JSON格式返回你的行动计划，每个行动都是一个工具调用：
-
-你的输出必须是一个JSON数组，每个元素是一个工具调用对象。例如：
-```json
-[
-  {{"tool": "ReadFile", "args": {{"file_path": "/path/to/file.py"}}}} ,
-  {{"tool": "EditFile", "args": {{"file_path": "/path/to/file.py", "old_string": "old_code", "new_string": "new_code"}}}} ,
-  {{"tool": "Shell", "args": {{"command": "pytest /path/to/tests"}}}}
-]
-```
-
-你可用的工具及其描述如下：
-{json.dumps(self.available_tools, indent=2)}
-
-请注意：
-- 你的输出必须是有效的JSON数组，且只包含JSON内容，不要有任何额外文字。
-- 在修改代码或开发新功能后，务必编写并运行单元测试来验证你的修改。
-- 如果需要读取文件内容来理解上下文，请使用 ReadFile 工具。
-- 如果需要查找文件，请使用 FindFile 工具。
-- 如果需要执行shell命令（例如安装库、运行测试），请使用 Shell 工具。
-- 确保所有文件路径都是绝对路径。
-"""
-        user_prompt = f"""请根据以下任务描述，制定并执行你的行动计划：\n{json.dumps(task_description, indent=2)}"""
-
-        print("\n--- 资深Python工程师智能体正在处理任务... ---")
-        try:
-            llm_response_str = call_llm_api(
-                sys_prompt=sys_prompt,
-                prompt=user_prompt,
-                temperature=self.temperature
-            )
-
-            action_plan = json.loads(llm_response_str)
-            if not isinstance(action_plan, list):
-                raise ValueError("LLM response is not a JSON array.")
-
-            results = []
-            for action in action_plan:
-                tool_name = action.get("tool")
-                tool_args = action.get("args", {})
-
-                if tool_name and tool_name in self.available_tools:
-                    result = self._execute_tool_call(tool_name, **tool_args)
-                    results.append({tool_name: result})
-                else:
-                    results.append({"error": f"Unknown or invalid tool: {tool_name}"})
-
-            return {"status": "success", "actions_results": results}
-
-        except json.JSONDecodeError as e:
-            print(f"Error: LLM response is not valid JSON. {e}\nResponse: {llm_response_str}")
-            return {"status": "failed", "error": "Invalid JSON response from LLM", "raw_response": llm_response_str}
-        except ValueError as e:
-            print(f"Error: Invalid LLM response structure. {e}\nResponse: {llm_response_str}")
-            return {"status": "failed", "error": "Invalid LLM response structure", "raw_response": llm_response_str}
-        except Exception as e:
-            print(f"Error calling LLM API: {e}")
-            return {"status": "failed", "error": f"LLM API call failed: {e}"}
 
 
 # 示例用法 (仅用于测试)
@@ -362,7 +265,7 @@ if __name__ == "__main__":
             print(f"模拟评估结果: {current_eval_result}")
 
         proposed_output = fm_agent.propose_factor_or_operator(current_eval_result)
-        print("金融数学家智能体输出:", json.dumps(proposed_output, indent=2))
+        print("金融数学家智能体输出:", json.dumps(proposed_output, indent=2, ensure_ascii=False))
 
         # 将本次构思的因子（如果不是新算子需求）添加到历史记录
         if "des" in proposed_output and "ast" in proposed_output:
@@ -371,35 +274,3 @@ if __name__ == "__main__":
                 "rank_ic": current_eval_result["rank_ic"] if current_eval_result else None,  # 第一次没有评估结果
                 "des": proposed_output["des"]
             })
-
-    # --- 测试 SeniorPythonEngineerAgent (保持原有测试，但注释掉，避免实际执行) ---
-    # print("\n--- Testing SeniorPythonEngineerAgent ---")
-    # py_agent = SeniorPythonEngineerAgent(temperature=0.5)
-
-    # # 模拟一个代码修复任务
-    # error_task = {
-    #     "type": "error",
-    #     "message": "ZeroDivisionError: division by zero in A02_OperatorLibrary.py line 50",
-    #     "file": os.path.join(os.path.dirname(os.path.abspath(__file__)), "A02_OperatorLibrary.py"),
-    #     "line": 50,
-    #     "context": "return np.divide(a, b, out=np.full_like(a, np.nan), where=b != 0)"
-    # }
-    # print("\n模拟代码修复任务...")
-    # fix_result = py_agent.fix_code_or_develop_operator(error_task)
-    # print("Fix Result:", fix_result)
-
-    # # 模拟一个新算子开发任务
-    # new_operator_task = {
-    #     "action": "CreateNewCalFunc",
-    #     "function_name": "my_new_operator",
-    #     "description": "计算过去N天内价格的波动率，使用标准差。",
-    #     "example_usage": "my_new_operator(price_data, window=20)"
-    # }
-    # print("\n模拟新算子开发任务...")
-    # dev_result = py_agent.fix_code_or_develop_operator(new_operator_task)
-    # print("Development Result:", dev_result)
-
-    # 清理测试文件
-    # if os.path.exists(test_config_path):
-    #     # os.remove(test_config_path) # 实际运行时不要删除，这里只是测试用
-    #     pass
