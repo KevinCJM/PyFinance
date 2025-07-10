@@ -83,42 +83,5 @@ def call_llm_api(sys_prompt: str, prompt: str, temperature: float = 0.7) -> str:
 
 # 示例用法 (仅用于测试)
 if __name__ == "__main__":
-    # 创建一个假的config.json文件用于测试
-    test_config_openai = {
-        "LLM_MODEL": "gpt-3.5-turbo",
-        "API_KEY": "sk-YOUR_OPENAI_API_KEY",
-        "LLM_URL": "https://api.openai.com/v1/chat/completions",
-    }
-    test_config_lightcode = {
-        "LLM_MODEL": "DeepSeek-V3",
-        "API_KEY": "eyJhbGciOiJIUzI1NiJ9",
-        "LLM_URL": "http://lightcode-uis.hundsun.com:8080/uis/v1/chat/completions",
-    }
-
-    # 写入一个测试配置
-    with open("config.json", 'w', encoding='utf-8') as f:
-        json.dump(test_config_openai, f, indent=4)
-
-    print("\n--- Testing OpenAI API (mock) ---")
-    try:
-        # 实际调用会失败，因为API Key是假的
-        response = call_llm_api("You are a helpful assistant.", "Hello, world!")
-        print(f"Response: {response}")
-    except Exception as e:
-        print(f"Error during OpenAI test: {e}")
-
-    # 写入另一个测试配置
-    with open("config.json", 'w', encoding='utf-8') as f:
-        json.dump(test_config_lightcode, f, indent=4)
-
-    print("\n--- Testing lightcode-ui API (mock) ---")
-    try:
-        # 实际调用会失败，因为URL和API Key是假的
-        response = call_llm_api("You are a helpful assistant.", "Tell me a joke.")
-        print(f"Response: {response}")
-    except Exception as e:
-        print(f"Error during lightcode-ui test: {e}")
-
-    # 清理测试文件
-    if os.path.exists("config.json"):
-        os.remove("config.json")
+    response = call_llm_api("You are a helpful assistant.", "Tell me a joke.")
+    print("Response from LLM:", response)
