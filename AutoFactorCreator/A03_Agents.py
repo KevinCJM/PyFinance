@@ -25,37 +25,108 @@ import importlib.util
 
 def _get_operator_descriptions():
     """
-    动态读取A02_OperatorLibrary.py文件，提取所有算子函数的名称和文档字符串。
+    动态读取A02_OperatorLibrary.py文件，提取所有算子函数的名称、文档字符串和参数信息，并进行分类。
     
     Returns:
-        str: 格式化的算子列表及其描述。
+        dict: 包含两类算子的字典，以及格式化的字符串描述。
     """
     operator_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "A02_OperatorLibrary.py")
 
     if not os.path.exists(operator_file_path):
-        return "Error: A02_OperatorLibrary.py not found."
+        return {"error": "A02_OperatorLibrary.py not found.", "description": "Error: A02_OperatorLibrary.py not found."}
 
     spec = importlib.util.spec_from_file_location("A02_OperatorLibrary", operator_file_path)
     if spec is None:
-        return "Error: Could not load A02_OperatorLibrary spec."
+        return {"error": "Could not load A02_OperatorLibrary spec.",
+                "description": "Error: Could not load A02_OperatorLibrary spec."}
 
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
     except Exception as e:
         print(traceback.format_exc())
-        return f"Error executing A02_OperatorLibrary.py: {e}"
+        return {"error": f"Error executing A02_OperatorLibrary.py: {e}",
+                "description": f"Error executing A02_OperatorLibrary.py: {e}"}
 
-    operators_info = []
+    factor_calculation_operators = []
+    preprocessing_operators = []
+
+    # 读取文件内容以进行分类
+    with open(operator_file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # 使用正则表达式查找分类注释
+    factor_calc_section = re.search(r'# --- 基础数学算子 ---\n(.*?)(?=# --- 数据预处理与因子结果处理算子 ---\n|\Z)',
+                                    content, re.DOTALL)
+    preprocessing_section = re.search(
+        r'# --- 数据预处理与因子结果处理算子 \(仅用于原始数据预处理和因子结果评估前端处理，不用于因子计算逻辑的构建\) ---\n(.*?)(?=\n# |\Z)',
+        content, re.DOTALL)
+
+    factor_calc_names = set()
+    if factor_calc_section:
+        factor_calc_names.update(re.findall(r'def (\w+)\(', factor_calc_section.group(1)))
+
+    preprocessing_names = set()
+    if preprocessing_section:
+        preprocessing_names.update(re.findall(r'def (\w+)\(', preprocessing_section.group(1)))
+
+    operators_info_list = []
     for name, obj in inspect.getmembers(module, inspect.isfunction):
-        if not name.startswith("_") and obj.__module__ == module.__name__:  # 过滤私有函数和非本模块函数
+        if not name.startswith("_") and obj.__module__ == module.__name__:
             doc = inspect.getdoc(obj)
-            if doc:
-                operators_info.append(f"- {name}: {doc.strip()}")
-            else:
-                operators_info.append(f"- {name}: (No description available)")
+            signature = inspect.signature(obj)
+            params = ", ".join(
+                [f"{p.name}: {p.annotation.__name__ if p.annotation != inspect.Parameter.empty else 'Any'}" for p in
+                 signature.parameters.values()])
 
-    return "\n".join(operators_info)
+            op_info = f"- {name}({params}): {doc.strip() if doc else '(No description available)'}"
+
+            if name in factor_calc_names:
+                factor_calculation_operators.append(op_info)
+            elif name in preprocessing_names:
+                preprocessing_operators.append(op_info)
+            else:
+                # Fallback for operators not explicitly categorized by regex (e.g., new ones)
+                # We'll assume they are factor calculation operators for now, but this should be refined.
+                factor_calculation_operators.append(op_info)
+
+    description_str = """
+可用于因子计算的算子 (Factor Calculation Operators):
+这些算子可以直接用于构建金融因子计算逻辑。
+--------------------------------------------------------------------------------
+""" + "\n".join(factor_calculation_operators) + """
+
+数据预处理与因子结果处理算子 (Data Preprocessing and Factor Result Processing Operators):
+这些算子仅用于原始数据的预处理和因子结果评估的前端处理，严禁在因子计算逻辑的构建中使用。
+--------------------------------------------------------------------------------
+""" + "\n".join(preprocessing_operators)
+
+    return {"factor_calculation_operators": factor_calculation_operators,
+            "preprocessing_operators": preprocessing_operators,
+            "description": description_str}
+
+
+def _convert_string_numbers_to_actual_numbers(obj):
+    """
+    递归地将AST中特定键（如'axis', 'ddof', 'window', 'span', 'halflife', 'q'）的值从字符串转换为数字。
+    """
+    if isinstance(obj, dict):
+        new_obj = {}
+        for k, v in obj.items():
+            if k in ["axis", "ddof", "window", "span", "halflife"] and isinstance(v, str) and v.isdigit():
+                new_obj[k] = int(v)
+            elif k == "q" and isinstance(v, str):
+                try:
+                    new_obj[k] = float(v)
+                except ValueError:
+                    new_obj[k] = v  # Keep as string if not a valid float
+            else:
+                new_obj[k] = _convert_string_numbers_to_actual_numbers(v)
+        return new_obj
+    elif isinstance(obj, list):
+        return [_convert_string_numbers_to_actual_numbers(elem) for elem in obj]
+    else:
+        return obj
 
 
 def call_llm_api(sys_prompt: str, prompt: str, temperature: float = 0.7) -> str:
@@ -137,8 +208,59 @@ class FinancialMathematicianAgent:
 
     def __init__(self, temperature: float = 0.7):
         self.temperature = temperature
-        self.operator_descriptions = _get_operator_descriptions()
+        self.operator_descriptions_dict = _get_operator_descriptions()
+        self.operator_descriptions = self.operator_descriptions_dict.get("description", "")
         self.history_factor_results = []  # 存储历史因子成果摘要
+        self.sys_prompt = f"""你是一个顶级的金融数学家，精通量化投资和因子模型。你的任务是根据提供的算子库和可用数据，构思新的、有效的金融因子计算逻辑。你必须严格按照以下JSON格式返回你的构思：
+
+1.  **因子计算逻辑:**
+    ```json
+    {{
+      "des": "对因子逻辑的详细解释，包括其经济学含义和预期效果。",
+      "ast": "AST语法树，表示因子计算的步骤，使用算子库中的函数名。例如：{{"func": "add", "args": {{"a": {{"var": "close_df"}}, "b": {{"func": "std_dev", "args": {{"data": {{"var": "vol_df"}}, "axis": "0", "ddof": "1"}}}}}}}}}}
+      "latex": "AST对应的LaTex数学公式，清晰表达因子计算逻辑。"
+    }}
+    ```
+    AST语法树的结构必须是嵌套的字典，其中包含 'func' (函数名) 或 'var' (变量名)，以及 'args' (参数列表)。
+    **重要提示：** `args` 必须是一个字典，其中键是算子的参数名，值是参数的具体内容（可以是嵌套的AST结构、变量或标量）。
+
+2. ** 新算子需求:**
+    如果你认为现有算子不足以表达你的因子构思，你可以提出一个新算子的需求。请严格按照以下JSON格式返回你的需求：
+    ```json
+    {{
+        "action": "CreateNewCalFunc",
+        "function_name": "新函数名",
+        "description": "新函数的功能描述，包括输入、输出、数学逻辑等详细信息。",
+        "example_usage": "一个使用新函数的代码示例，例如：new_func(data, param1=10)"
+    }}
+    ```
+
+你可用的数据变量如下：
+- `log`: 日对数收益率数据
+- `high`: 股票最高价数据
+- `low`: 股票最低价数据
+- `vol`: 成交量数据
+- `amount`: 成交额数据
+- `close`: 股票收盘价数据
+- `open`: 股票开盘价数据
+
+你可用的算子库如下：
+{self.operator_descriptions}
+
+关于算子中的 `axis` 参数：
+- `axis=0` 通常表示对时间序列（按行，即沿着日期轴）进行操作，例如计算过去N天的移动平均。
+- `axis=1` 通常表示对横截面（按列，即沿着金融产品轴）进行操作，例如计算某个日期所有金融产品的排名。
+请根据你的因子构思，合理选择 `axis` 参数的值。
+
+请注意：
+- 你的输出必须是有效的JSON格式，且只包含JSON内容，不要有任何额外文字。
+- 构思因子时，你**只能使用** "可用于因子计算的算子 (Factor Calculation Operators)" 类别下的算子。
+- 你**严禁使用** "数据预处理与因子结果处理算子 (Data Preprocessing and Factor Result Processing Operators)" 类别下的算子来构建因子计算逻辑。
+- 优先使用现有算子构建因子。只有在现有算子确实无法表达你的构思时，才提出新算子需求。
+- 构思的因子应尽可能简洁但有效，避免过度复杂化。
+- 确保AST语法树中的函数名和变量名与算子库中提供的名称完全一致。
+        """
+        print(self.sys_prompt)
 
     def propose_factor_or_operator(self, current_evaluation_result: dict = None) -> dict:
         """
@@ -150,38 +272,7 @@ class FinancialMathematicianAgent:
         Returns:
             dict: 包含因子计算逻辑 (AST, LaTeX) 或新算子需求 (CreateNewCalFunc)。
         """
-        sys_prompt = f"""你是一个顶级的金融数学家，精通量化投资和因子模型。你的任务是根据提供的算子库，构思新的、有效的金融因子计算逻辑。你必须严格按照以下JSON格式返回你的构思：
 
-1.  **因子计算逻辑:**
-    ```json
-    {{
-      "des": "对因子逻辑的详细解释，包括其经济学含义和预期效果。",
-      "ast": "AST语法树，表示因子计算的步骤，使用算子库中的函数名。例如：{{\"func\": \"add\", \"args\": [{{\"var\": \"close_df\"}}, {{\"func\": \"log\", \"args\": [{{\"var\": \"vol_df\"}}]}}]}}",
-      "latex": "AST对应的LaTex数学公式，清晰表达因子计算逻辑。"
-    }}
-    ```
-    AST语法树的结构必须是嵌套的字典，其中包含 'func' (函数名) 或 'var' (变量名)，以及 'args' (参数列表)。参数可以是嵌套的AST结构或变量。
-    
-2.  **新算子需求:**
-    如果你认为现有算子不足以表达你的因子构思，你可以提出一个新算子的需求。请严格按照以下JSON格式返回你的需求：
-    ```json
-    {{
-      "action": "CreateNewCalFunc",
-      "function_name": "新函数名",
-      "description": "新函数的功能描述，包括输入、输出、数学逻辑等详细信息。",
-      "example_usage": "一个使用新函数的代码示例，例如：new_func(data, param1=10)"
-    }}
-    ```
-
-你可用的算子库如下：
-{self.operator_descriptions}
-
-请注意：
-- 你的输出必须是有效的JSON格式，且只包含JSON内容，不要有任何额外文字。
-- 优先使用现有算子构建因子。只有在现有算子确实无法表达你的构思时，才提出新算子需求。
-- 构思的因子应尽可能简洁但有效，避免过度复杂化。
-- 确保AST语法树中的函数名和变量名与算子库中提供的名称完全一致。
-"""
         user_prompt = """请构思一个新的金融因子。"""
 
         if self.history_factor_results:
@@ -195,12 +286,14 @@ class FinancialMathematicianAgent:
         llm_response_str = None
         try:
             llm_response_str = call_llm_api(
-                sys_prompt=sys_prompt,
+                sys_prompt=self.sys_prompt,
                 prompt=user_prompt,
                 temperature=self.temperature
             )
             # 尝试解析JSON
             response_json = json.loads(llm_response_str)
+            # 将AST中的字符串数字转换为实际数字
+            response_json = _convert_string_numbers_to_actual_numbers(response_json)
 
             # 验证JSON结构
             if "action" in response_json and response_json["action"] == "CreateNewCalFunc":
