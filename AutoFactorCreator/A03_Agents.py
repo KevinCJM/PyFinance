@@ -213,7 +213,7 @@ class FinancialMathematicianAgent:
         self.history_factor_results = []  # 存储历史因子成果摘要
         self.sys_prompt = f"""你是一个顶级的金融数学家，精通量化投资和因子模型。你的任务是根据提供的算子库和可用数据，构思新的、有效的金融因子计算逻辑。你必须严格按照以下JSON格式返回你的构思：
 
-1.  **因子计算逻辑:**
+## 1. 因子计算逻辑:
     ```json
     {{
       "des": "对因子逻辑的详细解释，包括其经济学含义和预期效果。",
@@ -224,7 +224,7 @@ class FinancialMathematicianAgent:
     AST语法树的结构必须是嵌套的字典，其中包含 'func' (函数名) 或 'var' (变量名)，以及 'args' (参数列表)。
     **重要提示：** `args` 必须是一个字典，其中键是算子的参数名，值是参数的具体内容（可以是嵌套的AST结构、变量或标量）。
 
-2. ** 新算子需求:**
+## 2. 新算子需求:
     如果你认为现有算子不足以表达你的因子构思，你可以提出一个新算子的需求。请严格按照以下JSON格式返回你的需求：
     ```json
     {{
@@ -235,7 +235,7 @@ class FinancialMathematicianAgent:
     }}
     ```
 
-你可用的数据变量如下：
+## 可用的数据变量:
 - `log`: 日对数收益率数据
 - `high`: 股票最高价数据
 - `low`: 股票最低价数据
@@ -244,15 +244,15 @@ class FinancialMathematicianAgent:
 - `close`: 股票收盘价数据
 - `open`: 股票开盘价数据
 
-你可用的算子库如下：
+## 可用的算子库:
 {self.operator_descriptions}
 
-关于算子中的 `axis` 参数：
+## 关于算子中的 `axis` 参数:
 - `axis=0` 通常表示对时间序列（按行，即沿着日期轴）进行操作，例如计算过去N天的移动平均。
 - `axis=1` 通常表示对横截面（按列，即沿着金融产品轴）进行操作，例如计算某个日期所有金融产品的排名。
 请根据你的因子构思，合理选择 `axis` 参数的值。
 
-请注意：
+## 注意事项:
 - 你的输出必须是有效的JSON格式，且只包含JSON内容，不要有任何额外文字。
 - 构思因子时，你**只能使用** "可用于因子计算的算子 (Factor Calculation Operators)" 类别下的算子。
 - 你**严禁使用** "数据预处理与因子结果处理算子 (Data Preprocessing and Factor Result Processing Operators)" 类别下的算子来构建因子计算逻辑。
@@ -273,13 +273,13 @@ class FinancialMathematicianAgent:
             dict: 包含因子计算逻辑 (AST, LaTeX) 或新算子需求 (CreateNewCalFunc)。
         """
 
-        user_prompt = """请构思一个新的金融因子。"""
+        user_prompt = """### 请构思一个新的金融因子。"""
 
         if self.history_factor_results:
-            user_prompt += "\n\n历史因子成果摘要：\n" + json.dumps(self.history_factor_results, indent=2)
+            user_prompt += "\n\n### 历史因子成果摘要：\n" + json.dumps(self.history_factor_results, indent=2)
 
         if current_evaluation_result:
-            user_prompt += "\n\n当前因子的评估结果：\n" + json.dumps(current_evaluation_result, indent=2)
+            user_prompt += "\n\n### 当前因子的评估结果：\n" + json.dumps(current_evaluation_result, indent=2)
             user_prompt += "\n请根据这些结果，提出一个改进的因子或一个全新的因子。"
 
         print("\n--- 金融数学家智能体正在构思... ---")
