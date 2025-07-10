@@ -44,7 +44,7 @@
     *   **累积算子:** 累加（sum）、累乘（prod）、累积最大值（cummax）、累积最小值（cummin）等。
     *   **统计算子:** 均值（mean）、标准差（std）、方差（var）、相关系数（corr）、协方差（cov）、最大值（max）、最小值（min）、中位数（median）、分位数（quantile）等。
     *   **时间序列算子:** 移动平均（moving_average）、指数移动平均（ema）、滚动排名（rolling_rank）、时间序列衰减加权平均（time_series_decay）等。
-    *   **数据预处理算子:** 中性化（neutralize）、缩尾（winsorize）、截断（clip）、缺失值填充（fillna）、横截面排名（rank）、横截面标准化（scale）等。
+    *   **数据预处理与因子结果处理算子:** 中性化（neutralize）、缩尾（winsorize）、截断（clip）、缺失值填充（fillna）、横截面排名（rank）、横截面标准化（scale）等。**这些算子仅用于原始数据的预处理和因子结果评估的前端处理，不应在因子计算逻辑的构建中使用。**
 
 ### 2.3 智能体 (Agents)
 
@@ -79,6 +79,7 @@
     *   **复杂度控制:** 引导LLM生成复杂度可控的因子，避免过拟合。
     *   **探索与利用平衡:** 鼓励探索新颖的因子结构，同时利用已知有效模式。
     *   **新算子需求引导:** 明确告知其提出新算子需求的格式和时机。
+    *   **重要提示：** 金融数学家智能体在构思因子计算逻辑时，**不得使用**“数据预处理与因子结果处理算子”类别下的算子（例如 neutralize, winsorize, clip, fillna, cross_sectional_rank, cross_sectional_scale）。这些算子仅用于原始数据预处理和因子结果评估的前端处理。
 
 #### 2.3.2 资深Python工程师智能体 (Senior Python Engineer Agent)
 

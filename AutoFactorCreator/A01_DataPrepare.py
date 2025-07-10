@@ -140,6 +140,3 @@ if __name__ == "__main__":
     print("\n加载并转换为NumPy数组后的数据形状:")
     print(f"log_np shape: {log_np.shape}")
     print(f"high_np shape: {high_np.shape}")
-    # 可以在这里添加一些断言或打印部分数据来验证处理结果
-    # print("\nProcessed log_np head (first 5 rows, first 5 columns):")
-    # print(log_np[:5, :5])

@@ -175,7 +175,7 @@ def time_series_decay(data, halflife, axis=0):
     return pd.DataFrame(data).ewm(halflife=halflife, axis=axis).mean().values
 
 
-# --- 数据预处理算子 (通常作用于横截面axis=1或时间序列axis=0) ---
+# --- 数据预处理与因子结果处理算子 (仅用于原始数据预处理和因子结果评估前端处理，不用于因子计算逻辑的构建) ---
 
 def neutralize(factor_data, risk_factors_data, axis=1):
     """
