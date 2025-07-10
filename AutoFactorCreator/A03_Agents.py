@@ -100,12 +100,12 @@ def call_llm_api(sys_prompt: str, prompt: str, temperature: float = 0.7) -> str:
         print("Using lightcode-ui API...")
         headers = {'Accept': "*/*", 'Authorization': f"Bearer {api_key}", 'Content-Type': "application/json"}
         payload = {"model": model, "messages": messages, "stream": False}
-
+        resp = None
         try:
             resp = requests.post(base_url, headers=headers, data=json.dumps(payload))
             resp.raise_for_status()  # 检查HTTP响应状态码
             response_data = resp.json()
-            # 解析lightcode的返回结果
+            # 解析 返回结果
             json_inner = response_data["choices"][0]["message"]["content"]
             return re.sub(r"^```json\n|```$", "", json_inner.strip(), flags=re.MULTILINE)
         except requests.exceptions.RequestException as e:
