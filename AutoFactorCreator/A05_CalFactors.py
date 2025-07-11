@@ -277,7 +277,7 @@ class FactorCalculator:
                 "sharpe_ratio": sharpe_ratio}
 
 
-def prepare_data_and_calculator(data_paths: dict, close_path_key='close', return_type='simple'):
+def prepare_data_and_calculator(data_paths: dict, close_path_key='close', return_type='log'):
     """加载所有数据，准备因子计算器实例和远期收益率。
     
     这是整个流程的第一步，核心任务是确保所有输入数据都有一个统一的、格式正确的DatetimeIndex。
@@ -302,20 +302,19 @@ def prepare_data_and_calculator(data_paths: dict, close_path_key='close', return
             df = pd.read_pickle(path)
         else:
             raise ValueError(f"不支持的文件格式: {path}。请使用 .parquet, .csv, .xlsx, .pkl")
-
         # 尝试将索引标准化为DatetimeIndex
         date_columns = ['date', 'Date', 'enddate', 'EnDate']
         for col in date_columns:
             if col in df.columns:
                 df = df.set_index(col)
-                break
-
+                break  # 用于在找到第一个匹配的日期列（如 'date'、'Date' 等）并将其设置为索引后，跳出循环，避免重复操作。
+        # 确保数据框的索引为DatetimeIndex类型。如果当前索引不是时间类型，则将其转换为pd.DatetimeIndex，以便后续时间序列操作能正常进行。
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
-
         print(f"已加载 {name}, 索引类型: {type(df.index)}, 形状: {df.shape}")
         return df
 
+    # 加载数据
     loaded_data = {name: load_and_prepare_df(path, name) for name, path in data_paths.items()}
 
     if close_path_key not in loaded_data:
@@ -340,42 +339,96 @@ def prepare_data_and_calculator(data_paths: dict, close_path_key='close', return
 
 
 def calculate_factor_values(factor_ast: dict, calculator: FactorCalculator) -> pd.DataFrame:
-    """使用提供的计算器从AST中计算因子值。
+    """
+    使用提供的因子计算器，基于抽象语法树（AST）表示的因子逻辑计算因子值。
+
+    Args:
+        factor_ast (dict): 表示因子计算逻辑的抽象语法树 (AST)。 该字典结构应包含 'func' 和 'args' 键来描述操作符及其参数。
+        calculator (FactorCalculator): 一个 FactorCalculator 实例，包含用于执行因子计算的方法。
+
+    Returns:
+        pd.DataFrame: 包含最终计算出的因子值的 DataFrame。
     """
     print("\n--- 步骤2: 从AST计算因子 ---")
+    # 调用 FactorCalculator 的 calculate_factor 方法，传入 AST 格式的因子公式进行计算
     factor_values = calculator.calculate_factor(factor_ast)
     print("因子计算完成。")
+    # 返回因子值的 DataFrame
     return factor_values
 
 
 def evaluate_factor_performance(factor_values: pd.DataFrame, calculator: FactorCalculator,
                                 forward_returns: pd.DataFrame) -> dict:
-    """评估计算出的因子值的表现。
+    """
+    使用提供的因子计算器对计算出的因子值进行多维度评估。
+    该函数会调用 FactorCalculator 的评估方法，对因子在预测能力、单调性、换手率等方面进行全面评估，并返回包含各项指标的评估结果字典。
+
+    Args:
+        factor_values (pd.DataFrame): 包含计算出的因子值的 DataFrame。每行代表一个时间点，每列代表一个资产。
+        calculator (FactorCalculator): 用于执行因子评估的 FactorCalculator 实例。
+        forward_returns (pd.DataFrame): 前向收益率数据，用于与因子值进行相关性分析等评估操作。
+
+    Returns:
+        dict: 包含因子评估结果的字典，包括 IC、Rank IC、换手率、分组收益、多空组合表现等关键指标。
     """
     print("\n--- 步骤4: 评估因子表现 ---")
+    # 调用 FactorCalculator 的 evaluate_factor 方法，传入因子值和前向收益率进行评估
     evaluation_results = calculator.evaluate_factor(factor_values, forward_returns)
     print("因子评估完成。")
+    # 返回评估结果字典，包含 IC、Rank IC、换手率、分组收益、多空组合等多个维度的评估结果
     return evaluation_results
 
 
 def convert_ast_format(node):
-    """一个工具函数，用于将用户提供的AST格式转换为内部处理的格式。
     """
+    一个工具函数，用于将用户提供的AST格式转换为内部处理的格式。
+    输入的AST可能是一个变量引用、操作符调用或常量值。该函数递归地将其转换为统一的内部节点格式，以便后续构建DAG和执行计算时使用。
+
+    Args:
+        node (dict or any): 用户定义的AST节点。可以是：
+                            - 常量（如数字）
+                            - 变量引用 {'var': 'variable_name'}
+                            - 操作符调用 {'func': 'func_name', 'args': {...}}
+
+    Returns:
+        dict: 转换后的节点，格式如下：
+              - 常量节点：{'type': 'literal', 'value': value}
+              - 变量节点：{'type': 'variable', 'name': 'variable_name'}
+              - 操作符节点：{'type': 'operator', 'func': 'func_name', 'children': [...]}
+    """
+
+    # 如果输入节点不是字典，则认为它是一个常量值（如数字），返回字面量节点
     if not isinstance(node, dict):
         return {'type': 'literal', 'value': node}
+
+    # 如果节点包含 'var' 键，表示这是一个变量引用，返回变量节点
     if 'var' in node:
         return {'type': 'variable', 'name': node['var']}
+
+    # 如果节点包含 'func' 键，表示这是一个操作符调用
     if 'func' in node:
+        # 创建一个新的操作符节点
         new_node = {'type': 'operator', 'func': node['func']}
-        args = node.get('args', {})
-        children = []
-        # 保证参数顺序，从而保证节点ID的确定性
+        args = node.get('args', {})  # 获取参数字典
+
+        children = []  # 用于存储子节点
+
+        # 定义参数顺序列表，确保参数顺序一致，从而保证节点ID的确定性
         arg_order = ['data', 'a', 'b', 'window', 'span', 'halflife', 'p', 'q', 'axis', 'ddof']
+
+        # 按照预定义的参数顺序遍历参数
         for key in arg_order:
             if key in args:
+                # 对每个参数进行递归转换，并添加到 children 列表中
                 children.append(convert_ast_format(args[key]))
+
+        # 将子节点列表赋值给新节点的 'children' 属性
         new_node['children'] = children
+
+        # 返回构建好的操作符节点
         return new_node
+
+    # 默认情况下，将输入视为字面量值（如直接传入的数字等）
     return {'type': 'literal', 'value': node}
 
 
