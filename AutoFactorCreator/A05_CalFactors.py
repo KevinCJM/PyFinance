@@ -277,10 +277,17 @@ class FactorCalculator:
                 "sharpe_ratio": sharpe_ratio}
 
 
-def prepare_data_and_calculator(data_paths: dict, close_path_key='close'):
+def prepare_data_and_calculator(data_paths: dict, close_path_key='close', return_type='simple'):
     """加载所有数据，准备因子计算器实例和远期收益率。
     
     这是整个流程的第一步，核心任务是确保所有输入数据都有一个统一的、格式正确的DatetimeIndex。
+
+    Args:
+        data_paths (dict): 包含数据文件路径的字典。
+        close_path_key (str): `data_paths`中对应收盘价数据的键名。
+        return_type (str): 指定远期收益率的计算方式。
+                             'simple' (默认): 普通百分比收益率 (P_t+1 / P_t - 1)。
+                             'log': 对数收益率 ln(P_t+1 / P_t)。
     """
     print("--- 步骤1: 加载和准备数据 ---")
 
@@ -294,17 +301,15 @@ def prepare_data_and_calculator(data_paths: dict, close_path_key='close'):
         elif path.endswith('.pkl'):  # 如果是pickle格式
             df = pd.read_pickle(path)
         else:
-            raise ValueError(f"不支持的文件格式: {path}。请使用 .parquet 或 .csv")
+            raise ValueError(f"不支持的文件格式: {path}。请使用 .parquet, .csv, .xlsx, .pkl")
 
         # 尝试将索引标准化为DatetimeIndex
-        if 'date' in df.columns:
-            df = df.set_index('date')
-        if 'Date' in df.columns:
-            df = df.set_index('Date')
-        if 'enddate' in df.columns:
-            df = df.set_index('enddate')
-        if 'EnDate' in df.columns:
-            df = df.set_index('EnDate')
+        date_columns = ['date', 'Date', 'enddate', 'EnDate']
+        for col in date_columns:
+            if col in df.columns:
+                df = df.set_index(col)
+                break
+
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
 
@@ -316,9 +321,17 @@ def prepare_data_and_calculator(data_paths: dict, close_path_key='close'):
     if close_path_key not in loaded_data:
         raise ValueError(f"未找到收盘价数据 (键: '{close_path_key}')，无法计算远期收益率。")
 
-    print("正在计算远期收益率...")
-    # 远期收益率 = (T+1日价格 / T日价格) - 1，因此先计算pct_change(1)，再用shift(-1)前移一天
-    forward_returns = loaded_data[close_path_key].pct_change(1).shift(-1)
+    print(f"正在计算远期收益率 (类型: {return_type})...")
+    close_prices = loaded_data[close_path_key]
+
+    if return_type == 'simple':
+        # 普通收益率 = (T+1日价格 / T日价格) - 1
+        forward_returns = close_prices.pct_change(1).shift(-1)
+    elif return_type == 'log':
+        # 对数收益率 = ln(T+1日价格 / T日价格)
+        forward_returns = np.log(close_prices / close_prices.shift(1)).shift(-1)
+    else:
+        raise ValueError(f"不支持的收益率类型: '{return_type}'。请选择 'simple' 或 'log'。")
 
     print("--- 初始化因子计算器 ---")
     calculator = FactorCalculator(data_dfs=loaded_data)
@@ -438,7 +451,12 @@ if __name__ == '__main__':
     print("转换后的AST:", internal_ast)
 
     # 2. 准备数据和计算器
-    calculator, forward_returns = prepare_data_and_calculator(data_paths, close_path_key='close')
+    # 您可以在此处选择收益率类型: 'simple' (普通收益率) 或 'log' (对数收益率)
+    calculator, forward_returns = prepare_data_and_calculator(
+        data_paths,
+        close_path_key='close',
+        return_type='simple'  # 在此更改收益率类型
+    )
 
     # 3. 计算因子值
     factor_values_df = calculate_factor_values(internal_ast, calculator)
