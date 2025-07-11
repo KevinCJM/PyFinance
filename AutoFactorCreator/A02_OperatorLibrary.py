@@ -14,64 +14,29 @@ from typing import Union, Optional, Sequence
 
 # --- 基础数学算子 ---
 
-def add(a: Union[np.ndarray, pd.DataFrame, float, int], b: Union[np.ndarray, pd.DataFrame, float, int]) -> Union[
-    np.ndarray, pd.DataFrame, float, int]:
-    """
-    功能描述: 执行两个输入之间的加法运算。
+def add(a, b):
+    return pd.DataFrame(a).add(pd.DataFrame(b) if not isinstance(b, (pd.DataFrame, pd.Series)) else b, fill_value=0)
 
-    参数:
-        a (Union[np.ndarray, pd.DataFrame, float, int]): 第一个操作数，可以是NumPy数组、Pandas DataFrame、浮点数或整数。
-        b (Union[np.ndarray, pd.DataFrame, float, int]): 第二个操作数，可以是NumPy数组、Pandas DataFrame、浮点数或整数。
+def subtract(a, b):
+    return pd.DataFrame(a).sub(pd.DataFrame(b) if not isinstance(b, (pd.DataFrame, pd.Series)) else b, fill_value=0)
 
-    返回:
-        Union[np.ndarray, pd.DataFrame, float, int]: 加法运算的结果，类型与输入a和b的类型兼容。
-    """
-    return a + b
+def multiply(a, b):
+    return pd.DataFrame(a).mul(pd.DataFrame(b) if not isinstance(b, (pd.DataFrame, pd.Series)) else b, fill_value=0)
 
 
-def subtract(a: Union[np.ndarray, pd.DataFrame, float, int], b: Union[np.ndarray, pd.DataFrame, float, int]) -> Union[
-    np.ndarray, pd.DataFrame, float, int]:
-    """
-    功能描述: 执行两个输入之间的减法运算。
-
-    参数:
-        a (Union[np.ndarray, pd.DataFrame, float, int]): 第一个操作数，可以是NumPy数组、Pandas DataFrame、浮点数或整数。
-        b (Union[np.ndarray, pd.DataFrame, float, int]): 第二个操作数，可以是NumPy数组、Pandas DataFrame、浮点数或整数。
-
-    返回:
-        Union[np.ndarray, pd.DataFrame, float, int]: 减法运算的结果，类型与输入a和b的类型兼容。
-    """
-    return a - b
-
-
-def multiply(a: Union[np.ndarray, pd.DataFrame, float, int], b: Union[np.ndarray, pd.DataFrame, float, int]) -> Union[
-    np.ndarray, pd.DataFrame, float, int]:
-    """
-    功能描述: 执行两个输入之间的乘法运算。
-
-    参数:
-        a (Union[np.ndarray, pd.DataFrame, float, int]): 第一个操作数，可以是NumPy数组、Pandas DataFrame、浮点数或整数。
-        b (Union[np.ndarray, pd.DataFrame, float, int]): 第二个操作数，可以是NumPy数组、Pandas DataFrame、浮点数或整数。
-
-    返回:
-        Union[np.ndarray, pd.DataFrame, float, int]: 乘法运算的结果，类型与输入a和b的类型兼容。
-    """
-    return a * b
-
-
-def divide(a: Union[np.ndarray, pd.DataFrame, float, int], b: Union[np.ndarray, pd.DataFrame, float, int]) -> Union[
-    np.ndarray, pd.DataFrame, float, int]:
+def divide(a, b):
     """
     功能描述: 执行两个输入之间的除法运算，并处理除零情况。
-
-    参数:
-        a (Union[np.ndarray, pd.DataFrame, float, int]): 被除数，可以是NumPy数组、Pandas DataFrame、浮点数或整数。
-        b (Union[np.ndarray, pd.DataFrame, float, int]): 除数，可以是NumPy数组、Pandas DataFrame、浮点数或整数。
-
-    返回:
-        Union[np.ndarray, pd.DataFrame, float, int]: 除法运算的结果。当除数为零时，对应位置的结果为NaN。
+    Pandas的 .div() 方法会自动处理索引对齐和除零（返回 inf）。
+    我们随后将 inf 替换为 NaN。
     """
-    return np.divide(a, b, out=np.full_like(a, np.nan), where=b != 0)
+    # Ensure both are pandas objects for safe division
+    a = pd.DataFrame(a) if not isinstance(a, (pd.DataFrame, pd.Series)) else a
+    b = pd.DataFrame(b) if not isinstance(b, (pd.DataFrame, pd.Series)) else b
+    
+    result = a.div(b)
+    # Replace infinite values resulting from division by zero with NaN
+    return result.replace([np.inf, -np.inf], np.nan)
 
 
 def log(a: Union[np.ndarray, pd.DataFrame, float, int]) -> Union[np.ndarray, pd.DataFrame, float, int]:
@@ -399,6 +364,25 @@ def moving_average(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int
         np.ndarray: 移动平均的结果，为NumPy数组。
     """
     return pd.DataFrame(data).rolling(window=window, axis=axis).mean().values
+
+
+def ts_std(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算数据的滚动标准差。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入数据。
+        window (int): 滚动窗口大小。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动标准差的结果。
+    """
+    return pd.DataFrame(data).rolling(window=window, axis=axis).std().values
+
+
+# Alias ts_mean to moving_average
+ts_mean = moving_average
 
 
 def exponential_moving_average(data: Union[np.ndarray, pd.DataFrame], span: int, axis: int = 0) -> np.ndarray:
