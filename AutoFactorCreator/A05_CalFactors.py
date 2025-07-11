@@ -45,44 +45,111 @@ class FactorCalculator:
     def calculate_factor(self, factor_ast: dict) -> pd.DataFrame:
         """
         Public method to calculate a factor from its AST representation.
+        This version uses a DAG to handle common subexpressions efficiently.
 
         :param factor_ast: The factor's logic represented as an AST dictionary.
-        :return: A DataFrame where columns are assets and rows are dates,
-                 containing the calculated factor values.
+        :return: A DataFrame containing the calculated factor values.
         """
-        # The AST is expected to be a dictionary, e.g.,
-        # {'type': 'operator', 'func': 'ts_mean', 'children': [
-        #   {'type': 'variable', 'name': 'close'},
-        #   {'type': 'literal', 'value': 10}
-        # ]}
-        return self._execute_ast(factor_ast)
+        # 1. Build the DAG and get a topologically sorted execution plan
+        execution_plan, dag_representation = self._build_dag_and_plan(factor_ast)
 
-    def _execute_ast(self, node: dict):
+        # 2. Execute the plan with caching
+        final_result = self._execute_dag_plan(execution_plan, dag_representation)
+
+        return final_result
+
+    def _get_node_id(self, node: dict, known_nodes: dict) -> str:
         """
-        Recursively executes the AST to calculate factor values.
-
-        :param node: The current node in the AST.
-        :return: The result of the calculation at this node (can be a DataFrame or a literal).
+        Generates a unique, deterministic ID for any AST node.
+        This is the core of common subexpression elimination.
         """
         node_type = node.get('type')
-
-        if node_type == 'operator':
-            # Get the function from the operator library
-            func = getattr(self.op_lib, node['func'])
-            # Recursively call children to get arguments
-            args = [self._execute_ast(child) for child in node['children']]
-            return func(*args)
-
+        if node_type == 'literal':
+            return f"literal::{node['value']}"
         elif node_type == 'variable':
-            # Return the corresponding data DataFrame
-            return self.data[node['name']].copy()
-
-        elif node_type == 'literal':
-            # Return the literal value (e.g., for a window size)
-            return node['value']
-
+            return f"variable::{node['name']}"
+        elif node_type == 'operator':
+            # Recursively get IDs for children
+            child_ids = [self._get_node_id(child, known_nodes) for child in node['children']]
+            # The ID is defined by the function and its arguments' IDs
+            node_id = f"operator::{node['func']}({', '.join(child_ids)})"
+            return node_id
         else:
             raise ValueError(f"Unsupported AST node type: {node_type}")
+
+    def _build_dag_and_plan(self, factor_ast: dict) -> (list, dict):
+        """
+        Builds a Directed Acyclic Graph (DAG) from the AST and returns a
+        topologically sorted execution plan.
+        """
+        dag = {}  # Stores node_id -> {node_info, dependencies}
+
+        # Inner function to traverse AST and build DAG
+        def build_recursive(node):
+            node_id = self._get_node_id(node, dag)
+            if node_id in dag:
+                return node_id  # Already processed this node
+
+            node_type = node.get('type')
+            if node_type in ['literal', 'variable']:
+                dag[node_id] = {'type': node_type, 'node': node, 'deps': []}
+                return node_id
+
+            if node_type == 'operator':
+                dependencies = [build_recursive(child) for child in node['children']]
+                dag[node_id] = {'type': node_type, 'node': node, 'deps': dependencies}
+                return node_id
+
+            raise ValueError(f"Unsupported AST node type: {node_type}")
+
+        build_recursive(factor_ast)
+
+        # Perform topological sort to get the execution plan
+        plan = []
+        visited = set()
+
+        def topological_sort_util(node_id):
+            if node_id in visited:
+                return
+            visited.add(node_id)
+            for dep_id in dag[node_id]['deps']:
+                topological_sort_util(dep_id)
+            plan.append(node_id)
+
+        for node_id in dag:
+            topological_sort_util(node_id)
+
+        return plan, dag
+
+    def _execute_dag_plan(self, plan: list, dag: dict) -> pd.DataFrame:
+        """
+        Executes a topologically sorted plan with a cache for intermediate results.
+        """
+        cache = {}  # This is our intermediate variable cache
+
+        for node_id in plan:
+            if node_id in cache:
+                continue
+
+            node_info = dag[node_id]
+            node_type = node_info['type']
+
+            if node_type == 'literal':
+                result = node_info['node']['value']
+            elif node_type == 'variable':
+                result = self.data[node_info['node']['name']].copy()
+            elif node_type == 'operator':
+                # Get arguments from cache
+                args = [cache[dep_id] for dep_id in node_info['deps']]
+                func = getattr(op_lib, node_info['node']['func'])
+                result = func(*args)
+            else:
+                raise ValueError(f"Unsupported node type in execution plan: {node_type}")
+
+            cache[node_id] = result
+
+        # The final result is the result of the last node in the plan
+        return cache[plan[-1]]
 
     def evaluate_factor(self, factor_df: pd.DataFrame, forward_returns_df: pd.DataFrame):
         """
@@ -243,3 +310,9 @@ class FactorCalculator:
             "cumulative_returns": cumulative_returns,
             "sharpe_ratio": sharpe_ratio
         }
+
+
+if __name__ == '__main__':
+    ast = {'func': 'divide', 'args': {'a': {'var': 'vol'}, 'b': {'func': 'std_dev', 'args': {
+        'data': {'func': 'moving_average', 'args': {'data': {'var': 'vol'}, 'window': 20, 'axis': 0}}, 'axis': 0,
+        'ddof': 1}}}}

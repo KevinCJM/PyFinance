@@ -435,6 +435,7 @@ if __name__ == "__main__":
             print(f"模拟评估结果: {current_eval_result}")
 
         proposed_output = fm_agent.propose_factor_or_operator(current_eval_result)
+        print(proposed_output)
         print("金融数学家智能体输出:", json.dumps(proposed_output, indent=2, ensure_ascii=False))
 
         # 将本次构思的因子（如果不是新算子需求）添加到历史记录
