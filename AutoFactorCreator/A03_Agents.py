@@ -22,11 +22,17 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 # 动态导入A02_OperatorLibrary以获取算子信息
 import importlib.util
 
+import os
+import importlib.util
+import inspect
+import traceback
+import re
+
 
 def _get_operator_descriptions():
     """
-    动态读取A02_OperatorLibrary.py文件，提取所有算子函数的名称、文档字符串和参数信息，并进行分类。
-    
+    动态读取 A02_OperatorLibrary.py 文件，提取所有算子函数的名称、文档字符串和参数信息，并进行分类和格式化。
+
     Returns:
         dict: 包含两类算子的字典，以及格式化的字符串描述。
     """
@@ -51,15 +57,14 @@ def _get_operator_descriptions():
     factor_calculation_operators = []
     preprocessing_operators = []
 
-    # 读取文件内容以进行分类
+    # 提取源码内容用于注释分类
     with open(operator_file_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # 使用正则表达式查找分类注释
     factor_calc_section = re.search(r'# --- 基础数学算子 ---\n(.*?)(?=# --- 数据预处理与因子结果处理算子 ---\n|\Z)',
                                     content, re.DOTALL)
     preprocessing_section = re.search(
-        r'# --- 数据预处理与因子结果处理算子 \(仅用于原始数据预处理和因子结果评估前端处理，不用于因子计算逻辑的构建\) ---\n(.*?)(?=\n# |\Z)',
+        r'# --- 数据预处理与因子结果处理算子.*?---\n(.*?)(?=\n# |\Z)',
         content, re.DOTALL)
 
     factor_calc_names = set()
@@ -70,40 +75,77 @@ def _get_operator_descriptions():
     if preprocessing_section:
         preprocessing_names.update(re.findall(r'def (\w+)\(', preprocessing_section.group(1)))
 
-    operators_info_list = []
+    def format_docstring(name, obj):
+        doc = inspect.getdoc(obj) or "(No description available)"
+        signature = inspect.signature(obj)
+        params = ", ".join(
+            [f"{p.name}: {p.annotation.__name__ if p.annotation != inspect.Parameter.empty else 'Any'}"
+             for p in signature.parameters.values()]
+        )
+
+        lines = [f"- {name}({params}):"]
+        doc_lines = doc.splitlines()
+
+        desc_lines = []
+        param_lines = []
+        return_lines = []
+        section = 'desc'
+
+        for line in doc_lines:
+            line = line.strip()
+            if not line:
+                continue  # 忽略空行
+
+            if line.startswith("参数:") or line.startswith("参数说明:"):
+                section = 'param'
+                continue
+            elif line.startswith("返回:") or line.startswith("返回值:"):
+                section = 'return'
+                continue
+
+            if section == 'desc':
+                desc_lines.append(line)
+            elif section == 'param':
+                param_lines.append("    - " + line)
+            elif section == 'return':
+                return_lines.append("    - " + line)
+
+        if desc_lines:
+            lines.append("  - 功能描述: " + " ".join(desc_lines))
+        if param_lines:
+            lines.append("  - 参数:")
+            lines.extend(param_lines)
+        if return_lines:
+            lines.append("  - 返回:")
+            lines.extend(return_lines)
+
+        return "\n".join(lines)
+
     for name, obj in inspect.getmembers(module, inspect.isfunction):
         if not name.startswith("_") and obj.__module__ == module.__name__:
-            doc = inspect.getdoc(obj)
-            signature = inspect.signature(obj)
-            params = ", ".join(
-                [f"{p.name}: {p.annotation.__name__ if p.annotation != inspect.Parameter.empty else 'Any'}" for p in
-                 signature.parameters.values()])
-
-            op_info = f"- {name}({params}): {doc.strip() if doc else '(No description available)'}"
-
+            formatted = format_docstring(name, obj)
             if name in factor_calc_names:
-                factor_calculation_operators.append(op_info)
+                factor_calculation_operators.append(formatted)
             elif name in preprocessing_names:
-                preprocessing_operators.append(op_info)
+                preprocessing_operators.append(formatted)
             else:
-                # Fallback for operators not explicitly categorized by regex (e.g., new ones)
-                # We'll assume they are factor calculation operators for now, but this should be refined.
-                factor_calculation_operators.append(op_info)
+                factor_calculation_operators.append(formatted)
 
     description_str = """
-可用于因子计算的算子 (Factor Calculation Operators):
-这些算子可以直接用于构建金融因子计算逻辑。
---------------------------------------------------------------------------------
-""" + "\n".join(factor_calculation_operators) + """
+> 可用于因子计算的算子 (Factor Calculation Operators), 这些算子可以直接用于构建金融因子计算逻辑:
+
+""" + "\n\n".join(factor_calculation_operators) + """
 
 数据预处理与因子结果处理算子 (Data Preprocessing and Factor Result Processing Operators):
 这些算子仅用于原始数据的预处理和因子结果评估的前端处理，严禁在因子计算逻辑的构建中使用。
---------------------------------------------------------------------------------
-""" + "\n".join(preprocessing_operators)
+---
+""" + "\n\n".join(preprocessing_operators)
 
-    return {"factor_calculation_operators": factor_calculation_operators,
-            "preprocessing_operators": preprocessing_operators,
-            "description": description_str}
+    return {
+        "factor_calculation_operators": factor_calculation_operators,
+        "preprocessing_operators": preprocessing_operators,
+        "description": description_str
+    }
 
 
 def _convert_string_numbers_to_actual_numbers(obj):
@@ -268,7 +310,7 @@ class FinancialMathematicianAgent:
     }}
     ```
 
-## 可用的数据变量:
+## 3. 可用的数据变量:
 - `log`: 日对数收益率数据
 - `high`: 股票最高价数据
 - `low`: 股票最低价数据
@@ -277,15 +319,15 @@ class FinancialMathematicianAgent:
 - `close`: 股票收盘价数据
 - `open`: 股票开盘价数据
 
-## 可用的算子库:
+## 4. 可用的算子库:
 {self.operator_descriptions}
 
-## 关于算子中的 `axis` 参数:
+## 5. 关于算子中的 `axis` 参数:
 - `axis=0` 通常表示对时间序列（按行，即沿着日期轴）进行操作，例如计算过去N天的移动平均。
 - `axis=1` 通常表示对横截面（按列，即沿着金融产品轴）进行操作，例如计算某个日期所有金融产品的排名。
 请根据你的因子构思，合理选择 `axis` 参数的值。
 
-## 注意事项:
+## 6. 注意事项:
 - 你的输出必须是有效的JSON格式，且只包含JSON内容，不要有任何额外文字。
 - 构思因子时，你**只能使用** "可用于因子计算的算子 (Factor Calculation Operators)" 类别下的算子。
 - 你**严禁使用** "数据预处理与因子结果处理算子 (Data Preprocessing and Factor Result Processing Operators)" 类别下的算子来构建因子计算逻辑。
@@ -314,7 +356,7 @@ class FinancialMathematicianAgent:
         if current_evaluation_result:
             user_prompt += "\n\n### 当前因子的评估结果：\n" + json.dumps(current_evaluation_result, indent=2)
             user_prompt += "\n请根据这些结果，提出一个改进的因子或一个全新的因子。"
-
+        print(user_prompt)
         print("\n--- 金融数学家智能体正在构思... ---")
         llm_response_str = None
         try:
