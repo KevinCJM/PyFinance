@@ -3,82 +3,101 @@
 @File: A05_CalFactors.py
 @Modify Time: 2025/7/11 10:03       
 @Author: Kevin-Chen
-@Descriptions: This module is responsible for calculating factor values based on AST
-              and evaluating their effectiveness.
+@Descriptions: 该模块负责基于抽象语法树(AST)计算因子值，并评估其有效性。
 """
 import json
 import warnings
 import numpy as np
 import pandas as pd
 from scipy import stats
+# 引入我们自定义的算子库，其中包含了所有因子计算需要的数学函数
 from AutoFactorCreator import A02_OperatorLibrary as op_lib
+
+# 忽略在分组收益分析中可能出现的 RuntimeWarning
+warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in divide")
 
 
 class FactorCalculator:
-    """
-    A class to calculate and evaluate factors based on Abstract Syntax Trees (AST).
+    """此类是实现因子计算与评估的核心引擎。
+
+    它被设计用于处理以抽象语法树（AST）形式定义的复杂因子表达式。
+    通过接收标准化的市场数据，它可以高效地计算出因子值，并运行一套完整的多维度评估流程。
     """
 
     def __init__(self, data_dfs: dict):
-        """
-        Initializes the calculator with necessary market data.
+        """初始化因子计算器。
 
-        :param data_dfs: A dictionary of DataFrames, where keys are variable names
-                         (e.g., 'open', 'close', 'vol') and values are the corresponding DataFrames.
+        Args:
+            data_dfs (dict): 一个包含所有市场数据的字典。
+                         键(key)是变量名（如 'open', 'close', 'vol'），
+                         值(value)是对应的Pandas DataFrame。
         """
         self.data = data_dfs
 
     def calculate_factor(self, factor_ast: dict) -> pd.DataFrame:
-        """
-        Public method to calculate a factor from its AST representation.
-        This version uses a DAG to handle common subexpressions efficiently.
+        """公开方法，用于从AST表示中计算因子。
 
-        :param factor_ast: The factor's logic represented as an AST dictionary.
-        :return: A DataFrame containing the calculated factor values.
+        这个版本使用有向无环图（DAG）来高效处理公共子表达式，避免重复计算。
+
+        Args:
+            factor_ast (dict): 以字典形式表示的因子计算逻辑（AST）。
+
+        Returns:
+            pd.DataFrame: 一个包含最终计算出的因子值的DataFrame。
         """
+        # 1. 构建DAG并获取拓扑排序后的执行计划
         execution_plan, dag_representation = self._build_dag_and_plan(factor_ast)
+        # 2. 根据执行计划，带缓存地执行计算
         final_result = self._execute_dag_plan(execution_plan, dag_representation)
         return final_result
 
     def _get_node_id(self, node: dict, known_nodes: dict) -> str:
-        """
-        Generates a unique, deterministic ID for any AST node.
-        This is the core of common subexpression elimination.
+        """为任何AST节点生成一个唯一的、确定性的ID。
+
+        这是实现“公共子表达式消除”这一核心优化的关键。
+        只要两个节点的函数和输入完全相同，它们就会得到相同的ID。
         """
         node_type = node.get('type')
-        if node_type == 'literal':
+        if node_type == 'literal':  # 如果是常量节点
             return f"literal::{node['value']}"
-        elif node_type == 'variable':
+        elif node_type == 'variable':  # 如果是变量节点
             return f"variable::{node['name']}"
-        elif node_type == 'operator':
+        elif node_type == 'operator':  # 如果是操作符节点
+            # 递归地获取所有子节点的ID
             child_ids = [self._get_node_id(child, known_nodes) for child in node['children']]
-            node_id = f"operator::{node['func']}({', '.join(child_ids)})"
+            # 节点的ID由其函数名和所有子节点的ID共同决定
+            node_id = f"operator::{node['func']}({', '.join(child_ids)})";
             return node_id
         else:
-            raise ValueError(f"Unsupported AST node type: {node_type}")
+            raise ValueError(f"不支持的AST节点类型: {node_type}")
 
     def _build_dag_and_plan(self, factor_ast: dict) -> (list, dict):
+        """从AST构建有向无环图(DAG)，并返回一个拓扑排序后的执行计划。
         """
-        Builds a Directed Acyclic Graph (DAG) from the AST and returns a
-        topologically sorted execution plan.
-        """
-        dag = {}
+        dag = {}  # 用于存储DAG, key是节点ID, value是节点信息
 
+        # 递归函数，用于遍历AST并构建DAG
         def build_recursive(node):
             node_id = self._get_node_id(node, dag)
-            if node_id in dag:
+            if node_id in dag:  # 如果此节点已处理过，直接返回其ID
                 return node_id
+
             node_type = node.get('type')
             if node_type in ['literal', 'variable']:
                 dag[node_id] = {'type': node_type, 'node': node, 'deps': []}
                 return node_id
+
             if node_type == 'operator':
+                # 递归处理所有子节点，并记录依赖关系
                 dependencies = [build_recursive(child) for child in node['children']]
                 dag[node_id] = {'type': node_type, 'node': node, 'deps': dependencies}
                 return node_id
-            raise ValueError(f"Unsupported AST node type: {node_type}")
+
+            raise ValueError(f"不支持的AST节点类型: {node_type}")
 
         build_recursive(factor_ast)
+
+        # 对DAG进行拓扑排序，以获得正确的计算顺序
         plan = []
         visited = set()
 
@@ -86,42 +105,50 @@ class FactorCalculator:
             if node_id in visited:
                 return
             visited.add(node_id)
+            # 先递归处理所有依赖项
             for dep_id in dag[node_id]['deps']:
                 topological_sort_util(dep_id)
+            # 所有依赖项都处理完后，再将当前节点加入计划
             plan.append(node_id)
 
         for node_id in dag:
             topological_sort_util(node_id)
+
         return plan, dag
 
     def _execute_dag_plan(self, plan: list, dag: dict) -> pd.DataFrame:
+        """使用缓存执行拓扑排序后的计划，计算最终结果。
         """
-        Executes a topologically sorted plan with a cache for intermediate results.
-        """
-        cache = {}
+        cache = {}  # 用于缓存中间计算结果
         for node_id in plan:
-            if node_id in cache:
+            if node_id in cache:  # 如果已计算过，则跳过
                 continue
+
             node_info = dag[node_id]
             node_type = node_info['type']
+
             if node_type == 'literal':
                 result = node_info['node']['value']
             elif node_type == 'variable':
                 result = self.data[node_info['node']['name']].copy()
             elif node_type == 'operator':
+                # 从缓存中获取所有参数（子节点的结果）
                 args = [cache[dep_id] for dep_id in node_info['deps']]
+                # 从算子库中获取对应的计算函数
                 func = getattr(op_lib, node_info['node']['func'])
+                # 执行计算
                 result = func(*args)
             else:
-                raise ValueError(f"Unsupported node type in execution plan: {node_type}")
-            cache[node_id] = result
-        return cache[plan[-1]]
+                raise ValueError(f"执行计划中存在不支持的节点类型: {node_type}")
+
+            cache[node_id] = result  # 将计算结果存入缓存
+
+        return cache[plan[-1]]  # 最后一个节点的结果即为最终因子值
 
     def evaluate_factor(self, factor_df: pd.DataFrame, forward_returns_df: pd.DataFrame):
+        """对计算出的因子进行一整套评估。
         """
-        Runs a full suite of evaluations on a calculated factor.
-        """
-        # Ensure factor and returns are aligned before evaluation
+        # 在评估前，确保因子和收益率数据在时间上是对齐的，避免因索引不匹配导致错误
         aligned_factor, aligned_returns = factor_df.align(forward_returns_df, join='inner', axis=0)
 
         results = {
@@ -134,8 +161,9 @@ class FactorCalculator:
         return results
 
     def _calculate_ic(self, factor_df: pd.DataFrame, forward_returns_df: pd.DataFrame) -> dict:
-        """
-        Calculates Information Coefficient (IC) and related metrics (ICIR, t-test).
+        """计算信息系数(IC)及相关指标(ICIR, t-test)。
+        
+        IC即因子值与未来收益率的皮尔逊(Pearson)相关系数，衡量因子的线性预测能力。
         """
         ic_dict = {}
         for date in factor_df.index:
@@ -143,14 +171,15 @@ class FactorCalculator:
                 factor_slice = factor_df.loc[date].dropna()
                 return_slice = forward_returns_df.loc[date].dropna()
                 common_index = factor_slice.index.intersection(return_slice.index)
-                if len(common_index) < 2:
+                if len(common_index) < 2:  # 数据点少于2个，无法计算相关性
                     ic_dict[date] = np.nan
                     continue
                 ic = factor_slice.loc[common_index].corr(return_slice.loc[common_index], method='pearson')
                 ic_dict[date] = ic
             except (ValueError, IndexError, KeyError) as e:
-                print(f"Error calculating IC for date {date}: {e}")
+                print(f"计算IC时出错，日期: {date}: {e}")
                 ic_dict[date] = np.nan
+
         ic_series = pd.Series(ic_dict, name='ic').reindex(factor_df.index)
         ic_mean = ic_series.mean()
         ic_std = ic_series.std()
@@ -160,8 +189,9 @@ class FactorCalculator:
                 "p_value": p_value}
 
     def _calculate_rank_ic(self, factor_df: pd.DataFrame, forward_returns_df: pd.DataFrame) -> dict:
-        """
-        Calculates Rank Information Coefficient (Rank IC) and its IR.
+        """计算等级信息系数(Rank IC)及其信息比率(IR)。
+        
+        Rank IC即因子值与未来收益率的斯皮尔曼(Spearman)等级相关系数，对异常值不敏感，衡量因子的单调预测能力。
         """
         rank_ic_dict = {}
         for date in factor_df.index:
@@ -175,8 +205,9 @@ class FactorCalculator:
                 rank_ic = factor_slice.loc[common_index].corr(return_slice.loc[common_index], method='spearman')
                 rank_ic_dict[date] = rank_ic
             except (ValueError, IndexError, KeyError) as e:
-                print(f"Error calculating Rank IC for date {date}: {e}")
+                print(f"计算Rank IC时出错，日期: {date}: {e}")
                 rank_ic_dict[date] = np.nan
+
         rank_ic_series = pd.Series(rank_ic_dict, name='rank_ic').reindex(factor_df.index)
         rank_ic_mean = rank_ic_series.mean()
         rank_ic_std = rank_ic_series.std()
@@ -185,22 +216,27 @@ class FactorCalculator:
                 "rank_icir": rank_icir}
 
     def _calculate_turnover(self, factor_df: pd.DataFrame) -> dict:
+        """计算因子的换手率。
+        
+        换手率衡量了基于该因子构建的投资组合每日的调仓幅度。换手率越低，交易成本越低。
         """
-        Calculates the turnover of the factor.
-        """
+        # 如果因子值有负数，先将其转换为百分比排名，确保权重为正
         if (factor_df < 0).any().any():
             factor_positive = factor_df.rank(axis=1, pct=True)
         else:
             factor_positive = factor_df
+        # 根据因子值计算每日的资产权重（每行归一化）
         weights = factor_positive.div(factor_positive.sum(axis=1), axis=0).fillna(0)
+        # 计算每日权重变化的总和，除以2得到换手率（买入+卖出）
         turnover_series = weights.diff().abs().sum(axis=1) / 2
         mean_turnover = turnover_series.mean()
         return {"mean_turnover": mean_turnover, "turnover_series": turnover_series}
 
     def _calculate_group_returns(self, factor_df: pd.DataFrame, forward_returns_df: pd.DataFrame,
                                  num_quantiles=5) -> dict:
-        """
-        Calculates returns by factor quantiles and tests for monotonicity.
+        """按因子值分组计算收益，并检验单调性。
+        
+        将资产按因子值高低分成N组，一个好的因子应该表现出明显的收益单调性（即因子值越高，收益越高/低）。
         """
 
         def get_quantile(row):
@@ -216,8 +252,10 @@ class FactorCalculator:
 
     def _calculate_long_short_returns(self, factor_df: pd.DataFrame, forward_returns_df: pd.DataFrame,
                                       num_quantiles=5) -> dict:
-        """
-        Calculates the returns of a long-short portfolio.
+        """计算多空组合的收益。
+        
+        模拟一个投资策略：做多因子值最高的一组，做空因子值最低的一组，并计算其累计收益和夏普比率。
+        夏普比率是衡量风险调整后收益的核心指标。
         """
 
         def get_quantile(row):
@@ -240,10 +278,11 @@ class FactorCalculator:
 
 
 def prepare_data_and_calculator(data_paths: dict, close_path_key='close'):
+    """加载所有数据，准备因子计算器实例和远期收益率。
+    
+    这是整个流程的第一步，核心任务是确保所有输入数据都有一个统一的、格式正确的DatetimeIndex。
     """
-    Loads all data, prepares a FactorCalculator instance and forward returns.
-    """
-    print("--- Loading and Preparing Data ---")
+    print("--- 步骤1: 加载和准备数据 ---")
 
     def load_and_prepare_df(path, name):
         if path.endswith('.parquet'):
@@ -251,55 +290,53 @@ def prepare_data_and_calculator(data_paths: dict, close_path_key='close'):
         elif path.endswith('.csv'):
             df = pd.read_csv(path, index_col=0, parse_dates=True)
         else:
-            raise ValueError(f"Unsupported file format for {path}.")
+            raise ValueError(f"不支持的文件格式: {path}。请使用 .parquet 或 .csv")
 
-        # Standardize index to datetime
+        # 尝试将索引标准化为DatetimeIndex
         if 'date' in df.columns: df = df.set_index('date')
         if 'Date' in df.columns: df = df.set_index('Date')
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
 
-        print(f"Loaded {name}, Index Type: {type(df.index)}, Shape: {df.shape}")
+        print(f"已加载 {name}, 索引类型: {type(df.index)}, 形状: {df.shape}")
         return df
 
     loaded_data = {name: load_and_prepare_df(path, name) for name, path in data_paths.items()}
 
     if close_path_key not in loaded_data:
-        raise ValueError(f"Close price data (key '{close_path_key}') not found.")
+        raise ValueError(f"未找到收盘价数据 (键: '{close_path_key}')，无法计算远期收益率。")
 
-    print("Calculating forward returns...")
+    print("正在计算远期收益率...")
+    # 远期收益率 = (T+1日价格 / T日价格) - 1，因此先计算pct_change(1)，再用shift(-1)前移一天
     forward_returns = loaded_data[close_path_key].pct_change(1).shift(-1)
 
-    print("--- Initializing Factor Calculator ---")
+    print("--- 初始化因子计算器 ---")
     calculator = FactorCalculator(data_dfs=loaded_data)
 
     return calculator, forward_returns
 
 
 def calculate_factor_values(factor_ast: dict, calculator: FactorCalculator) -> pd.DataFrame:
+    """使用提供的计算器从AST中计算因子值。
     """
-    Calculates factor values from an AST using the provided calculator.
-    """
-    print("--- Calculating Factor from AST ---")
+    print("\n--- 步骤2: 从AST计算因子 ---")
     factor_values = calculator.calculate_factor(factor_ast)
-    print("Factor calculation complete.")
+    print("因子计算完成。")
     return factor_values
 
 
 def evaluate_factor_performance(factor_values: pd.DataFrame, calculator: FactorCalculator,
                                 forward_returns: pd.DataFrame) -> dict:
+    """评估计算出的因子值的表现。
     """
-    Evaluates the performance of the calculated factor values.
-    """
-    print("--- Evaluating Factor ---")
+    print("\n--- 步骤4: 评估因子表现 ---")
     evaluation_results = calculator.evaluate_factor(factor_values, forward_returns)
-    print("Factor evaluation complete.")
+    print("因子评估完成。")
     return evaluation_results
 
 
 def convert_ast_format(node):
-    """
-    A utility function to convert the user-provided AST format to the internal format.
+    """一个工具函数，用于将用户提供的AST格式转换为内部处理的格式。
     """
     if not isinstance(node, dict):
         return {'type': 'literal', 'value': node}
@@ -309,6 +346,7 @@ def convert_ast_format(node):
         new_node = {'type': 'operator', 'func': node['func']}
         args = node.get('args', {})
         children = []
+        # 保证参数顺序，从而保证节点ID的确定性
         arg_order = ['data', 'a', 'b', 'window', 'span', 'halflife', 'p', 'q', 'axis', 'ddof']
         for key in arg_order:
             if key in args:
@@ -319,36 +357,37 @@ def convert_ast_format(node):
 
 
 def display_evaluation_report(results: dict):
-    """Formats and prints the factor evaluation report."""
-    print("--- FACTOR EVALUATION REPORT ---")
-    print("=" * 35)
+    """格式化并打印因子评估报告。"""
+    print("\n--- 最终步骤: 因子评估报告 ---")
+    print("=" * 40)
     ic_res = results['ic_analysis']
-    print(f"IC Mean: {ic_res['ic_mean']:.4f}")
-    print(f"IC Std Dev: {ic_res['ic_std']:.4f}")
-    print(f"ICIR: {ic_res['icir']:.4f}")
-    print(f"T-statistic: {ic_res['t_statistic']:.4f}, P-value: {ic_res['p_value']:.4f}")
-    print("-" * 35)
+    print(f"IC均值: {ic_res['ic_mean']:.4f}")
+    print(f"IC标准差: {ic_res['ic_std']:.4f}")
+    print(f"信息比率(ICIR): {ic_res['icir']:.4f}")
+    print(f"T检验统计量: {ic_res['t_statistic']:.4f}, P值: {ic_res['p_value']:.4f}")
+    print("-" * 40)
     rank_ic_res = results['rank_ic_analysis']
-    print(f"Rank IC Mean: {rank_ic_res['rank_ic_mean']:.4f}")
-    print(f"Rank IC Std Dev: {rank_ic_res['rank_ic_std']:.4f}")
+    print(f"Rank IC均值: {rank_ic_res['rank_ic_mean']:.4f}")
+    print(f"Rank IC标准差: {rank_ic_res['rank_ic_std']:.4f}")
     print(f"Rank ICIR: {rank_ic_res['rank_icir']:.4f}")
-    print("-" * 35)
+    print("-" * 40)
     turnover_res = results['turnover_analysis']
-    print(f"Mean Daily Turnover: {turnover_res['mean_turnover']:.4f}")
-    print("-" * 35)
+    print(f"平均每日换手率: {turnover_res['mean_turnover']:.4f}")
+    print("-" * 40)
     group_res = results['group_return_analysis']
-    print("Mean Returns by Factor Quantile:")
+    print("按因子分位数的平均收益:")
     print(group_res['mean_group_returns'].to_string())
-    print(f"Monotonicity: {group_res['monotonicity']}")
-    print("-" * 35)
+    print(f"收益单调性: {group_res['monotonicity']}")
+    print("-" * 40)
     ls_res = results['long_short_portfolio_analysis']
-    print("Long-Short Portfolio Performance:")
-    print(f"Annualized Sharpe Ratio: {ls_res['sharpe_ratio']:.4f}")
-    print("=" * 35)
-    print("Analysis finished.")
+    print("多空组合表现:")
+    print(f"年化夏普比率: {ls_res['sharpe_ratio']:.4f}")
+    print("=" * 40)
+    print("分析结束。")
 
 
 if __name__ == '__main__':
+    # 定义所有需要用到的数据的路径
     data_paths = {
         'amount': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_amount_df.parquet',
         'close': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_close_df.parquet',
@@ -359,6 +398,8 @@ if __name__ == '__main__':
         'vol': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_vol_df.parquet'
     }
 
+    # 以字典形式定义因子计算公式 (AST)
+    # 示例因子: vol / std_dev(moving_average(vol, 20))
     user_ast = {
         'func': 'divide',
         'args': {
@@ -381,29 +422,29 @@ if __name__ == '__main__':
         }
     }
 
-    # 1. Convert user AST to internal format
-    print("--- Converting AST format ---")
+    # 1. 将用户定义的AST转换为内部格式
+    print("--- 转换AST格式 ---")
     internal_ast = convert_ast_format(user_ast)
-    print("Converted AST:", json.dumps(internal_ast, indent=2))
+    print("转换后的AST:", json.dumps(internal_ast, indent=2))
 
-    # 2. Prepare data and calculator
+    # 2. 准备数据和计算器
     calculator, forward_returns = prepare_data_and_calculator(data_paths, close_path_key='close')
 
-    # 3. Calculate factor values
+    # 3. 计算因子值
     factor_values_df = calculate_factor_values(internal_ast, calculator)
 
-    # 4. DEBUG: Inspect the calculated factor DataFrame
-    print(" --- Inspecting Calculated Factor DataFrame ---")
-    print("DataFrame Info:")
+    # 4. 调试步骤: 检查计算出的因子DataFrame，这是定位问题的关键
+    print("\n--- 步骤3: 检查计算出的因子DataFrame (调试信息) ---")
+    print("因子DataFrame信息:")
     factor_values_df.info()
-    print("DataFrame Head: ")
+    print("\n因子DataFrame头部数据:")
     print(factor_values_df.head())
-    print("DataFrame Tail: ")
+    print("\n因子DataFrame尾部数据:")
     print(factor_values_df.tail())
     print("--------------------------------------------")
 
-    # 5. Evaluate factor performance
+    # 5. 评估因子表现
     final_results = evaluate_factor_performance(factor_values_df, calculator, forward_returns)
 
-    # 6. Display final report
+    # 6. 展示最终报告
     display_evaluation_report(final_results)
