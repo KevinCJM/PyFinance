@@ -285,16 +285,26 @@ def prepare_data_and_calculator(data_paths: dict, close_path_key='close'):
     print("--- 步骤1: 加载和准备数据 ---")
 
     def load_and_prepare_df(path, name):
-        if path.endswith('.parquet'):
+        if path.endswith('.parquet'):  # 如果是parquet格式
             df = pd.read_parquet(path)
-        elif path.endswith('.csv'):
+        elif path.endswith('.csv'):  # 如果是csv格式
             df = pd.read_csv(path, index_col=0, parse_dates=True)
+        elif path.endswith('.xlsx'):  # 如果是Excel格式
+            df = pd.read_excel(path, index_col=0, parse_dates=True)
+        elif path.endswith('.pkl'):  # 如果是pickle格式
+            df = pd.read_pickle(path)
         else:
             raise ValueError(f"不支持的文件格式: {path}。请使用 .parquet 或 .csv")
 
         # 尝试将索引标准化为DatetimeIndex
-        if 'date' in df.columns: df = df.set_index('date')
-        if 'Date' in df.columns: df = df.set_index('Date')
+        if 'date' in df.columns:
+            df = df.set_index('date')
+        if 'Date' in df.columns:
+            df = df.set_index('Date')
+        if 'enddate' in df.columns:
+            df = df.set_index('enddate')
+        if 'EnDate' in df.columns:
+            df = df.set_index('EnDate')
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index)
 
@@ -425,7 +435,7 @@ if __name__ == '__main__':
     # 1. 将用户定义的AST转换为内部格式
     print("--- 转换AST格式 ---")
     internal_ast = convert_ast_format(user_ast)
-    print("转换后的AST:", json.dumps(internal_ast, indent=2))
+    print("转换后的AST:", internal_ast)
 
     # 2. 准备数据和计算器
     calculator, forward_returns = prepare_data_and_calculator(data_paths, close_path_key='close')
