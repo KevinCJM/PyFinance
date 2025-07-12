@@ -504,11 +504,10 @@ if __name__ == '__main__':
     print("转换后的AST:", internal_ast)
 
     # 2. 准备数据和计算器
-    # 您可以在此处选择收益率类型: 'simple' (普通收益率) 或 'log' (对数收益率)
     calculator, forward_returns = prepare_data_and_calculator(
         data_paths,
         close_path_key='close',
-        return_type='simple'  # 在此更改收益率类型
+        return_type='simple'  # 在此更改收益率类型: 'simple' (普通收益率) 或 'log' (对数收益率)
     )
 
     # 3. 计算因子值

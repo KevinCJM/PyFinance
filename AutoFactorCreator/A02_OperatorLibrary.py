@@ -17,8 +17,10 @@ from typing import Union, Optional, Sequence
 def add(a, b):
     return pd.DataFrame(a).add(pd.DataFrame(b) if not isinstance(b, (pd.DataFrame, pd.Series)) else b, fill_value=0)
 
+
 def subtract(a, b):
     return pd.DataFrame(a).sub(pd.DataFrame(b) if not isinstance(b, (pd.DataFrame, pd.Series)) else b, fill_value=0)
+
 
 def multiply(a, b):
     return pd.DataFrame(a).mul(pd.DataFrame(b) if not isinstance(b, (pd.DataFrame, pd.Series)) else b, fill_value=0)
