@@ -1,9 +1,9 @@
 # -*- encoding: utf-8 -*-
 """
 @File: A01_DataPrepare.py
-@Modify Time: 2025/7/11 16:00       
+@Modify Time: 2025/7/11 17:00       
 @Author: Kevin-Chen
-@Descriptions: 
+@Descriptions: 数据准备模块，经过函数化重构。
 """
 import numpy as np
 import pandas as pd
@@ -11,38 +11,20 @@ import os
 from scipy.optimize import minimize
 from A02_OperatorLibrary import winsorize  # 导入winsorize函数
 
-# 获取脚本所在目录的绝对路径
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# 构建Data目录的绝对路径
-DATA_DIR = os.path.join(SCRIPT_DIR, '..', 'Data')
 
-# 定义原始数据文件路径
-basic_info_files = {
-    "log": os.path.join(DATA_DIR, "wide_log_return_df.parquet"),
-    "high": os.path.join(DATA_DIR, "wide_high_df.parquet"),
-    "low": os.path.join(DATA_DIR, "wide_low_df.parquet"),
-    "vol": os.path.join(DATA_DIR, "wide_vol_df.parquet"),
-    "amount": os.path.join(DATA_DIR, "wide_amount_df.parquet"),
-    "close": os.path.join(DATA_DIR, "wide_close_df.parquet"),
-    "open": os.path.join(DATA_DIR, "wide_open_df.parquet"),
-}
-
-# 定义预处理后数据保存路径
-PROCESSED_DATA_DIR = os.path.join(DATA_DIR, "Processed_ETF_Data")
-
-
-def load_and_preprocess_data():
+def load_and_preprocess_data(basic_info_files):
     """
     加载所有原始ETF数据，并在内存中进行预处理。
-    **注意**: 此函数不保存文件，也不对log收益率的NaN进行填充。
     
+    Args:
+        basic_info_files (dict): 包含所有原始数据文件绝对路径的字典。
+
     Returns:
         dict: 包含所有已处理DataFrame的字典。
     """
     print("--- 步骤1: 加载并预处理原始数据 ---")
 
-    # 加载原始数据
-    data_frames = {name: pd.read_parquet(path) for name, path in basic_info_files.items()}
+    data_frames = {name: pd.read_parquet(path) for name, path in basic_info_files.items() if name != 'etf_info'}
     print("原始数据加载完成！")
 
     # --- 缺失值处理 ---
@@ -52,15 +34,12 @@ def load_and_preprocess_data():
     data_frames['close'] = data_frames['close'].ffill()
     data_frames['vol'] = data_frames['vol'].fillna(0)
     data_frames['amount'] = data_frames['amount'].fillna(0)
-    # **重要**: 对数收益率的NaN保留
 
     # --- 异常值处理 ---
     def _winsorize_row(row, lower_percentile, upper_percentile):
-        """一个更稳健的行缩尾函数，能正确处理NaN。"""
         valid_data = row.dropna()
         if valid_data.empty:
             return row
-
         lower_bound = valid_data.quantile(lower_percentile)
         upper_bound = valid_data.quantile(upper_percentile)
         return row.clip(lower_bound, upper_bound)
@@ -111,11 +90,7 @@ def _get_equal_risk_contribution_weights(cov_matrix):
     return result.x
 
 
-def generate_and_save_benchmarks(log_returns_df,
-                                 output_dir=PROCESSED_DATA_DIR,
-                                 etf_list=None,
-                                 rolling_window=252,
-                                 rebalance_freq='M'):
+def generate_and_save_benchmarks(log_returns_df, output_dir, rolling_window, rebalance_freq):
     """
     基于已对齐、已填充的ETF收益率数据，生成并保存多种基准组合的收益率。
     """
@@ -176,46 +151,59 @@ def generate_and_save_benchmarks(log_returns_df,
     print("--- 基准组合收益率生成完毕 ---")
 
 
-if __name__ == "__main__":
+def prepare_main(data_dir, processed_dir, etf_list=None, rolling_window=252, rebalance_freq='M'):
+    """
+    数据准备和基准生成的总入口函数。
+
+    Args:
+        data_dir (str): 原始数据目录的绝对路径。
+        processed_dir (str): 处理后数据保存目录的绝对路径。
+        etf_list (list, optional): 用于构建基准的ETF代码列表。如果为None，则使用默认列表。
+        rolling_window (int): 组合优化的滚动窗口大小。
+        rebalance_freq (str): 组合再平衡的频率。
+    """
+    # 定义原始数据文件路径
+    basic_info_files = {
+        "log": os.path.join(data_dir, "wide_log_return_df.parquet"),
+        "high": os.path.join(data_dir, "wide_high_df.parquet"),
+        "low": os.path.join(data_dir, "wide_low_df.parquet"),
+        "vol": os.path.join(data_dir, "wide_vol_df.parquet"),
+        "amount": os.path.join(data_dir, "wide_amount_df.parquet"),
+        "close": os.path.join(data_dir, "wide_close_df.parquet"),
+        "open": os.path.join(data_dir, "wide_open_df.parquet"),
+    }
+
     # 1. 加载并进行内存预处理
-    all_data_frames = load_and_preprocess_data()
+    all_data_frames = load_and_preprocess_data(basic_info_files)
     log_returns_df = all_data_frames['log']
 
     # 2. 定义基准ETF列表并确定统一的分析起点
-    etf_list = [
-        '510050.SH',  # 上证50ETF
-        '159915.SZ',  # 创业板ETF
-        '510300.SH',  # 沪深300ETF
-        '512500.SH',  # 中证500ETF华夏
-        '511010.SH',  # 国债ETF
-        '513100.SH',  # 纳指ETF
-        '513030.SH',  # 德国ETF
-        '513080.SH',  # 法国CAC40ETF
-        '513520.SH',  # 日经ETF
-        '518880.SH',  # 黄金ETF
-        '161226.SZ',  # 国投白银LOF
-        '501018.SH',  # 南方原油LOF
-        '159981.SZ',  # 能源化工ETF
-        '159985.SZ',  # 豆粕ETF
-        '159980.SZ',  # 有色ETF
-        '511990.SH'  # 华宝添益货币ETF
-    ]
+    if etf_list is None:
+        etf_list = [
+            '510050.SH',  # 上证50ETF
+            '159915.SZ',  # 创业板ETF
+            '159912.SZ',  # 沪深300ETF
+            '512500.SH',  # 中证500ETF华夏
+            '511010.SH',  # 国债ETF
+            '513100.SH',  # 纳指ETF
+            '513030.SH',  # 德国ETF
+            '513080.SH',  # 法国CAC40ETF
+            '513520.SH',  # 日经ETF
+            '518880.SH',  # 黄金ETF
+            '161226.SZ',  # 国投白银LOF
+            '501018.SH',  # 南方原油LOF
+            '159981.SZ',  # 能源化工ETF
+            '159985.SZ',  # 豆粕ETF
+            '159980.SZ',  # 有色ETF
+            '511990.SH',  # 华宝添益货币ETF
+        ]
 
     valid_etfs = [etf for etf in etf_list if etf in log_returns_df.columns]
     if not valid_etfs:
-        raise ValueError("错误: 默认ETF列表中的所有ETF都不在收益率数据中，无法继续。")
+        raise ValueError("错误: 指定的ETF列表在收益率数据中均无效，无法继续。")
 
     inception_dates = log_returns_df[valid_etfs].apply(lambda col: col.first_valid_index())
-
-    print("\n--- 调试信息 ---")
-    print(f"在log_returns_df中找到的有效ETF数量: {len(valid_etfs)}")
-    # print(f"有效ETF列表: {valid_etfs}") # 列表可能过长，暂时注释
-    print("计算出的各ETF成立日期:")
-    print(inception_dates.to_string())
-
     start_date = inception_dates.max()
-    print(f"计算出的最晚成立日 (start_date): {start_date}")
-    print("--- 调试信息结束 ---\n")
 
     if pd.isna(start_date):
         raise ValueError("错误: 无法确定有效的开始日期，请检查ETF列表和数据。")
@@ -224,20 +212,36 @@ if __name__ == "__main__":
     print(f"统一的分析开始日期为: {start_date.date()}")
 
     # 3. 对齐所有数据并保存
-    os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
+    os.makedirs(processed_dir, exist_ok=True)
     for name, df in all_data_frames.items():
         aligned_df = df.loc[start_date:].copy()
-        # 对切片后的数据进行填充，以处理临时停牌等情况
         if name == 'log':
             aligned_df.fillna(0, inplace=True)
-
-        save_path = os.path.join(PROCESSED_DATA_DIR, f"processed_{name}_df.parquet")
+        save_path = os.path.join(processed_dir, f"processed_{name}_df.parquet")
         aligned_df.to_parquet(save_path)
 
-    print(f"所有数据已对齐并保存到: {PROCESSED_DATA_DIR}")
+    print(f"所有数据已对齐并保存到: {processed_dir}")
 
     # 4. 使用对齐后的数据生成基准
     final_log_returns = all_data_frames['log'].loc[start_date:, valid_etfs].fillna(0)
-    generate_and_save_benchmarks(final_log_returns, etf_list=valid_etfs)
+    generate_and_save_benchmarks(final_log_returns, processed_dir,
+                                 rolling_window, rebalance_freq)
 
     print("\n所有数据准备和基准生成任务已完成。")
+
+
+if __name__ == "__main__":
+    # 获取脚本所在目录的绝对路径
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    # 构建Data目录和Processed_Data目录的绝对路径
+    DATA_DIR = os.path.join(SCRIPT_DIR, '..', 'Data')
+    PROCESSED_DATA_DIR = os.path.join(DATA_DIR, "Processed_ETF_Data")
+
+    # 调用主函数，传入路径和参数
+    prepare_main(
+        data_dir=DATA_DIR,
+        processed_dir=PROCESSED_DATA_DIR
+        # 此处可以覆盖其他默认参数，例如：
+        # etf_list=['510050.SH', '510300.SH'],
+        # rolling_window=120
+    )
