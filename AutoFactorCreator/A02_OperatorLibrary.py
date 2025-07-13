@@ -192,14 +192,17 @@ def rolling_sum(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     返回:
         np.ndarray: 滚动累加和的结果。
     """
+    if data.shape[axis] < window:
+        return np.full_like(data, np.nan)
+
     if axis == 0:
         data = data.T
 
+    windows = _rolling_window(data, window)
+    sum_values = np.nansum(windows, axis=-1)
+
     result = np.full(data.shape, np.nan)
-    for i in range(data.shape[0]):
-        if data.shape[1] >= window:
-            windows = _rolling_window(data[i], window)
-            result[i, window - 1:] = np.nansum(windows, axis=-1)
+    result[:, window - 1:] = sum_values
 
     if axis == 0:
         result = result.T
@@ -218,14 +221,17 @@ def rolling_product(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     返回:
         np.ndarray: 滚动累积乘积的结果。
     """
+    if data.shape[axis] < window:
+        return np.full_like(data, np.nan)
+
     if axis == 0:
         data = data.T
 
+    windows = _rolling_window(data, window)
+    prod_values = np.nanprod(windows, axis=-1)
+
     result = np.full(data.shape, np.nan)
-    for i in range(data.shape[0]):
-        if data.shape[1] >= window:
-            windows = _rolling_window(data[i], window)
-            result[i, window - 1:] = np.nanprod(windows, axis=-1)
+    result[:, window - 1:] = prod_values
 
     if axis == 0:
         result = result.T
@@ -244,14 +250,17 @@ def rolling_max(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     返回:
         np.ndarray: 滚动最大值的结果。
     """
+    if data.shape[axis] < window:
+        return np.full_like(data, np.nan)
+
     if axis == 0:
         data = data.T
 
+    windows = _rolling_window(data, window)
+    max_values = np.nanmax(windows, axis=-1)
+
     result = np.full(data.shape, np.nan)
-    for i in range(data.shape[0]):
-        if data.shape[1] >= window:
-            windows = _rolling_window(data[i], window)
-            result[i, window - 1:] = np.nanmax(windows, axis=-1)
+    result[:, window - 1:] = max_values
 
     if axis == 0:
         result = result.T
@@ -270,14 +279,17 @@ def rolling_min(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     返回:
         np.ndarray: 滚动最小值的结果。
     """
+    if data.shape[axis] < window:
+        return np.full_like(data, np.nan)
+
     if axis == 0:
         data = data.T
 
+    windows = _rolling_window(data, window)
+    min_values = np.nanmin(windows, axis=-1)
+
     result = np.full(data.shape, np.nan)
-    for i in range(data.shape[0]):
-        if data.shape[1] >= window:
-            windows = _rolling_window(data[i], window)
-            result[i, window - 1:] = np.nanmin(windows, axis=-1)
+    result[:, window - 1:] = min_values
 
     if axis == 0:
         result = result.T
@@ -310,77 +322,85 @@ def variance(data: np.ndarray, axis: int = 0, ddof: int = 1) -> Union[np.ndarray
 def correlation(a: np.ndarray, b: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
     """
     功能描述: 计算两个输入之间的相关系数（横截面或时间序列）。
+
+    参数:
+        a (np.ndarray): 输入数组a。
+        b (np.ndarray): 输入数组b，必须与a具有相同的形状。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+
+    返回:
+        Union[np.ndarray, float]: 相关系数。如果axis=0且输入为2D，则返回一个1D数组。
     """
-    if axis == 0:
-        # Time-series correlation (column-wise)
-        # Reshape to 2D arrays if 1D
-        if a.ndim == 1: a = a[:, np.newaxis]
-        if b.ndim == 1: b = b[:, np.newaxis]
+    if a.shape != b.shape:
+        raise ValueError("输入数组 a 和 b 必须具有相同的形状。")
 
-        # Stack for corrcoef, then take the relevant correlation
-        # Handle NaN values by removing pairs with NaNs
-        # This is a simplified approach, for more robust handling, consider pandas or custom loop
-        # For now, we'll use a column-wise approach that handles NaNs in a basic way
-
-        # If inputs are 1D, treat as single series correlation
-        if a.shape[1] == 1 and b.shape[1] == 1:
-            # Remove NaNs for correlation calculation
-            valid_indices = ~np.isnan(a).flatten() & ~np.isnan(b).flatten()
-            if np.sum(valid_indices) < 2: return np.nan  # Not enough data points
-            return np.corrcoef(a[valid_indices, 0], b[valid_indices, 0])[0, 1]
+    if axis == 0:  # 时间序列相关性 (逐列计算)
+        if a.ndim == 1:
+            valid_indices = ~np.isnan(a) & ~np.isnan(b)
+            if np.sum(valid_indices) < 2:
+                return np.nan
+            return np.corrcoef(a[valid_indices], b[valid_indices])[0, 1]
         else:
-            # For 2D arrays, calculate column-wise correlation
-            # This is more complex to do purely with numpy for rolling/pairwise NaN handling
-            # For simplicity, we'll calculate correlation for each column pair, ignoring NaNs
-            # This might not be exactly what pandas.corr does for 2D inputs
+            results = np.full(a.shape[1], np.nan)
+            for i in range(a.shape[1]):
+                col_a, col_b = a[:, i], b[:, i]
+                valid_indices = ~np.isnan(col_a) & ~np.isnan(col_b)
+                if np.sum(valid_indices) >= 2:
+                    results[i] = np.corrcoef(col_a[valid_indices], col_b[valid_indices])[0, 1]
+            return results
 
-            # A more robust solution for 2D arrays would involve iterating over columns
-            # and calculating pairwise correlations, or using a custom rolling correlation.
-            # For now, we'll return NaN for 2D inputs on axis=0 as it's not straightforward
-            # to replicate pandas behavior with simple np.corrcoef.
-            return np.full((a.shape[1], b.shape[1]), np.nan)  # Placeholder
-
-    elif axis == 1:
-        # Cross-sectional correlation (row-wise)
-        # Iterate over rows and calculate correlation
+    elif axis == 1:  # 横截面相关性 (逐行计算)
         results = np.full(a.shape[0], np.nan)
         for i in range(a.shape[0]):
-            valid_indices = ~np.isnan(a[i]) & ~np.isnan(b[i])
-            if np.sum(valid_indices) < 2: continue
-            results[i] = np.corrcoef(a[i, valid_indices], b[i, valid_indices])[0, 1]
+            row_a, row_b = a[i, :], b[i, :]
+            valid_indices = ~np.isnan(row_a) & ~np.isnan(row_b)
+            if np.sum(valid_indices) >= 2:
+                results[i] = np.corrcoef(row_a[valid_indices], row_b[valid_indices])[0, 1]
         return results
     else:
-        raise ValueError("Axis must be 0 (time-series) or 1 (cross-sectional).")
+        raise ValueError("Axis 必须是 0 (时间序列) 或 1 (横截面)。")
 
 
 def covariance(a: np.ndarray, b: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
     """
     功能描述: 计算两个输入之间的协方差（横截面或时间序列）。
+
+    参数:
+        a (np.ndarray): 输入数组a。
+        b (np.ndarray): 输入数组b，必须与a具有相同的形状。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+
+    返回:
+        Union[np.ndarray, float]: 协方差。如果axis=0且输入为2D，则返回一个1D数组。
     """
-    if axis == 0:
-        # Time-series covariance (column-wise)
-        if a.ndim == 1 and b.ndim == 1:
-            # Remove NaNs for covariance calculation
+    if a.shape != b.shape:
+        raise ValueError("输入数组 a 和 b 必须具有相同的形状。")
+
+    if axis == 0:  # 时间序列协方差 (逐列计算)
+        if a.ndim == 1:
             valid_indices = ~np.isnan(a) & ~np.isnan(b)
-            if np.sum(valid_indices) < 2: return np.nan  # Not enough data points
+            if np.sum(valid_indices) < 2:
+                return np.nan
             return np.cov(a[valid_indices], b[valid_indices])[0, 1]
         else:
-            # For 2D arrays, calculate column-wise covariance
-            # This is more complex to do purely with numpy for rolling/pairwise NaN handling
-            # For now, we'll return NaN for 2D inputs on axis=0 as it's not straightforward
-            # to replicate pandas behavior with simple np.cov.
-            return np.full((a.shape[1], b.shape[1]), np.nan)  # Placeholder
+            results = np.full(a.shape[1], np.nan)
+            for i in range(a.shape[1]):
+                col_a, col_b = a[:, i], b[:, i]
+                valid_indices = ~np.isnan(col_a) & ~np.isnan(col_b)
+                if np.sum(valid_indices) >= 2:
+                    results[i] = np.cov(col_a[valid_indices], col_b[valid_indices])[0, 1]
+            return results
 
-    elif axis == 1:
-        # Cross-sectional covariance (row-wise)
+    elif axis == 1:  # 横截面协方差 (逐行计算)
         results = np.full(a.shape[0], np.nan)
         for i in range(a.shape[0]):
-            valid_indices = ~np.isnan(a[i]) & ~np.isnan(b[i])
-            if np.sum(valid_indices) < 2: continue
-            results[i] = np.cov(a[i, valid_indices], b[i, valid_indices])[0, 1]
+            row_a, row_b = a[i, :], b[i, :]
+            valid_indices = ~np.isnan(row_a) & ~np.isnan(row_b)
+            if np.sum(valid_indices) >= 2:
+                results[i] = np.cov(row_a[valid_indices], row_b[valid_indices])[0, 1]
         return results
     else:
-        raise ValueError("Axis must be 0 (time-series) or 1 (cross-sectional).")
+        raise ValueError("Axis 必须是 0 (时间序列) 或 1 (横截面)。")
 
 
 def max_val(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
@@ -626,38 +646,55 @@ def rolling_cov(a: np.ndarray, b: np.ndarray, window: int, axis: int = 0) -> np.
 def ts_rank(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算数据在过去N期时间序列窗口中的百分比排名。
+              其行为旨在模拟 pandas.rank(pct=True)。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动百分比排名的结果。
     """
+    if data.shape[axis] < window:
+        return np.full_like(data, np.nan)
+
     if axis == 0:
         data = data.T
 
+    # 创建滚动窗口
+    windows = _rolling_window(data, window)
+
+    # 获取每个窗口的最后一个值，这是我们要计算排名的目标值
+    last_values = windows[:, :, -1]
+
+    # 计算每个窗口内非NaN值的数量
+    n_valid = np.sum(~np.isnan(windows), axis=-1)
+
+    # 计算每个窗口中严格小于目标值的数量
+    n_less = np.nansum(windows < last_values[..., np.newaxis], axis=-1)
+
+    # 计算每个窗口中等于目标值的数量
+    n_equal = np.nansum(windows == last_values[..., np.newaxis], axis=-1)
+
+    # 计算平均排名 (处理并列情况)
+    rank_ = n_less + (n_equal - 1) * 0.5
+
+    # 计算百分比排名
+    # 减1是为了使分母为(n-1)，与pandas的pct=True行为一致
+    pct_rank = rank_ / (n_valid - 1)
+
+    # 处理特殊情况
+    pct_rank[n_valid <= 1] = np.nan  # 如果窗口内有效值不多于1个，则无排名
+    pct_rank[np.isnan(last_values)] = np.nan  # 如果目标值是NaN，则排名也是NaN
+
+    # 准备结果数组
     result = np.full(data.shape, np.nan)
-    for i in range(data.shape[0]):
-        if data.shape[1] >= window:
-            windows = _rolling_window(data[i], window)
-            for j, win in enumerate(windows):
-                # Remove NaNs from the window
-                clean_win = win[~np.isnan(win)]
-                if len(clean_win) > 0:
-                    # Calculate rank for each element in the window
-                    ranks = np.argsort(np.argsort(clean_win)) + 1
-                    # Map ranks back to original window positions
-                    # This is a simplified approach and might not perfectly match pandas rank(pct=True)
-                    # For exact match, more complex logic is needed to handle ties and NaN positions
-                    # For now, we'll just use the rank of the last element in the window
-                    if not np.isnan(win[-1]):
-                        # Find the rank of the last element in the original window
-                        # This is a simplification, as pandas rank applies to the entire window
-                        # and then takes the last value.
-                        # A more accurate approach would be to apply rank to the full window
-                        # and then extract the rank of the last element.
-                        # For now, we'll use a simplified rank based on sorted unique values.
-                        unique_sorted = np.unique(clean_win[~np.isnan(clean_win)])
-                        if len(unique_sorted) > 0:
-                            rank_val = np.searchsorted(unique_sorted, win[-1])
-                            result[i, window - 1 + j] = rank_val / len(unique_sorted)
+    result[:, window - 1:] = pct_rank
 
     if axis == 0:
         result = result.T
+
     return result
 
 
@@ -1121,4 +1158,4 @@ def cross_sectional_scale(data: np.ndarray, axis: int = 1) -> np.ndarray:
 
 if __name__ == '__main__':
     # 测试用例
-    print(cumulative_sum(np.array([[1, 2, np.nan], [4, 5, 6], [7, 8, 9]]), axis=0))
+    print(rolling_sum(np.array([[1, 2, np.nan], [4, 5, 6], [7, 8, 9]]), window=2, axis=0))
