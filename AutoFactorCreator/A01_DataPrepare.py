@@ -180,22 +180,22 @@ def prepare_main(data_dir, processed_dir, etf_list=None, rolling_window=252, reb
     # 2. 定义基准ETF列表并确定统一的分析起点
     if etf_list is None:
         etf_list = [
-            '510050.SH',  # 上证50ETF
-            '159915.SZ',  # 创业板ETF
-            '159912.SZ',  # 沪深300ETF
-            '512500.SH',  # 中证500ETF华夏
-            '511010.SH',  # 国债ETF
-            '513100.SH',  # 纳指ETF
-            '513030.SH',  # 德国ETF
-            '513080.SH',  # 法国CAC40ETF
-            '513520.SH',  # 日经ETF
-            '518880.SH',  # 黄金ETF
-            '161226.SZ',  # 国投白银LOF
-            '501018.SH',  # 南方原油LOF
-            '159981.SZ',  # 能源化工ETF
-            '159985.SZ',  # 豆粕ETF
-            '159980.SZ',  # 有色ETF
-            '511990.SH',  # 华宝添益货币ETF
+            # '510050.SH',  # 上证50ETF, 20050223
+            '159915.SZ',  # 创业板ETF, 20111124
+            '159912.SZ',  # 沪深300ETF, 20111124
+            # '512500.SH',  # 中证500ETF华夏, 20150529
+            '511010.SH',  # 国债ETF, 20130325
+            '513100.SH',  # 纳指ETF, 20130515
+            '513030.SH',  # 德国ETF, 20140905
+            # '513080.SH',  # 法国CAC40ETF, 20200612
+            # '513520.SH',  # 日经ETF, 20190625
+            '518880.SH',  # 黄金ETF, 20130729
+            # '161226.SZ',  # 国投白银LOF, 20150817
+            # '501018.SH',  # 南方原油LOF, 20160628
+            # '159981.SZ',  # 能源化工ETF, 20200117
+            # '159985.SZ',  # 豆粕ETF, 20191205
+            # '159980.SZ',  # 有色ETF, 20191224
+            '511990.SH',  # 华宝添益货币ETF, 20130128
         ]
 
     valid_etfs = [etf for etf in etf_list if etf in log_returns_df.columns]
@@ -236,6 +236,8 @@ if __name__ == "__main__":
     # 构建Data目录和Processed_Data目录的绝对路径
     DATA_DIR = os.path.join(SCRIPT_DIR, '..', 'Data')
     PROCESSED_DATA_DIR = os.path.join(DATA_DIR, "Processed_ETF_Data")
+    print(f"数据目录: {DATA_DIR}")
+    print(f"处理后数据目录: {PROCESSED_DATA_DIR}")
 
     # 调用主函数，传入路径和参数
     prepare_main(
