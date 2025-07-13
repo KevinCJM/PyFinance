@@ -353,6 +353,36 @@ def quantile(data: Union[np.ndarray, pd.DataFrame], q: Union[float, Sequence[flo
 
 # --- 时间序列算子 (通常作用于axis=0，即时间轴) ---
 
+def ts_delay(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 获取过去第N期的数据（时间序列延迟）。也称为 'shift' 或 'lag'。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入数据。
+        window (int): 延迟的期数。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 延迟N期后的数据。
+    """
+    return pd.DataFrame(data).shift(periods=window, axis=axis).values
+
+
+def ts_delta(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算当前数据与N期前数据的差值。也称为 'diff'。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入数据。
+        window (int): 差值的期数。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: N期差值的结果。
+    """
+    return pd.DataFrame(data).diff(periods=window, axis=axis).values
+
+
 def moving_average(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算数据的移动平均。
@@ -402,23 +432,110 @@ def exponential_moving_average(data: Union[np.ndarray, pd.DataFrame], span: int,
     return pd.DataFrame(data).ewm(span=span, axis=axis).mean().values
 
 
-def rolling_rank(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+def rolling_skew(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
     """
-    功能描述: 在指定窗口内计算数据的滚动排名。
+    功能描述: 在指定窗口内计算数据的滚动偏度。
 
     参数:
-        data (Union[np.ndarray, pd.DataFrame]): 输入数据，可以是NumPy数组或Pandas DataFrame。
+        data (Union[np.ndarray, pd.DataFrame]): 输入数据。
         window (int): 滚动窗口的大小。
         axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动排名的结果，为NumPy数组。
+        np.ndarray: 滚动偏度的结果。
     """
+    return pd.DataFrame(data).rolling(window=window, axis=axis).skew().values
+
+
+def rolling_kurt(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 在指定窗口内计算数据的滚动峰度。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入数据。
+        window (int): 滚动窗口的大小。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动峰度的结果。
+    """
+    return pd.DataFrame(data).rolling(window=window, axis=axis).kurt().values
+
+
+def rolling_quantile(data: Union[np.ndarray, pd.DataFrame], window: int, quantile_level: float, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 在指定窗口内计算数据的滚动分位数。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入数据。
+        window (int): 滚动窗口的大小。
+        quantile_level (float): 要计算的分位数 (0.0 到 1.0)。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动分位数的结果。
+    """
+    return pd.DataFrame(data).rolling(window=window, axis=axis).quantile(quantile_level).values
+
+
+def rolling_corr(a: Union[np.ndarray, pd.DataFrame], b: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 在指定窗口内计算两个序列的滚动相关系数。
+
+    参数:
+        a (Union[np.ndarray, pd.DataFrame]): 第一个输入数据。
+        b (Union[np.ndarray, pd.DataFrame]): 第二个输入数据。
+        window (int): 滚动窗口的大小。
+        axis (int): 滚动的轴向。必须为0（时间序列）。默认为0。
+
+    返回:
+        np.ndarray: 滚动相关系数的结果。
+    """
+    if axis != 0:
+        raise ValueError("rolling_corr only supports axis=0 (time-series correlation).")
+    df_a = pd.DataFrame(a)
+    df_b = pd.DataFrame(b)
+    return df_a.rolling(window=window, axis=0).corr(df_b).values
+
+
+def rolling_cov(a: Union[np.ndarray, pd.DataFrame], b: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 在指定窗口内计算两个序列的滚动协方差。
+
+    参数:
+        a (Union[np.ndarray, pd.DataFrame]): 第一个输入数据。
+        b (Union[np.ndarray, pd.DataFrame]): 第二个输入数据。
+        window (int): 滚动窗口的大小。
+        axis (int): 滚动的轴向。必须为0（时间序列）。默认为0。
+
+    返回:
+        np.ndarray: 滚动协方差的结果。
+    """
+    if axis != 0:
+        raise ValueError("rolling_cov only supports axis=0 (time-series covariance).")
+    df_a = pd.DataFrame(a)
+    df_b = pd.DataFrame(b)
+    return df_a.rolling(window=window, axis=0).cov(df_b).values
+
+
+def ts_rank(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算数据在过去N期时间序列窗口中的百分比排名。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入数据。
+        window (int): 滚动窗口的大小。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 时间序列排名的结果 (0到1之间)。
+    """
+    return pd.DataFrame(data).rolling(window=window, axis=axis).rank(pct=True).values
 
 
 def time_series_decay(data: Union[np.ndarray, pd.DataFrame], halflife: int, axis: int = 0) -> np.ndarray:
     """
-    功能描述: 计算数据的时间序列衰减加权平均。
+    功能描述: 计算数据的时间序列衰减加权平均 (指数加权移动平均)。
 
     参数:
         data (Union[np.ndarray, pd.DataFrame]): 输入数据，可以是NumPy数组或Pandas DataFrame。
@@ -428,6 +545,198 @@ def time_series_decay(data: Union[np.ndarray, pd.DataFrame], halflife: int, axis
     返回:
         np.ndarray: 时间序列衰减加权平均的结果，为NumPy数组。
     """
+    return pd.DataFrame(data).ewm(halflife=halflife, axis=axis).mean().values
+
+
+# --- 复合财务指标算子 (Complex Financial Metrics) ---
+# 这些算子通常用于评估收益序列的风险和表现，其计算逻辑是路径依赖的。
+
+def rolling_max_drawdown(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算滚动最大回撤。最大回撤衡量了在指定窗口内资产净值从峰值回落的最大百分比。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入的净值或价格序列。
+        window (int): 滚动窗口的大小。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动最大回撤的结果 (通常为负值)。
+    """
+    def max_drawdown(series):
+        cumulative = (1 + series).cumprod()
+        peak = cumulative.expanding(min_periods=1).max()
+        drawdown = (cumulative - peak) / peak
+        return drawdown.min()
+
+    # rolling.apply 只能在 axis=0 上操作
+    if axis != 0:
+        raise ValueError("rolling_max_drawdown only supports axis=0 (time-series).")
+    
+    return pd.DataFrame(data).rolling(window=window, axis=0).apply(max_drawdown, raw=False).values
+
+
+def downside_deviation(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算下行标准差（下行波动率）。只针对窗口期内小于0的收益率计算标准差。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入的收益率序列。
+        window (int): 滚动窗口的大小。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动下行标准差的结果。
+    """
+    def calculate_downside_std(series):
+        downside_returns = series[series < 0]
+        return downside_returns.std(ddof=1)
+
+    if axis != 0:
+        raise ValueError("downside_deviation only supports axis=0 (time-series).")
+        
+    return pd.DataFrame(data).rolling(window=window, axis=0).apply(calculate_downside_std, raw=False).values
+
+
+def sharpe_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算滚动夏普比率。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入的收益率序列。
+        window (int): 滚动窗口的大小。
+        periods_per_year (int): 每年的周期数（如日频为252，月频为12）。用于年化。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动夏普比率的结果。
+    """
+    if axis != 0:
+        raise ValueError("sharpe_ratio only supports axis=0 (time-series).")
+        
+    rolling_mean = pd.DataFrame(data).rolling(window=window, axis=0).mean()
+    rolling_std = pd.DataFrame(data).rolling(window=window, axis=0).std(ddof=1)
+    
+    # 避免除以零
+    sharpe = (rolling_mean / rolling_std.replace(0, np.nan)) * np.sqrt(periods_per_year)
+    return sharpe.values
+
+
+def sortino_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算滚动索提诺比率。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入的收益率序列。
+        window (int): 滚动窗口的大小。
+        periods_per_year (int): 每年的周期数。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动索提诺比率的结果。
+    """
+    if axis != 0:
+        raise ValueError("sortino_ratio only supports axis=0 (time-series).")
+        
+    rolling_mean = pd.DataFrame(data).rolling(window=window, axis=0).mean()
+    rolling_downside_std = downside_deviation(data, window, axis=0)
+    
+    # 避免除以零
+    sortino = (rolling_mean / pd.DataFrame(rolling_downside_std).replace(0, np.nan)) * np.sqrt(periods_per_year)
+    return sortino.values
+
+
+def calmar_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算滚动卡玛比率 (年化收益 / 最大回撤)。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 输入的收益率序列。
+        window (int): 滚动窗口的大小。
+        periods_per_year (int): 每年的周期数。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动卡玛比率的结果。
+    """
+    if axis != 0:
+        raise ValueError("calmar_ratio only supports axis=0 (time-series).")
+        
+    annualized_return = pd.DataFrame(data).rolling(window=window, axis=0).mean() * periods_per_year
+    max_dd = rolling_max_drawdown(data, window, axis=0)
+    
+    # 避免除以零, 并取最大回撤的绝对值
+    calmar = annualized_return / pd.DataFrame(np.abs(max_dd)).replace(0, np.nan)
+    return calmar.values
+
+
+def alpha(data: Union[np.ndarray, pd.DataFrame], benchmark_data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算滚动Alpha (对基准的超额收益)。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 资产收益率序列。
+        benchmark_data (Union[np.ndarray, pd.DataFrame]): 基准收益率序列。
+        window (int): 滚动窗口的大小。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动Alpha的结果。
+    """
+    def calculate_alpha(y, x):
+        x_with_const = sm.add_constant(x)
+        model = sm.OLS(y, x_with_const).fit()
+        return model.params.iloc[0] # 返回截距项 (alpha)
+
+    if axis != 0:
+        raise ValueError("alpha only supports axis=0 (time-series).")
+
+    df_data = pd.DataFrame(data)
+    df_benchmark = pd.DataFrame(benchmark_data)
+    
+    # 使用expanding来确保有足够的数据点进行回归
+    results = pd.Series(index=df_data.index, dtype=float)
+    for i in range(window, len(df_data)):
+        y_slice = df_data.iloc[i-window:i]
+        x_slice = df_benchmark.iloc[i-window:i]
+        results.iloc[i] = calculate_alpha(y_slice, x_slice)
+        
+    return results.values
+
+
+def beta(data: Union[np.ndarray, pd.DataFrame], benchmark_data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 计算滚动Beta (对基准的系统性风险)。
+
+    参数:
+        data (Union[np.ndarray, pd.DataFrame]): 资产收益率序列。
+        benchmark_data (Union[np.ndarray, pd.DataFrame]): 基准收益率序列。
+        window (int): 滚动窗口的大小。
+        axis (int): 滚动的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动Beta的结果。
+    """
+    def calculate_beta(y, x):
+        x_with_const = sm.add_constant(x)
+        model = sm.OLS(y, x_with_const).fit()
+        return model.params.iloc[1] # 返回斜率项 (beta)
+
+    if axis != 0:
+        raise ValueError("beta only supports axis=0 (time-series).")
+
+    df_data = pd.DataFrame(data)
+    df_benchmark = pd.DataFrame(benchmark_data)
+    
+    results = pd.Series(index=df_data.index, dtype=float)
+    for i in range(window, len(df_data)):
+        y_slice = df_data.iloc[i-window:i]
+        x_slice = df_benchmark.iloc[i-window:i]
+        results.iloc[i] = calculate_beta(y_slice, x_slice)
+        
+    return results.values
+
+
 
 
 # --- 数据预处理与因子结果处理算子 (仅用于原始数据预处理和因子结果评估前端处理，不用于因子计算逻辑的构建) ---

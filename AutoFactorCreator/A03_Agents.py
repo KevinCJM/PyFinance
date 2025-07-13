@@ -292,7 +292,7 @@ class FinancialMathematicianAgent:
     ```json
     {{
       "des": "对因子逻辑的详细解释，包括其经济学含义和预期效果。",
-      "ast": "AST语法树，表示因子计算的步骤，使用算子库中的函数名。例如：{{"func": "add", "args": {{"a": {{"var": "close_df"}}, "b": {{"func": "std_dev", "args": {{"data": {{"var": "vol_df"}}, "axis": "0", "ddof": "1"}}}}}}}}}}
+      "ast": "AST语法树，表示因子计算的步骤，使用算子库中的函数名。例如：{{\"func\": \"add\", \"args\": {{\"a\": {{\"var\": \"close_df\"}}, \"b\": {{\"func\": \"std_dev\", \"args\": {{\"data\": {{\"var\": \"vol_df\"}}, \"axis\": \"0\", \"ddof\": \"1\"}}}}}}}}}}"
       "latex": "AST对应的LaTex数学公式，清晰表达因子计算逻辑。"
     }}
     ```
@@ -311,13 +311,16 @@ class FinancialMathematicianAgent:
     ```
 
 ## 3. 可用的数据变量:
-- `log`: 日对数收益率数据
-- `high`: 股票最高价数据
-- `low`: 股票最低价数据
-- `vol`: 成交量数据
-- `amount`: 成交额数据
-- `close`: 股票收盘价数据
-- `open`: 股票开盘价数据
+- `log`: **个股**日对数收益率数据
+- `high`: **个股**最高价数据
+- `low`: **个股**最低价数据
+- `vol`: **个股**成交量数据
+- `amount`: **个股**成交额数据
+- `close`: **个股**收盘价数据
+- `open`: **个股**开盘价数据
+- `benchmark_ew`: **等权重组合基准**的日对数收益率
+- `benchmark_min_var`: **滚动最小方差组合基准**的日对数收益率
+- `benchmark_erc`: **滚动等风险贡献组合基准**的日对数收益率
 
 ## 4. 可用的算子库:
 {self.operator_descriptions}
@@ -329,11 +332,12 @@ class FinancialMathematicianAgent:
 
 ## 6. 注意事项:
 - 你的输出必须是有效的JSON格式，且只包含JSON内容，不要有任何额外文字。
-- 构思因子时，你**只能使用** "可用于因子计算的算子 (Factor Calculation Operators)" 类别下的算子。
+- 构思因子时，你**只能使用** "可用于因子计算的算子 (Factor Calculation Operators)" 或 "复合财务指标算子 (Complex Financial Metrics)" 类别下的算子。
 - 你**严禁使用** "数据预处理与因子结果处理算子 (Data Preprocessing and Factor Result Processing Operators)" 类别下的算子来构建因子计算逻辑。
 - 优先使用现有算子构建因子。只有在现有算子确实无法表达你的构思时，才提出新算子需求。
 - 构思的因子应尽可能简洁但有效，避免过度复杂化。
 - 确保AST语法树中的函数名和变量名与算子库中提供的名称完全一致。
+- **你可以使用新提供的基准收益率数据 (benchmark_ew, benchmark_min_var, benchmark_erc) 来构建相对价值或风险因子。例如，你可以计算个股收益率与基准收益率的差值 (`subtract(log, benchmark_ew)`)，或者使用 `alpha` 和 `beta` 算子。**
         """
         print(self.sys_prompt)
 
