@@ -66,7 +66,7 @@ class FactorCalculator:
             # 递归地获取所有子节点的ID
             child_ids = [self._get_node_id(child, known_nodes) for child in node['children']]
             # 节点的ID由其函数名和所有子节点的ID共同决定
-            node_id = f"operator::{node['func']}({', '.join(child_ids)})";
+            node_id = f"operator::{node['func']}({', '.join(child_ids)})"
             return node_id
         else:
             raise ValueError(f"不支持的AST节点类型: {node_type}")
