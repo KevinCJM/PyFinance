@@ -861,6 +861,8 @@ def winsorize(data: Union[np.ndarray, pd.DataFrame], lower_percentile: float = 0
         elif axis == 1:  # 按行（日期）缩尾
             lower_bound = data.quantile(lower_percentile, axis=1)
             upper_bound = data.quantile(upper_percentile, axis=1)
+        else:
+            raise ValueError("Axis must be 0 (time-series) or 1 (cross-sectional).")
 
         winsorized_data = data.clip(lower=lower_bound, upper=upper_bound, axis=axis)
         return winsorized_data
