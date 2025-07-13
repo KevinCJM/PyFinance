@@ -208,7 +208,7 @@ if __name__ == "__main__":
         processed_dir=PROCESSED_DATA_DIR
     )
 
-    df = pd.read_parquet(os.path.join(PROCESSED_DATA_DIR, "processed_log_df.parquet"))
+    df_l = pd.read_parquet(os.path.join(PROCESSED_DATA_DIR, "processed_log_df.parquet"))
     df_b = pd.read_parquet(os.path.join(PROCESSED_DATA_DIR, "benchmark_ew_log_returns.parquet"))
-    print(df.head())
+    print(df_l.head())
     print(df_b.head())
