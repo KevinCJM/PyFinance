@@ -35,7 +35,7 @@ def divide(a, b):
     # Ensure both are pandas objects for safe division
     a = pd.DataFrame(a) if not isinstance(a, (pd.DataFrame, pd.Series)) else a
     b = pd.DataFrame(b) if not isinstance(b, (pd.DataFrame, pd.Series)) else b
-    
+
     result = a.div(b)
     # Replace infinite values resulting from division by zero with NaN
     return result.replace([np.inf, -np.inf], np.nan)
@@ -462,7 +462,8 @@ def rolling_kurt(data: Union[np.ndarray, pd.DataFrame], window: int, axis: int =
     return pd.DataFrame(data).rolling(window=window, axis=axis).kurt().values
 
 
-def rolling_quantile(data: Union[np.ndarray, pd.DataFrame], window: int, quantile_level: float, axis: int = 0) -> np.ndarray:
+def rolling_quantile(data: Union[np.ndarray, pd.DataFrame], window: int, quantile_level: float,
+                     axis: int = 0) -> np.ndarray:
     """
     功能描述: 在指定窗口内计算数据的滚动分位数。
 
@@ -478,7 +479,8 @@ def rolling_quantile(data: Union[np.ndarray, pd.DataFrame], window: int, quantil
     return pd.DataFrame(data).rolling(window=window, axis=axis).quantile(quantile_level).values
 
 
-def rolling_corr(a: Union[np.ndarray, pd.DataFrame], b: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+def rolling_corr(a: Union[np.ndarray, pd.DataFrame], b: Union[np.ndarray, pd.DataFrame], window: int,
+                 axis: int = 0) -> np.ndarray:
     """
     功能描述: 在指定窗口内计算两个序列的滚动相关系数。
 
@@ -498,7 +500,8 @@ def rolling_corr(a: Union[np.ndarray, pd.DataFrame], b: Union[np.ndarray, pd.Dat
     return df_a.rolling(window=window, axis=0).corr(df_b).values
 
 
-def rolling_cov(a: Union[np.ndarray, pd.DataFrame], b: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+def rolling_cov(a: Union[np.ndarray, pd.DataFrame], b: Union[np.ndarray, pd.DataFrame], window: int,
+                axis: int = 0) -> np.ndarray:
     """
     功能描述: 在指定窗口内计算两个序列的滚动协方差。
 
@@ -563,6 +566,7 @@ def rolling_max_drawdown(data: Union[np.ndarray, pd.DataFrame], window: int, axi
     返回:
         np.ndarray: 滚动最大回撤的结果 (通常为负值)。
     """
+
     def max_drawdown(series):
         cumulative = (1 + series).cumprod()
         peak = cumulative.expanding(min_periods=1).max()
@@ -572,7 +576,7 @@ def rolling_max_drawdown(data: Union[np.ndarray, pd.DataFrame], window: int, axi
     # rolling.apply 只能在 axis=0 上操作
     if axis != 0:
         raise ValueError("rolling_max_drawdown only supports axis=0 (time-series).")
-    
+
     return pd.DataFrame(data).rolling(window=window, axis=0).apply(max_drawdown, raw=False).values
 
 
@@ -588,17 +592,19 @@ def downside_deviation(data: Union[np.ndarray, pd.DataFrame], window: int, axis:
     返回:
         np.ndarray: 滚动下行标准差的结果。
     """
+
     def calculate_downside_std(series):
         downside_returns = series[series < 0]
         return downside_returns.std(ddof=1)
 
     if axis != 0:
         raise ValueError("downside_deviation only supports axis=0 (time-series).")
-        
+
     return pd.DataFrame(data).rolling(window=window, axis=0).apply(calculate_downside_std, raw=False).values
 
 
-def sharpe_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
+def sharpe_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252,
+                 axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动夏普比率。
 
@@ -613,16 +619,17 @@ def sharpe_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per
     """
     if axis != 0:
         raise ValueError("sharpe_ratio only supports axis=0 (time-series).")
-        
+
     rolling_mean = pd.DataFrame(data).rolling(window=window, axis=0).mean()
     rolling_std = pd.DataFrame(data).rolling(window=window, axis=0).std(ddof=1)
-    
+
     # 避免除以零
     sharpe = (rolling_mean / rolling_std.replace(0, np.nan)) * np.sqrt(periods_per_year)
     return sharpe.values
 
 
-def sortino_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
+def sortino_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252,
+                  axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动索提诺比率。
 
@@ -637,16 +644,17 @@ def sortino_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_pe
     """
     if axis != 0:
         raise ValueError("sortino_ratio only supports axis=0 (time-series).")
-        
+
     rolling_mean = pd.DataFrame(data).rolling(window=window, axis=0).mean()
     rolling_downside_std = downside_deviation(data, window, axis=0)
-    
+
     # 避免除以零
     sortino = (rolling_mean / pd.DataFrame(rolling_downside_std).replace(0, np.nan)) * np.sqrt(periods_per_year)
     return sortino.values
 
 
-def calmar_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
+def calmar_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per_year: int = 252,
+                 axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动卡玛比率 (年化收益 / 最大回撤)。
 
@@ -661,16 +669,17 @@ def calmar_ratio(data: Union[np.ndarray, pd.DataFrame], window: int, periods_per
     """
     if axis != 0:
         raise ValueError("calmar_ratio only supports axis=0 (time-series).")
-        
+
     annualized_return = pd.DataFrame(data).rolling(window=window, axis=0).mean() * periods_per_year
     max_dd = rolling_max_drawdown(data, window, axis=0)
-    
+
     # 避免除以零, 并取最大回撤的绝对值
     calmar = annualized_return / pd.DataFrame(np.abs(max_dd)).replace(0, np.nan)
     return calmar.values
 
 
-def alpha(data: Union[np.ndarray, pd.DataFrame], benchmark_data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+def alpha(data: Union[np.ndarray, pd.DataFrame], benchmark_data: Union[np.ndarray, pd.DataFrame], window: int,
+          axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动Alpha (对基准的超额收益)。
 
@@ -683,28 +692,30 @@ def alpha(data: Union[np.ndarray, pd.DataFrame], benchmark_data: Union[np.ndarra
     返回:
         np.ndarray: 滚动Alpha的结果。
     """
+
     def calculate_alpha(y, x):
         x_with_const = sm.add_constant(x)
         model = sm.OLS(y, x_with_const).fit()
-        return model.params.iloc[0] # 返回截距项 (alpha)
+        return model.params.iloc[0]  # 返回截距项 (alpha)
 
     if axis != 0:
         raise ValueError("alpha only supports axis=0 (time-series).")
 
     df_data = pd.DataFrame(data)
     df_benchmark = pd.DataFrame(benchmark_data)
-    
+
     # 使用expanding来确保有足够的数据点进行回归
     results = pd.Series(index=df_data.index, dtype=float)
     for i in range(window, len(df_data)):
-        y_slice = df_data.iloc[i-window:i]
-        x_slice = df_benchmark.iloc[i-window:i]
+        y_slice = df_data.iloc[i - window:i]
+        x_slice = df_benchmark.iloc[i - window:i]
         results.iloc[i] = calculate_alpha(y_slice, x_slice)
-        
+
     return results.values
 
 
-def beta(data: Union[np.ndarray, pd.DataFrame], benchmark_data: Union[np.ndarray, pd.DataFrame], window: int, axis: int = 0) -> np.ndarray:
+def beta(data: Union[np.ndarray, pd.DataFrame], benchmark_data: Union[np.ndarray, pd.DataFrame], window: int,
+         axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动Beta (对基准的系统性风险)。
 
@@ -717,26 +728,25 @@ def beta(data: Union[np.ndarray, pd.DataFrame], benchmark_data: Union[np.ndarray
     返回:
         np.ndarray: 滚动Beta的结果。
     """
+
     def calculate_beta(y, x):
         x_with_const = sm.add_constant(x)
         model = sm.OLS(y, x_with_const).fit()
-        return model.params.iloc[1] # 返回斜率项 (beta)
+        return model.params.iloc[1]  # 返回斜率项 (beta)
 
     if axis != 0:
         raise ValueError("beta only supports axis=0 (time-series).")
 
     df_data = pd.DataFrame(data)
     df_benchmark = pd.DataFrame(benchmark_data)
-    
+
     results = pd.Series(index=df_data.index, dtype=float)
     for i in range(window, len(df_data)):
-        y_slice = df_data.iloc[i-window:i]
-        x_slice = df_benchmark.iloc[i-window:i]
+        y_slice = df_data.iloc[i - window:i]
+        x_slice = df_benchmark.iloc[i - window:i]
         results.iloc[i] = calculate_beta(y_slice, x_slice)
-        
+
     return results.values
-
-
 
 
 # --- 数据预处理与因子结果处理算子 (仅用于原始数据预处理和因子结果评估前端处理，不用于因子计算逻辑的构建) ---
