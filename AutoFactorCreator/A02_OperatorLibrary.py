@@ -520,6 +520,29 @@ def quantile(data: np.ndarray, q: Union[float, Sequence[float]], axis: int = 0) 
     return np.nanquantile(data, q, axis=axis)
 
 
+def excess_return(data: np.ndarray, benchmark_data: np.ndarray, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 获取股票的每日 excess return。即每日超额收益率。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        benchmark_data (np.ndarray): 基准数据，必须与data具有相同的形状。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 股票的 excess return。
+    """
+    if axis != 0:
+        raise ValueError("excess_return only supports axis=0 (time-series).")
+
+    if data.shape != benchmark_data.shape:
+        raise ValueError("data and benchmark_data must have the same shape.")
+
+    # 计算超额收益
+    excess_returns = data - benchmark_data
+    return excess_returns
+
+
 # --- 时间序列算子 (通常作用于axis=0，即时间轴) ---
 
 def ts_delay(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
@@ -1100,7 +1123,7 @@ def _ols_regression(y: np.ndarray, X: np.ndarray) -> np.ndarray:
 
 def alpha(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
-    功能描述: 计算滚动Alpha (对基准的超额收益)。
+    功能描述: 计算滚动Alpha。通过在每个时间点上使用最小二乘回归(OLS)方法，将资产收益率与基准收益率进行回归分析，从而估计出资产相对于基准的超额收益。
 
     参数:
         data (np.ndarray): 输入数据，NumPy数组格式。
@@ -1122,7 +1145,7 @@ def alpha(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int =
     for i in range(data.shape[1]):  # Iterate over columns (assets)
         asset_returns = data[:, i]
         benchmark_returns = benchmark_data[:, i]
-
+        # 执行滚动回归
         for j in range(window - 1, len(asset_returns)):  # Iterate over time
             y_slice = asset_returns[j - window + 1: j + 1]
             x_slice = benchmark_returns[j - window + 1: j + 1]
@@ -1138,7 +1161,7 @@ def alpha(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int =
 
 def beta(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
-    功能描述: 计算滚动Beta (对基准的系统性风险)。
+    功能描述: 计算滚动Beta (对基准的系统性风险)。通过在每个时间点上使用最小二乘回归(OLS)方法，得到的Beta值表示资产收益率对基准收益率的敏感度。
 
     参数:
         data (np.ndarray): 输入数据，NumPy数组格式。
