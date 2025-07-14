@@ -4,6 +4,15 @@
 @Modify Time: 2025/7/10 09:49       
 @Author: Kevin-Chen
 @Descriptions: 基础算子, 入参和出参必须是(np.ndarray, float, int), 必须支持nan的计算
+算子函数的注释必须遵循下面的格式:
+    功能描述: 计算a的p次幂。
+
+    参数:
+        a (Union[np.ndarray, pd.DataFrame, float, int]): 基数，可以是NumPy数组、浮点数或整数。
+        p (Union[np.ndarray, pd.DataFrame, float, int]): 指数，可以是NumPy数组、浮点数或整数。
+
+    返回:
+        Union[np.ndarray, pd.DataFrame, float, int]: 幂运算的结果，类型与输入a和p的类型兼容。
 """
 
 import numpy as np
@@ -15,6 +24,13 @@ from typing import Union, Optional, Sequence
 def add(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
     """
     功能描述: 执行两个输入之间的加法运算。
+
+    参数:
+        a (Union[np.ndarray, float, int]): 第一个加数。
+        b (Union[np.ndarray, float, int]): 第二个加数。
+
+    返回:
+        Union[np.ndarray, float, int]: 两数之和。
     """
     return np.add(a, b)
 
@@ -22,6 +38,13 @@ def add(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int]) -> U
 def subtract(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
     """
     功能描述: 执行两个输入之间的减法运算。
+
+    参数:
+        a (Union[np.ndarray, float, int]): 被减数。
+        b (Union[np.ndarray, float, int]): 减数。
+
+    返回:
+        Union[np.ndarray, float, int]: 两数之差。
     """
     return np.subtract(a, b)
 
@@ -29,6 +52,13 @@ def subtract(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int])
 def multiply(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
     """
     功能描述: 执行两个输入之间的乘法运算。
+
+    参数:
+        a (Union[np.ndarray, float, int]): 第一个乘数。
+        b (Union[np.ndarray, float, int]): 第二个乘数。
+
+    返回:
+        Union[np.ndarray, float, int]: 两数之积。
     """
     return np.multiply(a, b)
 
@@ -36,6 +66,13 @@ def multiply(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int])
 def divide(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
     """
     功能描述: 执行两个输入之间的除法运算，并处理除零情况。
+
+    参数:
+        a (Union[np.ndarray, float, int]): 被除数。
+        b (Union[np.ndarray, float, int]): 除数。
+
+    返回:
+        Union[np.ndarray, float, int]: 两数之商，除零结果为NaN。
     """
     result = np.divide(a, b)
     # 用NaN替换除零产生的无限值
@@ -47,10 +84,10 @@ def log(a: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
     功能描述: 计算输入值的自然对数，并处理非正数取对数的情况。
 
     参数:
-        a (Union[np.ndarray, pd.DataFrame, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
+        a (Union[np.ndarray, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
 
     返回:
-        Union[np.ndarray, pd.DataFrame, float, int]: 自然对数运算的结果。当输入值非正时，对应位置的结果为NaN。
+        Union[np.ndarray, float, int]: 自然对数运算的结果。当输入值非正时，对应位置的结果为NaN。
     """
     return np.log(a, out=np.full_like(a, np.nan), where=a > 0)
 
@@ -60,10 +97,10 @@ def abs_val(a: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
     功能描述: 计算输入值的绝对值。
 
     参数:
-        a (Union[np.ndarray, pd.DataFrame, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
+        a (Union[np.ndarray, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
 
     返回:
-        Union[np.ndarray, pd.DataFrame, float, int]: 绝对值运算的结果，类型与输入a的类型兼容。
+        Union[np.ndarray, float, int]: 绝对值运算的结果，类型与输入a的类型兼容。
     """
     return np.abs(a)
 
@@ -74,11 +111,11 @@ def power(a: Union[np.ndarray, float, int], p: Union[np.ndarray, float, int]) ->
     功能描述: 计算a的p次幂。
 
     参数:
-        a (Union[np.ndarray, pd.DataFrame, float, int]): 基数，可以是NumPy数组、浮点数或整数。
-        p (Union[np.ndarray, pd.DataFrame, float, int]): 指数，可以是NumPy数组、浮点数或整数。
+        a (Union[np.ndarray, float, int]): 基数，可以是NumPy数组、浮点数或整数。
+        p (Union[np.ndarray, float, int]): 指数，可以是NumPy数组、浮点数或整数。
 
     返回:
-        Union[np.ndarray, pd.DataFrame, float, int]: 幂运算的结果，类型与输入a和p的类型兼容。
+        Union[np.ndarray, float, int]: 幂运算的结果，类型与输入a和p的类型兼容。
     """
     return np.power(a, p)
 
@@ -88,10 +125,10 @@ def sqrt(a: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
     功能描述: 计算输入值的平方根，并处理负数开方的情况。
 
     参数:
-        a (Union[np.ndarray, pd.DataFrame, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
+        a (Union[np.ndarray, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
 
     返回:
-        Union[np.ndarray, pd.DataFrame, float, int]: 平方根运算的结果。当输入值为负时，对应位置的结果为NaN。
+        Union[np.ndarray, float, int]: 平方根运算的结果。当输入值为负时，对应位置的结果为NaN。
     """
     return np.sqrt(a, out=np.full_like(a, np.nan), where=a >= 0)
 
@@ -301,6 +338,13 @@ def rolling_min(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
 def mean(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
     """
     功能描述: 计算数据的均值。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+
+    返回:
+        Union[np.ndarray, float]: 均值。
     """
     return np.nanmean(data, axis=axis)
 
@@ -308,6 +352,14 @@ def mean(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
 def std_dev(data: np.ndarray, axis: int = 0, ddof: int = 1) -> Union[np.ndarray, float]:
     """
     功能描述: 计算数据的标准差。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+        ddof (int): 自由度。默认为1。
+
+    返回:
+        Union[np.ndarray, float]: 标准差。
     """
     return np.nanstd(data, axis=axis, ddof=ddof)
 
@@ -315,6 +367,14 @@ def std_dev(data: np.ndarray, axis: int = 0, ddof: int = 1) -> Union[np.ndarray,
 def variance(data: np.ndarray, axis: int = 0, ddof: int = 1) -> Union[np.ndarray, float]:
     """
     功能描述: 计算数据的方差。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+        ddof (int): 自由度。默认为1。
+
+    返回:
+        Union[np.ndarray, float]: 方差。
     """
     return np.nanvar(data, axis=axis, ddof=ddof)
 
@@ -406,6 +466,13 @@ def covariance(a: np.ndarray, b: np.ndarray, axis: int = 0) -> Union[np.ndarray,
 def max_val(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
     """
     功能描述: 计算数据的最大值。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+
+    返回:
+        Union[np.ndarray, float]: 最大值。
     """
     return np.nanmax(data, axis=axis)
 
@@ -413,6 +480,13 @@ def max_val(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
 def min_val(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
     """
     功能描述: 计算数据的最小值。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+
+    返回:
+        Union[np.ndarray, float]: 最小值。
     """
     return np.nanmin(data, axis=axis)
 
@@ -420,6 +494,13 @@ def min_val(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
 def median(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
     """
     功能描述: 计算数据的中位数。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+
+    返回:
+        Union[np.ndarray, float]: 中位数。
     """
     return np.nanmedian(data, axis=axis)
 
@@ -427,6 +508,14 @@ def median(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
 def quantile(data: np.ndarray, q: Union[float, Sequence[float]], axis: int = 0) -> Union[np.ndarray, float]:
     """
     功能描述: 计算数据的分位数。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        q (Union[float, Sequence[float]]): 要计算的分位数，介于0和1之间。
+        axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
+
+    返回:
+        Union[np.ndarray, float]: 分位数。
     """
     return np.nanquantile(data, q, axis=axis)
 
@@ -436,6 +525,14 @@ def quantile(data: np.ndarray, q: Union[float, Sequence[float]], axis: int = 0) 
 def ts_delay(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 获取过去第N期的数据（时间序列延迟）。也称为 'shift' 或 'lag'。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 延迟的期数。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 延迟后的数据。
     """
     if axis == 0:
         result = np.full_like(data, np.nan, dtype=float)
@@ -451,6 +548,14 @@ def ts_delay(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
 def ts_delta(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算当前数据与N期前数据的差值。也称为 'diff'。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 差分的期数。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 差分后的数据。
     """
     delayed_data = ts_delay(data, window, axis)
     return data - delayed_data
@@ -459,6 +564,14 @@ def ts_delta(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
 def moving_average(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算数据的移动平均。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 移动窗口的大小。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 移动平均值。
     """
     if axis == 0:
         data = data.T
@@ -477,6 +590,14 @@ def moving_average(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
 def ts_std(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算数据的滚动标准差。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动标准差。
     """
     if axis == 0:
         data = data.T
@@ -499,6 +620,14 @@ ts_mean = moving_average
 def exponential_moving_average(data: np.ndarray, span: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算数据的指数移动平均。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        span (int): 时间跨度。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 指数移动平均值。
     """
     if axis == 0:
         data = data.T
@@ -526,6 +655,14 @@ def exponential_moving_average(data: np.ndarray, span: int, axis: int = 0) -> np
 def rolling_skew(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 在指定窗口内计算数据的滚动偏度。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动偏度。
     """
     if axis == 0:
         data = data.T
@@ -552,6 +689,14 @@ def rolling_skew(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
 def rolling_kurt(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 在指定窗口内计算数据的滚动峰度。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动峰度。
     """
     if axis == 0:
         data = data.T
@@ -578,6 +723,15 @@ def rolling_kurt(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
 def rolling_quantile(data: np.ndarray, window: int, quantile_level: float, axis: int = 0) -> np.ndarray:
     """
     功能描述: 在指定窗口内计算数据的滚动分位数。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        quantile_level (float): 要计算的分位数，介于0和1之间。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动分位数。
     """
     if axis == 0:
         data = data.T
@@ -596,6 +750,15 @@ def rolling_quantile(data: np.ndarray, window: int, quantile_level: float, axis:
 def rolling_corr(a: np.ndarray, b: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 在指定窗口内计算两个序列的滚动相关系数。
+
+    参数:
+        a (np.ndarray): 输入数组a。
+        b (np.ndarray): 输入数组b，必须与a具有相同的形状。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 滚动相关系数。
     """
     if axis != 0:
         raise ValueError("rolling_corr only supports axis=0 (time-series correlation).")
@@ -621,6 +784,15 @@ def rolling_corr(a: np.ndarray, b: np.ndarray, window: int, axis: int = 0) -> np
 def rolling_cov(a: np.ndarray, b: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 在指定窗口内计算两个序列的滚动协方差。
+
+    参数:
+        a (np.ndarray): 输入数组a。
+        b (np.ndarray): 输入数组b，必须与a具有相同的形状。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 滚动协方差。
     """
     if axis != 0:
         raise ValueError("rolling_cov only supports axis=0 (time-series covariance).")
@@ -701,6 +873,14 @@ def ts_rank(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
 def time_series_decay(data: np.ndarray, halflife: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算数据的时间序列衰减加权平均 (指数加权移动平均)。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        halflife (int): 半衰期。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 时间序列衰减加权平均值。
     """
     if data.ndim == 1:
         data = data[:, np.newaxis]  # Make it 2D for consistent processing
@@ -746,6 +926,14 @@ def time_series_decay(data: np.ndarray, halflife: int, axis: int = 0) -> np.ndar
 def rolling_max_drawdown(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动最大回撤。最大回撤衡量了在指定窗口内资产净值从峰值回落的最大百分比。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 滚动最大回撤。
     """
     if axis != 0:
         raise ValueError("rolling_max_drawdown only supports axis=0 (time-series).")
@@ -772,6 +960,14 @@ def rolling_max_drawdown(data: np.ndarray, window: int, axis: int = 0) -> np.nda
 def downside_deviation(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算下行标准差（下行波动率）。只针对窗口期内小于0的收益率计算标准差。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 下行标准差。
     """
     if axis != 0:
         raise ValueError("downside_deviation only supports axis=0 (time-series).")
@@ -795,6 +991,15 @@ def downside_deviation(data: np.ndarray, window: int, axis: int = 0) -> np.ndarr
 def sharpe_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动夏普比率。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        periods_per_year (int): 每年的周期数，用于年化。默认为252。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 滚动夏普比率。
     """
     if axis != 0:
         raise ValueError("sharpe_ratio only supports axis=0 (time-series).")
@@ -810,6 +1015,15 @@ def sharpe_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, axi
 def sortino_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动索提诺比率。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        periods_per_year (int): 每年的周期数，用于年化。默认为252。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 滚动索提诺比率。
     """
     if axis != 0:
         raise ValueError("sortino_ratio only supports axis=0 (time-series).")
@@ -826,6 +1040,15 @@ def sortino_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, ax
 def calmar_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动卡玛比率 (年化收益 / 最大回撤)。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        periods_per_year (int): 每年的周期数，用于年化。默认为252。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 滚动卡玛比率。
     """
     if axis != 0:
         raise ValueError("calmar_ratio only supports axis=0 (time-series).")
@@ -874,6 +1097,15 @@ def _ols_regression(y: np.ndarray, X: np.ndarray) -> np.ndarray:
 def alpha(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动Alpha (对基准的超额收益)。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        benchmark_data (np.ndarray): 基准数据，必须与data具有相同的形状。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 滚动Alpha。
     """
     if axis != 0:
         raise ValueError("alpha only supports axis=0 (time-series).")
@@ -903,6 +1135,15 @@ def alpha(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int =
 def beta(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     """
     功能描述: 计算滚动Beta (对基准的系统性风险)。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        benchmark_data (np.ndarray): 基准数据，必须与data具有相同的形状。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。目前只支持0（时间序列）。
+
+    返回:
+        np.ndarray: 滚动Beta。
     """
     if axis != 0:
         raise ValueError("beta only supports axis=0 (time-series).")
@@ -933,6 +1174,14 @@ def beta(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int = 
 def neutralize(factor_data: np.ndarray, risk_factors_data: np.ndarray, axis: int = 1) -> np.ndarray:
     """
     功能描述: 对因子数据进行中性化处理，消除其中包含的风险因子暴露。
+
+    参数:
+        factor_data (np.ndarray): 因子数据。
+        risk_factors_data (np.ndarray): 风险因子数据，必须与factor_data具有相同的形状。
+        axis (int): 中性化的轴向。1表示横截面中性化，0表示时间序列中性化。默认为1。
+
+    返回:
+        np.ndarray: 中性化后的因子数据。
     """
     if factor_data.shape != risk_factors_data.shape:
         raise ValueError("factor_data and risk_factors_data must have the same shape.")
@@ -1004,6 +1253,15 @@ def winsorize(data: np.ndarray, lower_percentile: float = 0.01, upper_percentile
               axis: Optional[int] = None) -> np.ndarray:
     """
     功能描述: 对数据进行缩尾处理，将极端值替换为指定分位数的值。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        lower_percentile (float): 下分位数，介于0和1之间。默认为0.01。
+        upper_percentile (float): 上分位数，介于0和1之间。默认为0.99。
+        axis (Optional[int]): 计算分位数的轴向。默认为None，对整个数组计算。
+
+    返回:
+        np.ndarray: 缩尾处理后的数据。
     """
     lower_bound = np.nanpercentile(data, lower_percentile * 100, axis=axis, keepdims=True)
     upper_bound = np.nanpercentile(data, upper_percentile * 100, axis=axis, keepdims=True)
@@ -1018,12 +1276,12 @@ def clip(data: np.ndarray, lower_bound: Optional[Union[float, int]] = None,
     功能描述: 将数据值限制在指定的上下限范围内。
 
     参数:
-        data (Union[np.ndarray, pd.DataFrame]): 输入数据，可以是NumPy数组或Pandas DataFrame。
+        data (np.ndarray): 输入数据，可以是NumPy数组。
         lower_bound (Optional[Union[float, int]]): 数据的下限值。默认为None（无下限）。
         upper_bound (Optional[Union[float, int]]): 数据的上限值。默认为None（无上限）。
 
     返回:
-        Union[np.ndarray, pd.DataFrame]: 截断/裁剪后的数据，类型与输入data的类型兼容。
+        np.ndarray: 截断/裁剪后的数据。
     """
     return np.clip(data, lower_bound, upper_bound)
 
@@ -1032,6 +1290,15 @@ def fill_na(data: np.ndarray, method: str = 'ffill', value: Optional[Union[float
             axis: Optional[int] = None) -> np.ndarray:
     """
     功能描述: 填充数据中的缺失值（NaN）。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        method (str): 填充方法。可选值: 'ffill', 'bfill', 'zero', 'mean', 'median', 'value'。默认为'ffill'。
+        value (Optional[Union[float, int]]): 当method为'value'时，用于填充的特定值。
+        axis (Optional[int]): 'ffill', 'bfill', 'mean', 'median'的计算轴向。默认为None。
+
+    返回:
+        np.ndarray: 填充缺失值后的数据。
     """
     if method == 'zero':
         return np.nan_to_num(data, nan=0)
@@ -1094,6 +1361,13 @@ def fill_na(data: np.ndarray, method: str = 'ffill', value: Optional[Union[float
 def cross_sectional_rank(data: np.ndarray, axis: int = 1) -> np.ndarray:
     """
     功能描述: 对数据进行横截面排名（通常对每个日期进行排名）。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        axis (int): 排名的轴向。1表示横截面排名，0表示时间序列排名。默认为1。
+
+    返回:
+        np.ndarray: 排名后的数据（百分比形式）。
     """
     if axis == 1:
         ranked_data = np.full_like(data, np.nan, dtype=float)
@@ -1140,6 +1414,13 @@ def cross_sectional_rank(data: np.ndarray, axis: int = 1) -> np.ndarray:
 def cross_sectional_scale(data: np.ndarray, axis: int = 1) -> np.ndarray:
     """
     功能描述: 对数据进行横截面标准化（Z-score标准化）。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        axis (int): 标准化的轴向。1表示横截面标准化，0表示时间序列标准化。默认为1。
+
+    返回:
+        np.ndarray: 标准化后的数据。
     """
     if axis == 1:
         mean_vals = np.nanmean(data, axis=axis, keepdims=True)

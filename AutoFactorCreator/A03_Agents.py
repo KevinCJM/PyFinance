@@ -122,6 +122,8 @@ def _get_operator_descriptions():
         return "\n".join(lines)
 
     for name, obj in inspect.getmembers(module, inspect.isfunction):
+        if name in ['neutralize', 'winsorize', 'clip', 'fill_na', 'cross_sectional_rank', 'cross_sectional_scale']:
+            continue  # 跳过这些函数，因为它们是预处理算子
         if not name.startswith("_") and obj.__module__ == module.__name__:
             formatted = format_docstring(name, obj)
             if name in factor_calc_names:
@@ -134,12 +136,7 @@ def _get_operator_descriptions():
     description_str = """
 > 可用于因子计算的算子 (Factor Calculation Operators), 这些算子可以直接用于构建金融因子计算逻辑:
 
-""" + "\n\n".join(factor_calculation_operators) + """
-
-数据预处理与因子结果处理算子 (Data Preprocessing and Factor Result Processing Operators):
-这些算子仅用于原始数据的预处理和因子结果评估的前端处理，严禁在因子计算逻辑的构建中使用。
----
-""" + "\n\n".join(preprocessing_operators)
+""" + "\n\n".join(factor_calculation_operators)
 
     return {
         "factor_calculation_operators": factor_calculation_operators,
@@ -332,8 +329,6 @@ class FinancialMathematicianAgent:
 
 ## 6. 注意事项:
 - 你的输出必须是有效的JSON格式，且只包含JSON内容，不要有任何额外文字。
-- 构思因子时，你**只能使用** "可用于因子计算的算子 (Factor Calculation Operators)" 或 "复合财务指标算子 (Complex Financial Metrics)" 类别下的算子。
-- 你**严禁使用** "数据预处理与因子结果处理算子 (Data Preprocessing and Factor Result Processing Operators)" 类别下的算子来构建因子计算逻辑。
 - 优先使用现有算子构建因子。只有在现有算子确实无法表达你的构思时，才提出新算子需求。
 - 构思的因子应尽可能简洁但有效，避免过度复杂化。
 - 确保AST语法树中的函数名和变量名与算子库中提供的名称完全一致。
