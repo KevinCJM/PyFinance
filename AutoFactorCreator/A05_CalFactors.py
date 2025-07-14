@@ -477,16 +477,16 @@ if __name__ == '__main__':
     # 以字典形式定义因子计算公式 (AST)
     # 示例因子: vol / std_dev(moving_average(vol, 20))
     user_ast = {
-        "func": "divide",
+        "func": "subtract",
         "args": {
             "a": {
-                "func": "std_dev",
+                "func": "cumulative_sum",
                 "args": {
                     "data": {
                         "func": "excess_return",
                         "args": {
                             "data": {
-                                "var": "log"
+                                "var": "log_return"
                             },
                             "benchmark_data": {
                                 "var": "benchmark_ew"
@@ -494,25 +494,39 @@ if __name__ == '__main__':
                             "axis": 0
                         }
                     },
-                    "axis": 0,
-                    "ddof": 1
+                    "axis": 0
                 }
             },
             "b": {
-                "func": "abs_val",
+                "func": "rolling_sum",
                 "args": {
-                    "a": {
-                        "func": "correlation",
+                    "data": {
+                        "func": "subtract",
                         "args": {
                             "a": {
-                                "var": "log"
+                                "func": "exponential_moving_average",
+                                "args": {
+                                    "data": {
+                                        "var": "log_return"
+                                    },
+                                    "span": 20,
+                                    "axis": 0
+                                }
                             },
                             "b": {
-                                "var": "benchmark_ew"
-                            },
-                            "axis": 0
+                                "func": "ts_std",
+                                "args": {
+                                    "data": {
+                                        "var": "log_return"
+                                    },
+                                    "window": 20,
+                                    "axis": 0
+                                }
+                            }
                         }
-                    }
+                    },
+                    "window": 5,
+                    "axis": 0
                 }
             }
         }

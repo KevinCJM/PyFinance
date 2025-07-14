@@ -10,23 +10,15 @@ import os
 import re
 import sys
 import json
+import random  # 导入random模块用于模拟因子效果
 import inspect
 import requests
 import traceback
+import importlib.util
 from openai import OpenAI
-import random  # 导入random模块用于模拟因子效果
 
 # 确保A02_OperatorLibrary在Python路径中，以便inspect可以找到它
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-# 动态导入A02_OperatorLibrary以获取算子信息
-import importlib.util
-
-import os
-import importlib.util
-import inspect
-import traceback
-import re
 
 
 def _get_operator_descriptions():
@@ -336,7 +328,7 @@ class FinancialMathematicianAgent:
         """
         print(self.sys_prompt)
 
-    def propose_factor_or_operator(self, current_evaluation_result: dict = None) -> dict:
+    def propose_factor_or_operator(self) -> dict:
         """
         构思新的因子计算逻辑或提出新算子需求。
 
@@ -350,7 +342,8 @@ class FinancialMathematicianAgent:
         user_prompt = """### 请构思一个新的金融因子。"""
 
         if self.history_factor_results:
-            user_prompt += "\n\n### 历史因子成果摘要：\n" + json.dumps(self.history_factor_results, indent=2, ensure_ascii=False)
+            user_prompt += (f"\n\n### 历史因子成果摘要："
+                            f"\n{json.dumps(self.history_factor_results, indent=2, ensure_ascii=False)}")
 
         user_prompt += "\n请根据这些结果，提出一个改进的因子或一个全新的因子。"
         print(user_prompt)
@@ -418,8 +411,7 @@ if __name__ == "__main__":
 
     for i in range(1, 4):  # 模拟3轮
         print(f"\n--- 第 {i} 轮因子构思 ---")
-        current_eval_result = None
-        proposed_output = fm_agent.propose_factor_or_operator(current_eval_result)
+        proposed_output = fm_agent.propose_factor_or_operator()
         print(proposed_output)
         # 提取des和ast
         the_ast = proposed_output.get("ast")
@@ -435,8 +427,6 @@ if __name__ == "__main__":
             "t_stat": round(random.uniform(1.5, 3.0), 2),
             "comment": comment
         }
-        print(f"模拟评估结果: {current_eval_result}")
-
         # 将本次构思的因子（如果不是新算子需求）添加到历史记录
         fm_agent.add_history_factor_result({
             "factor_name": f"Factor_Round_{i}",
