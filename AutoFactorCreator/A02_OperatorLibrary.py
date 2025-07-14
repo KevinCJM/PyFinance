@@ -1063,10 +1063,14 @@ def calmar_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, axi
 
 def _ols_regression(y: np.ndarray, X: np.ndarray) -> np.ndarray:
     """
-    Performs Ordinary Least Squares (OLS) regression using NumPy.
-    Assumes X already includes a constant term if needed.
-    Handles NaN values by dropping rows where either y or X has NaN.
-    Returns the regression coefficients (beta values).
+    功能描述: 执行普通最小二乘回归 (OLS)，计算回归系数。
+
+    参数:
+        y (np.ndarray): 响应变量，必须是一维数组。
+        X (np.ndarray): 自变量，必须是二维数组。
+
+    返回:
+        np.ndarray: 回归系数，包括截距和斜率。如果无法计算，则返回NaN。
     """
     # Combine y and X to easily drop rows with NaNs
     combined = np.concatenate((y[:, np.newaxis], X), axis=1)
