@@ -290,7 +290,6 @@ class FinancialMathematicianAgent:
     {{
       "des": "对因子逻辑的详细解释，包括其经济学含义和预期效果。",
       "ast": "AST语法树，表示因子计算的步骤，使用算子库中的函数名。例如：{{\"func\": \"add\", \"args\": {{\"a\": {{\"var\": \"close_df\"}}, \"b\": {{\"func\": \"std_dev\", \"args\": {{\"data\": {{\"var\": \"vol_df\"}}, \"axis\": \"0\", \"ddof\": \"1\"}}}}}}}}}}"
-      "latex": "AST对应的LaTex数学公式，清晰表达因子计算逻辑。"
     }}
     ```
     AST语法树的结构必须是嵌套的字典，其中包含 'func' (函数名) 或 'var' (变量名)，以及 'args' (参数列表)。
@@ -379,7 +378,7 @@ class FinancialMathematicianAgent:
                     raise ValueError("Invalid CreateNewCalFunc JSON format.")
                 print("金融数学家智能体提出了新算子需求。")
                 return response_json
-            elif "des" in response_json and "ast" in response_json and "latex" in response_json:
+            elif "des" in response_json and "ast" in response_json:
                 print("金融数学家智能体提出了新的因子计算逻辑。")
                 # 可以在这里添加更复杂的AST结构验证
                 return response_json
