@@ -283,7 +283,8 @@ class FinancialMathematicianAgent:
         self.operator_descriptions_dict = _get_operator_descriptions()
         self.operator_descriptions = self.operator_descriptions_dict.get("description", "")
         self.history_factor_results = []  # 存储历史因子成果摘要
-        self.sys_prompt = f"""你是一个顶级的金融数学家，精通量化投资和因子模型。你的任务是根据提供的算子库和可用数据，构思新的、有效的金融因子计算逻辑。你必须严格按照以下JSON格式返回你的构思：
+        self.sys_prompt = f"""你是一个顶级的金融数学家，精通量化投资和因子模型。你的任务是根据提供的算子库和可用数据，构思用于预测未来收益的金融因子计算逻辑。因子逻辑需要足够的创新,但也要遵循金融学的基本原理和数学的计算逻辑。
+你必须严格按照以下JSON格式返回你的构思：
 
 ## 1. 因子计算逻辑:
     ```json
@@ -350,11 +351,9 @@ class FinancialMathematicianAgent:
         user_prompt = """### 请构思一个新的金融因子。"""
 
         if self.history_factor_results:
-            user_prompt += "\n\n### 历史因子成果摘要：\n" + json.dumps(self.history_factor_results, indent=2)
+            user_prompt += "\n\n### 历史因子成果摘要：\n" + json.dumps(self.history_factor_results, indent=2, ensure_ascii=False)
 
-        if current_evaluation_result:
-            user_prompt += "\n\n### 当前因子的评估结果：\n" + json.dumps(current_evaluation_result, indent=2)
-            user_prompt += "\n请根据这些结果，提出一个改进的因子或一个全新的因子。"
+        user_prompt += "\n请根据这些结果，提出一个改进的因子或一个全新的因子。"
         print(user_prompt)
         print("\n--- 金融数学家智能体正在构思... ---")
         llm_response_str = None
@@ -421,26 +420,29 @@ if __name__ == "__main__":
     for i in range(1, 4):  # 模拟3轮
         print(f"\n--- 第 {i} 轮因子构思 ---")
         current_eval_result = None
-        if i > 1:  # 从第二轮开始，模拟评估结果
-            # 模拟因子评估结果
-            rank_ic = round(random.uniform(0.01, 0.15), 4)  # 模拟Rank IC
-            comment = "表现良好" if rank_ic > 0.05 else "表现一般"
-            current_eval_result = {
-                "factor_name": f"Factor_Round_{i - 1}",
-                "rank_ic": rank_ic,
-                "t_stat": round(random.uniform(1.5, 3.0), 2),
-                "comment": comment
-            }
-            print(f"模拟评估结果: {current_eval_result}")
-
         proposed_output = fm_agent.propose_factor_or_operator(current_eval_result)
         print(proposed_output)
+        # 提取des和ast
+        the_ast = proposed_output.get("ast")
+        the_des = proposed_output.get("des")
         print("金融数学家智能体输出:", json.dumps(proposed_output, indent=2, ensure_ascii=False))
 
+        # 模拟因子评估结果
+        rank_ic = round(random.uniform(0.01, 0.15), 4)  # 模拟Rank IC
+        comment = "表现良好" if rank_ic > 0.05 else "表现一般"
+        current_eval_result = {
+            "factor_name": f"Factor_Round_{i - 1}",
+            "rank_ic": rank_ic,
+            "t_stat": round(random.uniform(1.5, 3.0), 2),
+            "comment": comment
+        }
+        print(f"模拟评估结果: {current_eval_result}")
+
         # 将本次构思的因子（如果不是新算子需求）添加到历史记录
-        if "des" in proposed_output and "ast" in proposed_output:
-            fm_agent.add_history_factor_result({
-                "factor_name": f"Factor_Round_{i}",
-                "rank_ic": current_eval_result["rank_ic"] if current_eval_result else None,  # 第一次没有评估结果
-                "des": proposed_output["des"]
-            })
+        fm_agent.add_history_factor_result({
+            "factor_name": f"Factor_Round_{i}",
+            "des": the_des,
+            "ast": the_ast,
+            "rank_ic": current_eval_result["rank_ic"] if current_eval_result else None,  # 第一次没有评估结果
+            "comment": current_eval_result["comment"] if current_eval_result else None,  # 第一次没有评估结果
+        })
