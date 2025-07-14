@@ -30,7 +30,7 @@ def add(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int]) -> U
         b (Union[np.ndarray, float, int]): 第二个加数。
 
     返回:
-        Union[np.ndarray, float, int]: 两数之和。
+        Union[np.ndarray, float, int]: 两数之和。如果输入是NumPy数组，则返回相同形状的数组；如果输入是标量，则返回标量。
     """
     return np.add(a, b)
 
@@ -44,7 +44,7 @@ def subtract(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int])
         b (Union[np.ndarray, float, int]): 减数。
 
     返回:
-        Union[np.ndarray, float, int]: 两数之差。
+        Union[np.ndarray, float, int]: 两数之差。如果输入是NumPy数组，则返回相同形状的数组；如果输入是标量，则返回标量。
     """
     return np.subtract(a, b)
 
@@ -58,7 +58,7 @@ def multiply(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int])
         b (Union[np.ndarray, float, int]): 第二个乘数。
 
     返回:
-        Union[np.ndarray, float, int]: 两数之积。
+        Union[np.ndarray, float, int]: 两数之积。如果输入是NumPy数组，则返回相同形状的数组；如果输入是标量，则返回标量。
     """
     return np.multiply(a, b)
 
@@ -72,7 +72,7 @@ def divide(a: Union[np.ndarray, float, int], b: Union[np.ndarray, float, int]) -
         b (Union[np.ndarray, float, int]): 除数。
 
     返回:
-        Union[np.ndarray, float, int]: 两数之商，除零结果为NaN。
+        Union[np.ndarray, float, int]: 两数之商。如果输入是NumPy数组，则返回相同形状的数组；如果输入是标量，则返回标量。除零结果为NaN。
     """
     result = np.divide(a, b)
     # 用NaN替换除零产生的无限值
@@ -87,7 +87,7 @@ def log(a: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
         a (Union[np.ndarray, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
 
     返回:
-        Union[np.ndarray, float, int]: 自然对数运算的结果。当输入值非正时，对应位置的结果为NaN。
+        Union[np.ndarray, float, int]: 自然对数运算的结果。如果输入是NumPy数组，则返回相同形状的数组；如果输入是标量，则返回标量。当输入值非正时，对应位置的结果为NaN。
     """
     return np.log(a, out=np.full_like(a, np.nan), where=a > 0)
 
@@ -100,7 +100,7 @@ def abs_val(a: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
         a (Union[np.ndarray, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
 
     返回:
-        Union[np.ndarray, float, int]: 绝对值运算的结果，类型与输入a的类型兼容。
+        Union[np.ndarray, float, int]: 绝对值运算的结果。如果输入是NumPy数组，则返回相同形状的数组；如果输入是标量，则返回标量。
     """
     return np.abs(a)
 
@@ -115,7 +115,7 @@ def power(a: Union[np.ndarray, float, int], p: Union[np.ndarray, float, int]) ->
         p (Union[np.ndarray, float, int]): 指数，可以是NumPy数组、浮点数或整数。
 
     返回:
-        Union[np.ndarray, float, int]: 幂运算的结果，类型与输入a和p的类型兼容。
+        Union[np.ndarray, float, int]: 幂运算的结果。如果输入是NumPy数组，则返回相同形状的数组；如果输入是标量，则返回标量。
     """
     return np.power(a, p)
 
@@ -128,7 +128,7 @@ def sqrt(a: Union[np.ndarray, float, int]) -> Union[np.ndarray, float, int]:
         a (Union[np.ndarray, float, int]): 输入值，可以是NumPy数组、浮点数或整数。
 
     返回:
-        Union[np.ndarray, float, int]: 平方根运算的结果。当输入值为负时，对应位置的结果为NaN。
+        Union[np.ndarray, float, int]: 平方根运算的结果。如果输入是NumPy数组，则返回相同形状的数组；如果输入是标量，则返回标量。当输入值为负时，对应位置的结果为NaN。
     """
     return np.sqrt(a, out=np.full_like(a, np.nan), where=a >= 0)
 
@@ -145,7 +145,7 @@ def cumulative_sum(data: np.ndarray, axis: int = 0) -> np.ndarray:
         axis (int): 累积的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 累积和的结果。
+        np.ndarray: 累积和的结果。形状为与输入数据相同, 但NaN位置将被视为0。
     """
     return np.nancumsum(data, axis=axis)
 
@@ -159,7 +159,7 @@ def cumulative_product(data: np.ndarray, axis: int = 0) -> np.ndarray:
         axis (int): 累积的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 累积乘积的结果。
+        np.ndarray: 累积乘积的结果。形状与输入数据相同。
     """
     return np.nancumprod(data, axis=axis)
 
@@ -173,7 +173,7 @@ def cumulative_max(data: np.ndarray, axis: int = 0) -> np.ndarray:
         axis (int): 累积的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 累积最大值的结果。
+        np.ndarray: 累积最大值的结果。形状与输入数据相同。
     """
     temp_data = np.where(np.isnan(data), -np.inf, data)
     result = np.maximum.accumulate(temp_data, axis=axis)
@@ -190,7 +190,7 @@ def cumulative_min(data: np.ndarray, axis: int = 0) -> np.ndarray:
         axis (int): 累积的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 累积最小值的结果。
+        np.ndarray: 累积最小值的结果。形状与输入数据相同。
     """
     temp_data = np.where(np.isnan(data), np.inf, data)
     result = np.minimum.accumulate(temp_data, axis=axis)
@@ -227,7 +227,7 @@ def rolling_sum(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动累加和的结果。
+        np.ndarray: 滚动累加和的结果。形状为与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if data.shape[axis] < window:
         return np.full_like(data, np.nan)
@@ -256,7 +256,7 @@ def rolling_product(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动累积乘积的结果。
+        np.ndarray: 滚动累积乘积的结果。形状为与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if data.shape[axis] < window:
         return np.full_like(data, np.nan)
@@ -285,7 +285,7 @@ def rolling_max(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动最大值的结果。
+        np.ndarray: 滚动最大值的结果。形状为与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if data.shape[axis] < window:
         return np.full_like(data, np.nan)
@@ -314,7 +314,7 @@ def rolling_min(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动最小值的结果。
+        np.ndarray: 滚动最小值的结果。形状为与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if data.shape[axis] < window:
         return np.full_like(data, np.nan)
@@ -344,7 +344,7 @@ def mean(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
         axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
 
     返回:
-        Union[np.ndarray, float]: 均值。
+        Union[np.ndarray, float]: 均值。如果axis为None或数据为一维，则返回标量；否则返回一个NumPy数组，其维度比输入数据少一维。
     """
     return np.nanmean(data, axis=axis)
 
@@ -359,7 +359,7 @@ def std_dev(data: np.ndarray, axis: int = 0, ddof: int = 1) -> Union[np.ndarray,
         ddof (int): 自由度。默认为1。
 
     返回:
-        Union[np.ndarray, float]: 标准差。
+        Union[np.ndarray, float]: 标准差。如果axis为None或数据为一维，则返回标量；否则返回一个NumPy数组，其维度比输入数据少一维。
     """
     return np.nanstd(data, axis=axis, ddof=ddof)
 
@@ -374,7 +374,7 @@ def variance(data: np.ndarray, axis: int = 0, ddof: int = 1) -> Union[np.ndarray
         ddof (int): 自由度。默认为1。
 
     返回:
-        Union[np.ndarray, float]: 方差。
+        Union[np.ndarray, float]: 方差。如果axis为None或数据为一维，则返回标量；否则返回一个NumPy数组，其维度比输入数据少一维。
     """
     return np.nanvar(data, axis=axis, ddof=ddof)
 
@@ -389,7 +389,7 @@ def correlation(a: np.ndarray, b: np.ndarray, axis: int = 0) -> Union[np.ndarray
         axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
 
     返回:
-        Union[np.ndarray, float]: 相关系数。如果axis=0且输入为2D，则返回一个1D数组。
+        Union[np.ndarray, float]: 相关系数。如果输入为1D数组，则返回标量；如果axis=0且输入为2D，则返回一个1D数组（形状为(N,)）；如果axis=1且输入为2D，则返回一个1D数组（形状为(T,)）。
     """
     if a.shape != b.shape:
         raise ValueError("输入数组 a 和 b 必须具有相同的形状。")
@@ -431,7 +431,7 @@ def covariance(a: np.ndarray, b: np.ndarray, axis: int = 0) -> Union[np.ndarray,
         axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
 
     返回:
-        Union[np.ndarray, float]: 协方差。如果axis=0且输入为2D，则返回一个1D数组。
+        Union[np.ndarray, float]: 协方差。如果输入为1D数组，则返回标量；如果axis=0且输入为2D，则返回一个1D数组（形状为(N,)）；如果axis=1且输入为2D，则返回一个1D数组（形状为(T,)）。
     """
     if a.shape != b.shape:
         raise ValueError("输入数组 a 和 b 必须具有相同的形状。")
@@ -472,7 +472,7 @@ def max_val(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
         axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
 
     返回:
-        Union[np.ndarray, float]: 最大值。
+        Union[np.ndarray, float]: 最大值。如果axis为None或数据为一维，则返回标量；否则返回一个NumPy数组，其维度比输入数据少一维。
     """
     return np.nanmax(data, axis=axis)
 
@@ -486,7 +486,7 @@ def min_val(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
         axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
 
     返回:
-        Union[np.ndarray, float]: 最小值。
+        Union[np.ndarray, float]: 最小值。如果axis为None或数据为一维，则返回标量；否则返回一个NumPy数组，其维度比输入数据少一维。
     """
     return np.nanmin(data, axis=axis)
 
@@ -500,7 +500,7 @@ def median(data: np.ndarray, axis: int = 0) -> Union[np.ndarray, float]:
         axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
 
     返回:
-        Union[np.ndarray, float]: 中位数。
+        Union[np.ndarray, float]: 中位数。如果axis为None或数据为一维，则返回标量；否则返回一个NumPy数组，其维度比输入数据少一维。
     """
     return np.nanmedian(data, axis=axis)
 
@@ -515,7 +515,7 @@ def quantile(data: np.ndarray, q: Union[float, Sequence[float]], axis: int = 0) 
         axis (int): 计算的轴向。0表示按列（时间序列），1表示按行（横截面）。默认为0。
 
     返回:
-        Union[np.ndarray, float]: 分位数。
+        Union[np.ndarray, float]: 分位数。如果axis为None或数据为一维，则返回标量；否则返回一个NumPy数组，其维度比输入数据少一维。
     """
     return np.nanquantile(data, q, axis=axis)
 
@@ -530,7 +530,7 @@ def excess_return(data: np.ndarray, benchmark_data: np.ndarray, axis: int = 0) -
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 股票的 excess return。
+        np.ndarray: 股票的 excess return。形状与输入数据相同。
     """
     if axis != 0:
         raise ValueError("excess_return only supports axis=0 (time-series).")
@@ -555,7 +555,7 @@ def ts_delay(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 延迟后的数据。
+        np.ndarray: 延迟后的数据。形状与输入数据相同，但前 'window' 个位置为 NaN。
     """
     if axis == 0:
         result = np.full_like(data, np.nan, dtype=float)
@@ -578,7 +578,7 @@ def ts_delta(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 差分后的数据。
+        np.ndarray: 差分后的数据。形状与输入数据相同，但前 'window' 个位置为 NaN。
     """
     delayed_data = ts_delay(data, window, axis)
     return data - delayed_data
@@ -594,7 +594,7 @@ def moving_average(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 移动平均值。
+        np.ndarray: 移动平均值。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis == 0:
         data = data.T
@@ -620,7 +620,7 @@ def ts_std(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动标准差。
+        np.ndarray: 滚动标准差。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis == 0:
         data = data.T
@@ -650,7 +650,7 @@ def exponential_moving_average(data: np.ndarray, span: int, axis: int = 0) -> np
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 指数移动平均值。
+        np.ndarray: 指数移动平均值。形状与输入数据相同。
     """
     if axis == 0:
         data = data.T
@@ -685,7 +685,7 @@ def rolling_skew(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动偏度。
+        np.ndarray: 滚动偏度。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis == 0:
         data = data.T
@@ -719,7 +719,7 @@ def rolling_kurt(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动峰度。
+        np.ndarray: 滚动峰度。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis == 0:
         data = data.T
@@ -754,7 +754,7 @@ def rolling_quantile(data: np.ndarray, window: int, quantile_level: float, axis:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动分位数。
+        np.ndarray: 滚动分位数。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis == 0:
         data = data.T
@@ -781,7 +781,7 @@ def rolling_corr(a: np.ndarray, b: np.ndarray, window: int, axis: int = 0) -> np
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 滚动相关系数。
+        np.ndarray: 滚动相关系数。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("rolling_corr only supports axis=0 (time-series correlation).")
@@ -815,7 +815,7 @@ def rolling_cov(a: np.ndarray, b: np.ndarray, window: int, axis: int = 0) -> np.
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 滚动协方差。
+        np.ndarray: 滚动协方差。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("rolling_cov only supports axis=0 (time-series covariance).")
@@ -849,7 +849,7 @@ def ts_rank(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 滚动百分比排名的结果。
+        np.ndarray: 滚动百分比排名的结果。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if data.shape[axis] < window:
         return np.full_like(data, np.nan)
@@ -903,7 +903,7 @@ def time_series_decay(data: np.ndarray, halflife: int, axis: int = 0) -> np.ndar
         axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
 
     返回:
-        np.ndarray: 时间序列衰减加权平均值。
+        np.ndarray: 时间序列衰减加权平均值。形状与输入数据相同。
     """
     if data.ndim == 1:
         data = data[:, np.newaxis]  # Make it 2D for consistent processing
@@ -956,7 +956,7 @@ def rolling_max_drawdown(data: np.ndarray, window: int, axis: int = 0) -> np.nda
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 滚动最大回撤。
+        np.ndarray: 滚动最大回撤。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("rolling_max_drawdown only supports axis=0 (time-series).")
@@ -990,7 +990,7 @@ def downside_deviation(data: np.ndarray, window: int, axis: int = 0) -> np.ndarr
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 下行标准差。
+        np.ndarray: 下行标准差。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("downside_deviation only supports axis=0 (time-series).")
@@ -1022,7 +1022,7 @@ def sharpe_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, axi
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 滚动夏普比率。
+        np.ndarray: 滚动夏普比率。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("sharpe_ratio only supports axis=0 (time-series).")
@@ -1046,7 +1046,7 @@ def sortino_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, ax
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 滚动索提诺比率。
+        np.ndarray: 滚动索提诺比率。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("sortino_ratio only supports axis=0 (time-series).")
@@ -1071,7 +1071,7 @@ def calmar_ratio(data: np.ndarray, window: int, periods_per_year: int = 252, axi
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 滚动卡玛比率。
+        np.ndarray: 滚动卡玛比率。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("calmar_ratio only supports axis=0 (time-series).")
@@ -1132,7 +1132,7 @@ def alpha(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int =
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 滚动Alpha。
+        np.ndarray: 滚动Alpha。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("alpha only supports axis=0 (time-series).")
@@ -1170,7 +1170,7 @@ def beta(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int = 
         axis (int): 计算的轴向。目前只支持0（时间序列）。
 
     返回:
-        np.ndarray: 滚动Beta。
+        np.ndarray: 滚动Beta。形状与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
     if axis != 0:
         raise ValueError("beta only supports axis=0 (time-series).")
