@@ -477,22 +477,42 @@ if __name__ == '__main__':
     # 以字典形式定义因子计算公式 (AST)
     # 示例因子: vol / std_dev(moving_average(vol, 20))
     user_ast = {
-        'func': 'divide',
-        'args': {
-            'a': {'var': 'vol'},
-            'b': {
-                'func': 'std_dev',
-                'args': {
-                    'data': {
-                        'func': 'moving_average',
-                        'args': {
-                            'data': {'var': 'vol'},
-                            'window': 20,
-                            'axis': 0
+        "func": "divide",
+        "args": {
+            "a": {
+                "func": "std_dev",
+                "args": {
+                    "data": {
+                        "func": "excess_return",
+                        "args": {
+                            "data": {
+                                "var": "log"
+                            },
+                            "benchmark_data": {
+                                "var": "benchmark_ew"
+                            },
+                            "axis": 0
                         }
                     },
-                    'axis': 0,
-                    'ddof': 1
+                    "axis": 0,
+                    "ddof": 1
+                }
+            },
+            "b": {
+                "func": "abs_val",
+                "args": {
+                    "a": {
+                        "func": "correlation",
+                        "args": {
+                            "a": {
+                                "var": "log"
+                            },
+                            "b": {
+                                "var": "benchmark_ew"
+                            },
+                            "axis": 0
+                        }
+                    }
                 }
             }
         }
@@ -513,7 +533,7 @@ if __name__ == '__main__':
     # 3. 计算因子值
     factor_values_df = calculate_factor_values(internal_ast, calculator)
 
-    # 4. 调试步骤: 检查计算出的因子DataFrame，这是定位问题的关键
+    # 4. 调试步骤: 检查计算出的因子DataFrame
     print("\n--- 步骤3: 检查计算出的因子DataFrame (调试信息) ---")
     print("因子DataFrame信息:")
     factor_values_df.info()

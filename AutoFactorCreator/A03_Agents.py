@@ -309,7 +309,7 @@ class FinancialMathematicianAgent:
 
 ## 3. 可用的数据变量:
 > 以下所有的数据变量都是二维数组: 行表示时间, 列表示产品。
-- `log`: **个股**日对数收益率数据
+- `log_return`: **个股**日对数收益率数据
 - `high`: **个股**最高价数据
 - `low`: **个股**最低价数据
 - `vol`: **个股**成交量数据
@@ -333,7 +333,6 @@ class FinancialMathematicianAgent:
 - 优先使用现有算子构建因子。只有在现有算子确实无法表达你的构思时，才提出新算子需求。
 - 构思的因子应尽可能简洁但有效，避免过度复杂化。
 - 确保AST语法树中的函数名和变量名与算子库中提供的名称完全一致。
-- **你可以使用新提供的基准收益率数据 (benchmark_ew, benchmark_min_var, benchmark_erc) 来构建相对价值或风险因子。例如，你可以计算个股收益率与基准收益率的差值 (`subtract(log, benchmark_ew)`)，或者使用 `alpha` 和 `beta` 算子。**
         """
         print(self.sys_prompt)
 
