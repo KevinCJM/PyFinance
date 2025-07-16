@@ -1,21 +1,21 @@
 # -*- encoding: utf-8 -*-
 """
-@File: A03_Agents.py
-@Modify Time: 2025/7/10 10:05       
+@File: A03_FinancialAgents.py
+@Modify Time: 2025/7/16 10:00
 @Author: Kevin-Chen
-@Descriptions: 
+@Descriptions: 包含“金融数学家智能体”的定义和逻辑。
 """
 
 import os
 import re
 import sys
 import json
-import random  # 导入random模块用于模拟因子效果
 import inspect
-import requests
 import traceback
 import importlib.util
-from openai import OpenAI
+
+# 从新的公用工具模块导入大模型调用函数
+from AutoFactorCreator.B02_AgentTools import call_llm_api
 
 # 确保A02_OperatorLibrary在Python路径中，以便inspect可以找到它
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -31,20 +31,11 @@ def _get_operator_descriptions():
     operator_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "A02_OperatorLibrary.py")
 
     if not os.path.exists(operator_file_path):
-        return {"error": "A02_OperatorLibrary.py not found.", "description": "Error: A02_OperatorLibrary.py not found."}
+        return {"error": "A02_OperatorLibrary.py not found."}
 
     spec = importlib.util.spec_from_file_location("A02_OperatorLibrary", operator_file_path)
-    if spec is None:
-        return {"error": "Could not load A02_OperatorLibrary spec.",
-                "description": "Error: Could not load A02_OperatorLibrary spec."}
-
     module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception as e:
-        print(traceback.format_exc())
-        return {"error": f"Error executing A02_OperatorLibrary.py: {e}",
-                "description": f"Error executing A02_OperatorLibrary.py: {e}"}
+    spec.loader.exec_module(module)
 
     factor_calculation_operators = []
     preprocessing_operators = []
@@ -139,132 +130,29 @@ def _get_operator_descriptions():
 
 def _convert_string_numbers_to_actual_numbers(obj):
     """
-    递归地将AST中特定键（如'axis', 'ddof', 'window', 'span', 'halflife', 'q'）的值从字符串转换为数字。
+    递归地将AST中特定键的值从字符串转换为数字。
     """
     if isinstance(obj, dict):
-        new_obj = {}
-        for k, v in obj.items():
-            if k in ["axis", "ddof", "window", "span", "halflife"] and isinstance(v, str) and v.isdigit():
-                new_obj[k] = int(v)
-            elif k == "q" and isinstance(v, str):
-                try:
-                    new_obj[k] = float(v)
-                except ValueError:
-                    new_obj[k] = v  # Keep as string if not a valid float
-            else:
-                new_obj[k] = _convert_string_numbers_to_actual_numbers(v)
-        return new_obj
+        return {k: _convert_string_numbers_to_actual_numbers(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [_convert_string_numbers_to_actual_numbers(elem) for elem in obj]
-    else:
+    elif isinstance(obj, str) and obj.isdigit():
+        return int(obj)
+    try:
+        return float(obj)
+    except (ValueError, TypeError):
         return obj
 
 
 def _pre_process_llm_response_string(llm_response_str: str) -> str:
     """
     预处理LLM响应字符串，以处理JSON解析前的潜在问题。
-    包括：
-    1. 修复LaTeX中可能存在的双重转义反斜杠。
-    2. 尝试将特定键的未加引号的数字转换为带引号的字符串。
-       这是一种脆弱的基于正则表达式的方法，应谨慎使用。
-       理想情况下，LLM应直接将这些值作为字符串输出。
     """
-    # 1. 修复LaTeX中可能存在的双重转义反斜杠
-    if "\\" in llm_response_str:
-        llm_response_str = llm_response_str.replace("\\", "\\")
-
-    # 2. 尝试将特定键的未加引号的数字转换为带引号的字符串。
-    #    这是针对LLM可能不严格遵循AST示例中数字字符串表示的变通方法。
-    keys_to_quote = ["axis", "ddof", "window", "span", "halflife", "q"]
-    for key in keys_to_quote:
-        # 此正则表达式查找：
-        #   - 双引号后跟键名
-        #   - 可选的空白字符
-        #   - 冒号
-        #   - 可选的空白字符
-        #   - 一个数字（整数或浮点数）
-        #   - 一个前瞻断言，确保其后跟逗号或闭合括号/方括号
-        # 这仍然不是万无一失的，但尝试更具体。
-        llm_response_str = re.sub(
-            rf'("{key}"\s*:\s*)(\d+(\.\d+)?)(?=[\],}}])',
-            r'\1"\2"',
-            llm_response_str
-        )
-    return llm_response_str
-
-
-def call_llm_api(sys_prompt: str, prompt: str, temperature: float = 0.7) -> str:
-    """
-    调用大模型API接口。
-
-    Args:
-        sys_prompt (str): System角色的提示。
-        prompt (str): User角色的提示。
-        temperature (float): 模型生成时的温度参数，控制随机性。
-
-    Returns:
-        str: 大模型返回的文本内容。
-
-    Raises:
-        FileNotFoundError: 如果config.json文件不存在。
-        KeyError: 如果config.json中缺少必要的配置项。
-        Exception: 如果API调用失败或返回非预期结果。
-    """
-    config_path = os.path.join(os.path.dirname(__file__), "config.json")
-
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Config file not found at: {config_path}")
-
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = json.load(f)
-
-    model = config.get("LLM_MODEL")
-    api_key = config.get("API_KEY")
-    base_url = config.get("LLM_URL")
-
-    if not all([model, api_key, base_url]):
-        raise KeyError("Missing one or more required keys (LLM_MODEL, API_KEY, LLM_URL) in config.json")
-
-    messages = [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": prompt}
-    ]
-
-    if 'lightcode-uis' in base_url:
-        # 通过lightcode-ui接口调用大模型API
-        print("Using lightcode-ui API...")
-        headers = {'Accept': "*/*", 'Authorization': f"Bearer {api_key}", 'Content-Type': "application/json"}
-        payload = {"model": model, "messages": messages, "stream": False}
-        resp = None
-        try:
-            resp = requests.post(base_url, headers=headers, data=json.dumps(payload))
-            resp.raise_for_status()  # 检查HTTP响应状态码
-            response_data = resp.json()
-            # 解析 返回结果
-            json_inner = response_data["choices"][0]["message"]["content"]
-            return re.sub(r"^```json\n|```$", "", json_inner.strip(), flags=re.MULTILINE)
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"lightcode-ui API request failed: {e}")
-        except (KeyError, IndexError) as e:
-            raise Exception(f"Unexpected response format from lightcode-ui API: {e} Response: {resp.text}")
-
-    else:
-        # 通过OpenAI接口调用大模型API
-        print("Using OpenAI API...")
-        try:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-            resp = client.chat.completions.create(
-                model=model,
-                temperature=temperature,
-                messages=messages
-            )
-            llm_response_content = resp.choices[0].message.content
-            # 移除Markdown代码块标记
-            if llm_response_content.startswith("```json") and llm_response_content.endswith("```"):
-                llm_response_content = llm_response_content[len("```json"): -len("```")].strip()
-            return llm_response_content
-        except Exception as e:
-            raise Exception(f"OpenAI API call failed: {e}")
+    # 移除Markdown代码块标记
+    processed_str = re.sub(r"^```json\n|```$", "", llm_response_str.strip(), flags=re.MULTILINE)
+    # 修复可能存在的双重转义
+    processed_str = processed_str.replace("\\", "\\")
+    return processed_str
 
 
 class FinancialMathematicianAgent:
@@ -295,7 +183,7 @@ class FinancialMathematicianAgent:
         "action": "CreateNewCalFunc",
         "function_name": "新函数名",
         "description": "新函数的功能描述，包括输入、输出、数学逻辑等详细信息。",
-        "example_usage": "一个使用新函数的代码示例，例如：new_func(data, param1=10)"
+        "example_usage": "一个使用新函数的代码示例"
     }}
     ```
 
@@ -332,9 +220,6 @@ class FinancialMathematicianAgent:
         """
         构思新的因子计算逻辑或提出新算子需求。
 
-        Args:
-            current_evaluation_result (dict): 当前因子的评估结果。
-
         Returns:
             dict: 包含因子计算逻辑 (AST, LaTeX) 或新算子需求 (CreateNewCalFunc)。
         """
@@ -348,90 +233,76 @@ class FinancialMathematicianAgent:
         user_prompt += "\n请根据这些结果，提出一个改进的因子或一个全新的因子。"
         print(user_prompt)
         print("\n--- 金融数学家智能体正在构思... ---")
-        llm_response_str = None
         try:
             llm_response_str = call_llm_api(
                 sys_prompt=self.sys_prompt,
                 prompt=user_prompt,
                 temperature=self.temperature
             )
-            # 在尝试解析JSON之前，对LLM响应字符串进行预处理
-            llm_response_str = _pre_process_llm_response_string(llm_response_str)
-            print(llm_response_str)
-            response_json = json.loads(llm_response_str)
-            # 将AST中的字符串数字转换为实际数字
-            response_json = _convert_string_numbers_to_actual_numbers(response_json)
-
-            # 验证JSON结构
-            if "action" in response_json and response_json["action"] == "CreateNewCalFunc":
-                required_keys = ["function_name", "description", "example_usage"]
-                if not all(key in response_json for key in required_keys):
-                    raise ValueError("Invalid CreateNewCalFunc JSON format.")
-                print("金融数学家智能体提出了新算子需求。")
-                return response_json
-            elif "des" in response_json and "ast" in response_json:
-                print("金融数学家智能体提出了新的因子计算逻辑。")
-                # 可以在这里添加更复杂的AST结构验证
-                return response_json
-            else:
-                raise ValueError("LLM response is not a valid factor or CreateNewCalFunc JSON.")
-
-        except json.JSONDecodeError as e:
-            print(f"Error: LLM response is not valid JSON. {e}\nResponse: {llm_response_str}")
-            print(traceback.format_exc())
-            return {"error": "Invalid JSON response from LLM", "raw_response": llm_response_str}
-        except ValueError as e:
-            print(f"Error: Invalid LLM response structure. {e}\nResponse: {llm_response_str}")
-            print(traceback.format_exc())
-            return {"error": "Invalid LLM response structure", "raw_response": llm_response_str}
+            processed_str = _pre_process_llm_response_string(llm_response_str)
+            response_json = json.loads(processed_str)
+            return _convert_string_numbers_to_actual_numbers(response_json)
         except Exception as e:
-            print(f"Error calling LLM API: {e}")
-            print(f"Response: {llm_response_str}")
+            print(f"Error processing LLM response: {e}")
             print(traceback.format_exc())
-            return {"error": f"LLM API call failed: {e}"}
+            return {"error": str(e)}
 
     def add_history_factor_result(self, factor_result: dict):
         """
         添加历史因子成果摘要，用于LLM的迭代学习。
         """
-        # 可以在这里对factor_result进行摘要处理，避免历史信息过长导致token超限
         self.history_factor_results.append(factor_result)
 
 
-# 示例用法 (仅用于测试)
-if __name__ == "__main__":
-    # --- 测试 _get_operator_descriptions ---
-    print("\n--- Testing _get_operator_descriptions ---")
-    ops_desc = _get_operator_descriptions()
-    print(ops_desc)
+if __name__ == '__main__':
+    import random
 
-    # --- 金融数学家智能体三轮模拟 ---
-    print("\n--- 金融数学家智能体三轮模拟 ---")
+    print("\n--- 金融数学家智能体测试启动 ---")
+    # 1. 实例化智能体
     fm_agent = FinancialMathematicianAgent(temperature=0.7)
 
-    for i in range(1, 4):  # 模拟3轮
-        print(f"\n--- 第 {i} 轮因子构思 ---")
-        proposed_output = fm_agent.propose_factor_or_operator()
-        print(proposed_output)
-        # 提取des和ast
-        the_ast = proposed_output.get("ast")
-        the_des = proposed_output.get("des")
-        print("金融数学家智能体输出:", json.dumps(proposed_output, indent=2, ensure_ascii=False))
+    # 2. 模拟三轮因子生成和评估的循环
+    for i in range(1, 4):
+        print(f"\n================== 第 {i} 轮因子构思 ==================")
 
-        # 模拟因子评估结果
-        rank_ic = round(random.uniform(0.01, 0.15), 4)  # 模拟Rank IC
-        comment = "表现良好" if rank_ic > 0.05 else "表现一般"
-        current_eval_result = {
-            "factor_name": f"Factor_Round_{i - 1}",
-            "rank_ic": rank_ic,
-            "t_stat": round(random.uniform(1.5, 3.0), 2),
+        # 2.1. 智能体提出因子构思
+        proposed_output = fm_agent.propose_factor_or_operator()
+        print("\n智能体输出:", json.dumps(proposed_output, indent=2, ensure_ascii=False))
+
+        # 检查输出是否有效
+        if 'error' in proposed_output:
+            print(f"第 {i} 轮出现错误，测试终止。")
+            break
+
+        # 2.2. 模拟因子计算与评估
+        # 在实际流程中，这里会调用 A05_CalFactors.py 来计算并返回真实的评估报告
+        print("\n--- (模拟) 因子计算与评估... ---")
+        # 模拟一个评估结果
+        rank_ic = round(random.uniform(-0.05, 0.15), 4)
+        sharpe = round(random.uniform(-0.5, 1.5), 2)
+        comment = "表现良好" if rank_ic > 0.05 and sharpe > 0.5 else "表现一般或较差"
+
+        # 构建一个简化的评估摘要，模仿 A05 返回的JSON报告结构
+        mock_evaluation_summary = {
+            "rank_ic_analysis": {
+                "rank_ic_mean": rank_ic
+            },
+            "long_short_portfolio_analysis": {
+                "sharpe_ratio": sharpe
+            },
             "comment": comment
         }
-        # 将本次构思的因子（如果不是新算子需求）添加到历史记录
-        fm_agent.add_history_factor_result({
-            "factor_name": f"Factor_Round_{i}",
-            "des": the_des,
-            "ast": the_ast,
-            "rank_ic": current_eval_result["rank_ic"] if current_eval_result else None,  # 第一次没有评估结果
-            "comment": current_eval_result["comment"] if current_eval_result else None,  # 第一次没有评估结果
-        })
+        print("模拟评估摘要:", json.dumps(mock_evaluation_summary, indent=2, ensure_ascii=False))
+
+        # 2.3. 将本轮成果添加到智能体的历史记录中，用于下一轮迭代
+        # 在真实流程中，我们会将因子AST和评估结果一起存入历史
+        if 'ast' in proposed_output:
+            fm_agent.add_history_factor_result({
+                "factor_ast": proposed_output.get('ast'),
+                "evaluation_summary": mock_evaluation_summary
+            })
+            print("\n本轮成果已添加到历史记录中，用于下次迭代。")
+        else:
+            print("\n本轮未生成因子AST，无可添加到历史记录。可能是一个新算子需求。")
+
+    print("\n--- 金融数学家智能体测试结束 ---")
