@@ -535,7 +535,7 @@ def excess_return(data: np.ndarray, benchmark_data: np.ndarray, axis: int = 0) -
     if axis != 0:
         raise ValueError("excess_return only supports axis=0 (time-series).")
 
-    if data.shape != benchmark_data.shape:
+    if data.shape[0] != benchmark_data.shape[0]:
         raise ValueError("data and benchmark_data must have the same shape.")
 
     # 计算超额收益

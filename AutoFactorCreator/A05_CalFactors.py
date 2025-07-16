@@ -7,6 +7,7 @@
 """
 import json
 import warnings
+import inspect
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -333,7 +334,7 @@ def prepare_data_and_calculator(data_paths: dict, close_path_key='close', return
         raise ValueError(f"不支持的收益率类型: '{return_type}'。请选择 'simple' 或 'log'。")
 
     print("--- 初始化因子计算器 ---")
-    calculator = FactorCalculator(data_dfs=loaded_data)
+    calculator = FactorCalculator(data_dfs={n: d.values for n, d in loaded_data.items()})
 
     return calculator, forward_returns
 
@@ -411,12 +412,15 @@ def convert_ast_format(node):
         new_node = {'type': 'operator', 'func': node['func']}
         args = node.get('args', {})  # 获取参数字典
 
+        # 通过反射从op_lib模块获取函数对象
+        func_obj = getattr(op_lib, node['func'])
+        # 使用inspect动态获取函数的参数签名
+        sig = inspect.signature(func_obj)
+        arg_order = list(sig.parameters.keys())
+
         children = []  # 用于存储子节点
 
-        # 定义参数顺序列表，确保参数顺序一致，从而保证节点ID的确定性
-        arg_order = ['data', 'a', 'b', 'window', 'span', 'halflife', 'p', 'q', 'axis', 'ddof']
-
-        # 按照预定义的参数顺序遍历参数
+        # 按照函数实际的参数顺序遍历参数
         for key in arg_order:
             if key in args:
                 # 对每个参数进行递归转换，并添加到 children 列表中
@@ -471,7 +475,10 @@ if __name__ == '__main__':
         'log_return': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_log_df.parquet',
         'low': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_low_df.parquet',
         'open': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_open_df.parquet',
-        'vol': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_vol_df.parquet'
+        'vol': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_vol_df.parquet',
+        'benchmark_ew': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/benchmark_ew_log_returns.parquet',
+        'benchmark_min_var': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/benchmark_min_var_log_returns.parquet',
+        'benchmark_erc': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/benchmark_erc_log_returns.parquet'
     }
 
     # 以字典形式定义因子计算公式 (AST)
@@ -545,12 +552,13 @@ if __name__ == '__main__':
     )
 
     # 3. 计算因子值
-    factor_values_df = calculate_factor_values(internal_ast, calculator)
+    factor_values = calculate_factor_values(internal_ast, calculator)
 
     # 4. 调试步骤: 检查计算出的因子DataFrame
     print("\n--- 步骤3: 检查计算出的因子DataFrame (调试信息) ---")
     print("因子DataFrame信息:")
-    factor_values_df.info()
+    factor_values_df = pd.DataFrame(factor_values)
+    print(factor_values_df.info())
     print("\n因子DataFrame头部数据:")
     print(factor_values_df.head())
     print("\n因子DataFrame尾部数据:")
