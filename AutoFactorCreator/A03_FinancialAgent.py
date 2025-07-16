@@ -1,7 +1,7 @@
 # -*- encoding: utf-8 -*-
 """
-@File: A03_FinancialAgents.py
-@Modify Time: 2025/7/16 10:00
+@File: A03_FinancialAgent.py
+@Modify Time: 2025/7/16 11:00
 @Author: Kevin-Chen
 @Descriptions: 包含“金融数学家智能体”的定义和逻辑。
 """
@@ -155,6 +155,31 @@ def _pre_process_llm_response_string(llm_response_str: str) -> str:
     return processed_str
 
 
+def _format_analysis_for_prompt(analysis_report: dict) -> str:
+    """
+    将分析师智能体返回的JSON报告格式化为清晰的Markdown，用于提示。
+    """
+    if not isinstance(analysis_report, dict) or "因子性能分析" not in analysis_report:
+        return "- 上一轮分析无效或缺失。"
+
+    performance = analysis_report.get("因子性能分析", "N/A")
+    suggestions = analysis_report.get("因子升级建议", "N/A")
+
+    # 将建议从字符串（可能包含换行）转换为Markdown列表
+    if isinstance(suggestions, str):
+        suggestion_list = [f"  - {line.strip()}" for line in suggestions.split('\n') if line.strip()]
+        suggestions_md = "\n".join(suggestion_list)
+    else:
+        suggestions_md = "  - 建议格式不正确。"
+
+    return f"""#### 因子性能分析:
+- {performance}
+
+#### 因子升级建议:
+{suggestions_md}
+    """
+
+
 class FinancialMathematicianAgent:
     """金融数学家智能体：负责因子构思、逻辑生成和新算子需求提出。"""
 
@@ -223,16 +248,18 @@ class FinancialMathematicianAgent:
         Returns:
             dict: 包含因子计算逻辑 (AST, LaTeX) 或新算子需求 (CreateNewCalFunc)。
         """
-
-        user_prompt = """### 请构思一个新的金融因子。"""
+        user_prompt = """### 请根据历史经验，构思一个新的金融因子。"""
 
         if self.history_factor_results:
-            user_prompt += (f"\n\n### 历史因子成果摘要："
-                            f"\n{json.dumps(self.history_factor_results, indent=2, ensure_ascii=False)}")
+            history_md = "\n\n---\n".join(self.history_factor_results)
+            user_prompt += f"\n\n### 历史因子分析与迭代建议摘要：\n{history_md}"
 
-        user_prompt += "\n请根据这些结果，提出一个改进的因子或一个全新的因子。"
+        user_prompt += "\n\n请严格遵照你的角色指示，基于以上分析，提出一个全新的、更优的因子计算逻辑。"
+
+        print("\n--- 发送给LLM的完整提示: ---")
         print(user_prompt)
         print("\n--- 金融数学家智能体正在构思... ---")
+        print("---------------------------------")
         try:
             llm_response_str = call_llm_api(
                 sys_prompt=self.sys_prompt,
@@ -247,62 +274,77 @@ class FinancialMathematicianAgent:
             print(traceback.format_exc())
             return {"error": str(e)}
 
-    def add_history_factor_result(self, factor_result: dict):
+    def add_history_factor_result(self, factor_ast: dict, analysis_report_dic: dict):
         """
-        添加历史因子成果摘要，用于LLM的迭代学习。
+        将包含深度分析的历史因子成果添加到历史记录中。
         """
-        self.history_factor_results.append(factor_result)
+        formatted_analysis = _format_analysis_for_prompt(analysis_report_dic)
+        history_entry = f"""**上一轮因子结构 (AST):**
+```json
+{json.dumps(factor_ast, indent=2)}
+```
+**分析师评估与建议:**
+{formatted_analysis}
+"""
+        self.history_factor_results.append(history_entry)
 
 
 if __name__ == '__main__':
-    import random
+    # 模拟 A04_AnalysisAgent 的功能
+    from AutoFactorCreator.A04_AnalysisAgent import AnalysisAgent
 
-    print("\n--- 金融数学家智能体测试启动 ---")
+    print("\n--- 金融数学家智能体与分析师智能体协同测试启动 ---")
+
     # 1. 实例化智能体
     fm_agent = FinancialMathematicianAgent(temperature=0.7)
+    analyst_agent = AnalysisAgent(temperature=0.5)
 
-    # 2. 模拟三轮因子生成和评估的循环
+    # 2. 模拟三轮因子生成 -> 评估 -> 分析 -> 迭代的完整循环
+    # 初始的因子AST，用于启动第一轮
+    current_ast = {
+        "func": "subtract",
+        "args": {
+            "a": {"var": "log_return"},
+            "b": {"var": "benchmark_ew"}
+        }
+    }
+
     for i in range(1, 4):
-        print(f"\n================== 第 {i} 轮因子构思 ==================")
+        print(f"\n================== 第 {i} 轮完整循环 ==================")
 
-        # 2.1. 智能体提出因子构思
-        proposed_output = fm_agent.propose_factor_or_operator()
-        print("\n智能体输出:", json.dumps(proposed_output, indent=2, ensure_ascii=False))
+        # 2.1. (模拟) 调用 A06_CalFactors.py 对 current_ast 进行评估
+        print(f"\n--- 步骤1: (模拟)评估因子: {json.dumps(current_ast, indent=2)} ---")
+        # 这里使用您提供的示例评估报告作为模拟结果
+        mock_evaluation_report = {
+            "ic_analysis": {"ic_mean": 0.0088, "ic_std": 0.226, "icir": 0.039, "p_value": 0.045},
+            "rank_ic_analysis": {"rank_ic_mean": 0.0176, "rank_ic_std": 0.251, "rank_icir": 0.070},
+            "turnover_analysis": {"mean_turnover": 0.0064},
+            "group_return_analysis": {"monotonicity": False},
+            "long_short_portfolio_analysis": {"sharpe_ratio": -0.82}
+        }
+        print("模拟评估报告 (来自A05):", json.dumps(mock_evaluation_report, indent=2, ensure_ascii=False))
 
-        # 检查输出是否有效
-        if 'error' in proposed_output:
-            print(f"第 {i} 轮出现错误，测试终止。")
+        # 2.2. 调用分析师智能体对评估报告进行深度分析
+        print("\n--- 步骤2: 分析师智能体进行深度分析 ---")
+        analysis_report = analyst_agent.analyze_factor_performance(
+            factor_ast=current_ast,
+            evaluation_report=mock_evaluation_report
+        )
+        print("分析师报告 (来自A04):", json.dumps(analysis_report, indent=2, ensure_ascii=False))
+
+        # 2.3. 将分析师的报告添加到金融数学家的历史记录中
+        fm_agent.add_history_factor_result(current_ast, analysis_report)
+        print("\n--- 步骤3: 金融数学家接收分析报告并构思新因子 ---")
+
+        # 2.4. 金融数学家基于深度分析，提出新的因子构思
+        new_factor_proposal = fm_agent.propose_factor_or_operator()
+        print("\n金融数学家的新构思:", json.dumps(new_factor_proposal, indent=2, ensure_ascii=False))
+
+        if 'ast' in new_factor_proposal:
+            # 更新当前AST，用于下一轮循环
+            current_ast = new_factor_proposal['ast']
+        else:
+            print("金融数学家提出了新算子需求或返回了错误，测试终止。")
             break
 
-        # 2.2. 模拟因子计算与评估
-        # 在实际流程中，这里会调用 A05_CalFactors.py 来计算并返回真实的评估报告
-        print("\n--- (模拟) 因子计算与评估... ---")
-        # 模拟一个评估结果
-        rank_ic = round(random.uniform(-0.05, 0.15), 4)
-        sharpe = round(random.uniform(-0.5, 1.5), 2)
-        comment = "表现良好" if rank_ic > 0.05 and sharpe > 0.5 else "表现一般或较差"
-
-        # 构建一个简化的评估摘要，模仿 A05 返回的JSON报告结构
-        mock_evaluation_summary = {
-            "rank_ic_analysis": {
-                "rank_ic_mean": rank_ic
-            },
-            "long_short_portfolio_analysis": {
-                "sharpe_ratio": sharpe
-            },
-            "comment": comment
-        }
-        print("模拟评估摘要:", json.dumps(mock_evaluation_summary, indent=2, ensure_ascii=False))
-
-        # 2.3. 将本轮成果添加到智能体的历史记录中，用于下一轮迭代
-        # 在真实流程中，我们会将因子AST和评估结果一起存入历史
-        if 'ast' in proposed_output:
-            fm_agent.add_history_factor_result({
-                "factor_ast": proposed_output.get('ast'),
-                "evaluation_summary": mock_evaluation_summary
-            })
-            print("\n本轮成果已添加到历史记录中，用于下次迭代。")
-        else:
-            print("\n本轮未生成因子AST，无可添加到历史记录。可能是一个新算子需求。")
-
-    print("\n--- 金融数学家智能体测试结束 ---")
+    print("\n--- 协同测试结束 ---")
