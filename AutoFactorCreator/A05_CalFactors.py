@@ -11,11 +11,13 @@ import inspect
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.stats.warnings import SmallSampleWarning
 # 引入我们自定义的算子库，其中包含了所有因子计算需要的数学函数
 from AutoFactorCreator import A02_OperatorLibrary as op_lib
 
 # 忽略在分组收益分析中可能出现的 RuntimeWarning
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in divide")
+warnings.filterwarnings("ignore", category=SmallSampleWarning)
 
 
 class FactorCalculator:
