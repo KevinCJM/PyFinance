@@ -441,39 +441,91 @@ def convert_ast_format(node):
     return {'type': 'literal', 'value': node}
 
 
-def display_evaluation_report(results: dict):
-    """格式化并打印因子评估报告。"""
-    print("\n--- 最终步骤: 因子评估报告 ---")
-    print("=" * 40)
+def generate_factor_report(user_ast: dict, data_paths: dict, close_path_key: str = 'close', return_type: str = 'simple') -> str:
+    """
+    一个封装了完整因子计算和评估流程的主函数。
+
+    Args:
+        user_ast (dict): 用户定义的、描述因子计算逻辑的AST。
+        data_paths (dict): 包含所有数据文件绝对路径的字典。
+        close_path_key (str): 在data_paths中对应收盘价数据的键名。
+        return_type (str): 远期收益率的计算方式 ('simple' 或 'log')。
+
+    Returns:
+        str: 一个包含所有因子评估指标的JSON格式字符串。
+    """
+    # 1. 将用户定义的AST转换为内部格式
+    print("--- 转换AST格式 ---")
+    internal_ast = convert_ast_format(user_ast)
+    print("转换后的AST:", internal_ast)
+
+    # 2. 准备数据和计算器
+    calculator, forward_returns, dates, assets = prepare_data_and_calculator(
+        data_paths,
+        close_path_key=close_path_key,
+        return_type=return_type
+    )
+
+    # 3. 计算因子值 (结果为Numpy数组)
+    factor_values_array = calculate_factor_values(internal_ast, calculator)
+
+    # 4. 将Numpy数组结果重建为带有正确索引和列的DataFrame，以进行评估
+    factor_values_df = pd.DataFrame(factor_values_array, index=dates, columns=assets)
+
+    # 5. 评估因子表现
+    final_results = evaluate_factor_performance(factor_values_df, calculator, forward_returns)
+
+    # 6. 将评估结果格式化为JSON字符串
+    report_json = format_results_to_json(final_results)
+
+    return report_json
+
+
+def format_results_to_json(results: dict) -> str:
+    """将因子评估结果字典转换为格式化的JSON字符串。"""
+    print("\n--- 最终步骤: 生成JSON格式的因子评估报告 ---")
+
+    # 为了可序列化，从结果中提取关键统计数据，而不是整个Series
     ic_res = results['ic_analysis']
-    print(f"IC均值: {ic_res['ic_mean']:.4f}")
-    print(f"IC标准差: {ic_res['ic_std']:.4f}")
-    print(f"信息比率(ICIR): {ic_res['icir']:.4f}")
-    print(f"T检验统计量: {ic_res['t_statistic']:.4f}, P值: {ic_res['p_value']:.4f}")
-    print("-" * 40)
     rank_ic_res = results['rank_ic_analysis']
-    print(f"Rank IC均值: {rank_ic_res['rank_ic_mean']:.4f}")
-    print(f"Rank IC标准差: {rank_ic_res['rank_ic_std']:.4f}")
-    print(f"Rank ICIR: {rank_ic_res['rank_icir']:.4f}")
-    print("-" * 40)
     turnover_res = results['turnover_analysis']
-    print(f"平均每日换手率: {turnover_res['mean_turnover']:.4f}")
-    print("-" * 40)
     group_res = results['group_return_analysis']
-    print("按因子分位数的平均收益:")
-    print(group_res['mean_group_returns'].to_string())
-    print(f"收益单调性: {group_res['monotonicity']}")
-    print("-" * 40)
     ls_res = results['long_short_portfolio_analysis']
-    print("多空组合表现:")
-    print(f"年化夏普比率: {ls_res['sharpe_ratio']:.4f}")
-    print("=" * 40)
-    print("分析结束。")
+
+    report_dict = {
+        "ic_analysis": {
+            "ic_mean": ic_res['ic_mean'],
+            "ic_std": ic_res['ic_std'],
+            "icir": ic_res['icir'],
+            "t_statistic": ic_res['t_statistic'],
+            "p_value": ic_res['p_value']
+        },
+        "rank_ic_analysis": {
+            "rank_ic_mean": rank_ic_res['rank_ic_mean'],
+            "rank_ic_std": rank_ic_res['rank_ic_std'],
+            "rank_icir": rank_ic_res['rank_icir']
+        },
+        "turnover_analysis": {
+            "mean_turnover": turnover_res['mean_turnover']
+        },
+        "group_return_analysis": {
+            # 将分组收益转换为字典以便序列化
+            "mean_group_returns": group_res['mean_group_returns'].to_dict(),
+            "monotonicity": group_res['monotonicity']
+        },
+        "long_short_portfolio_analysis": {
+            "sharpe_ratio": ls_res['sharpe_ratio']
+        }
+    }
+
+    # 使用json.dumps生成格式化的JSON字符串
+    # 使用indent参数使其更具可读性
+    return json.dumps(report_dict, indent=4)
 
 
 if __name__ == '__main__':
     # 定义所有需要用到的数据的路径
-    data_paths = {
+    data_paths_main = {
         'amount': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_amount_df.parquet',
         'close': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_close_df.parquet',
         'high': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_high_df.parquet',
@@ -487,8 +539,7 @@ if __name__ == '__main__':
     }
 
     # 以字典形式定义因子计算公式 (AST)
-    # 示例因子: vol / std_dev(moving_average(vol, 20))
-    user_ast = {
+    user_ast_main = {
         "func": "subtract",
         "args": {
             "a": {
@@ -544,36 +595,13 @@ if __name__ == '__main__':
         }
     }
 
-    # 1. 将用户定义的AST转换为内部格式
-    print("--- 转换AST格式 ---")
-    internal_ast = convert_ast_format(user_ast)
-    print("转换后的AST:", internal_ast)
-
-    # 2. 准备数据和计算器
-    calculator, forward_returns, dates, assets = prepare_data_and_calculator(
-        data_paths,
+    # 调用主函数并获取JSON报告
+    json_report = generate_factor_report(
+        user_ast=user_ast_main,
+        data_paths=data_paths_main,
         close_path_key='close',
-        return_type='simple'  # 在此更改收益率类型: 'simple' (普通收益率) 或 'log' (对数收益率)
+        return_type='simple'
     )
 
-    # 3. 计算因子值 (结果为Numpy数组)
-    factor_values_array = calculate_factor_values(internal_ast, calculator)
-
-    # 4. 将Numpy数组结果重建为带有正确索引和列的DataFrame，以进行评估
-    factor_values_df = pd.DataFrame(factor_values_array, index=dates, columns=assets)
-
-    # 5. 调试步骤: 检查重建后的因子DataFrame
-    print("\n--- 步骤3: 检查计算出的因子DataFrame (调试信息) ---")
-    print("因子DataFrame信息:")
-    print(factor_values_df.info())
-    print("\n因子DataFrame头部数据:")
-    print(factor_values_df.head())
-    print("\n因子DataFrame尾部数据:")
-    print(factor_values_df.tail())
-    print("--------------------------------------------")
-
-    # 6. 评估因子表现
-    final_results = evaluate_factor_performance(factor_values_df, calculator, forward_returns)
-
-    # 7. 展示最终报告
-    display_evaluation_report(final_results)
+    # 打印最终的JSON报告
+    print(json_report)
