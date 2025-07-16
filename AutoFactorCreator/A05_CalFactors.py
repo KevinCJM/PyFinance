@@ -11,13 +11,11 @@ import inspect
 import numpy as np
 import pandas as pd
 from scipy import stats
-from scipy.stats.warnings import SmallSampleWarning
 # 引入我们自定义的算子库，其中包含了所有因子计算需要的数学函数
 from AutoFactorCreator import A02_OperatorLibrary as op_lib
 
 # 忽略在分组收益分析中可能出现的 RuntimeWarning
 warnings.filterwarnings("ignore", category=RuntimeWarning, message="invalid value encountered in divide")
-warnings.filterwarnings("ignore", category=SmallSampleWarning)
 
 
 class FactorCalculator:
@@ -33,7 +31,7 @@ class FactorCalculator:
         Args:
             data_dfs (dict): 一个包含所有市场数据的字典。
                          键(key)是变量名（如 'open', 'close', 'vol'），
-                         值(value)是对应的Pandas DataFrame。
+                         值(value)是对应的Numpy Array。
         """
         self.data = data_dfs
 
@@ -336,9 +334,14 @@ def prepare_data_and_calculator(data_paths: dict, close_path_key='close', return
         raise ValueError(f"不支持的收益率类型: '{return_type}'。请选择 'simple' 或 'log'。")
 
     print("--- 初始化因子计算器 ---")
+    # 选择一个DataFrame作为参考，用于获取索引和列
+    ref_df = next(iter(loaded_data.values()))
+    dates = ref_df.index
+    assets = ref_df.columns
+
     calculator = FactorCalculator(data_dfs={n: d.values for n, d in loaded_data.items()})
 
-    return calculator, forward_returns
+    return calculator, forward_returns, dates, assets
 
 
 def calculate_factor_values(factor_ast: dict, calculator: FactorCalculator) -> pd.DataFrame:
@@ -547,19 +550,21 @@ if __name__ == '__main__':
     print("转换后的AST:", internal_ast)
 
     # 2. 准备数据和计算器
-    calculator, forward_returns = prepare_data_and_calculator(
+    calculator, forward_returns, dates, assets = prepare_data_and_calculator(
         data_paths,
         close_path_key='close',
         return_type='simple'  # 在此更改收益率类型: 'simple' (普通收益率) 或 'log' (对数收益率)
     )
 
-    # 3. 计算因子值
-    factor_values = calculate_factor_values(internal_ast, calculator)
+    # 3. 计算因子值 (结果为Numpy数组)
+    factor_values_array = calculate_factor_values(internal_ast, calculator)
 
-    # 4. 调试步骤: 检查计算出的因子DataFrame
+    # 4. 将Numpy数组结果重建为带有正确索引和列的DataFrame，以进行评估
+    factor_values_df = pd.DataFrame(factor_values_array, index=dates, columns=assets)
+
+    # 5. 调试步骤: 检查重建后的因子DataFrame
     print("\n--- 步骤3: 检查计算出的因子DataFrame (调试信息) ---")
     print("因子DataFrame信息:")
-    factor_values_df = pd.DataFrame(factor_values)
     print(factor_values_df.info())
     print("\n因子DataFrame头部数据:")
     print(factor_values_df.head())
@@ -567,8 +572,8 @@ if __name__ == '__main__':
     print(factor_values_df.tail())
     print("--------------------------------------------")
 
-    # 5. 评估因子表现
+    # 6. 评估因子表现
     final_results = evaluate_factor_performance(factor_values_df, calculator, forward_returns)
 
-    # 6. 展示最终报告
+    # 7. 展示最终报告
     display_evaluation_report(final_results)
