@@ -11,6 +11,7 @@ import json
 import requests
 from openai import OpenAI
 
+
 def call_llm_api(sys_prompt: str, prompt: str, temperature: float = 0.7) -> str:
     """
     调用大模型API接口。

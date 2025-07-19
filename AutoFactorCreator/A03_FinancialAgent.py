@@ -241,20 +241,26 @@ class FinancialMathematicianAgent:
         """
         print(self.sys_prompt)
 
-    def propose_factor_or_operator(self) -> dict:
+    def propose_factor_or_operator(self, initial_idea: str = None) -> dict:
         """
         构思新的因子计算逻辑或提出新算子需求。
 
+        Args:
+            initial_idea (str, optional): 一个可选的初始研究方向，仅在没有历史记录时使用。
+
         Returns:
-            dict: 包含因子计算逻辑 (AST, LaTeX) 或新算子需求 (CreateNewCalFunc)。
+            dict: 包含因子计算逻辑 (AST) 或新算子需求 (CreateNewCalFunc)。
         """
-        user_prompt = """### 请根据历史经验，构思一个新的金融因子。"""
-
         if self.history_factor_results:
+            # --- Case 1: 有历史记录，进行迭代 ---
             history_md = "\n\n---\n".join(self.history_factor_results)
-            user_prompt += f"\n\n### 历史因子分析与迭代建议摘要：\n{history_md}"
-
-        user_prompt += "\n\n请严格遵照你的角色指示，基于以上分析，提出一个全新的、更优的因子计算逻辑。"
+            user_prompt = f"""### 历史因子分析与迭代建议摘要：\n{history_md}\n\n请严格遵照你的角色指示，基于以上分析，提出一个全新的、更优的因子计算逻辑。"""
+        elif initial_idea:
+            # --- Case 2: 没有历史记录，但有初始研究方向 ---
+            user_prompt = f"""### 请围绕以下研究方向，构思一个全新的金融因子：\n- **研究方向**: {initial_idea}\n\n请严格遵照你的角色指示，设计一个与此方向相关的、具有创新性的因子计算逻辑。"""
+        else:
+            # --- Case 3: 没有历史记录，也没有初始方向，自由发挥 ---
+            user_prompt = "### 请发挥你的创造力，构思一个全新的、具有潜力的金融因子。请严格遵照你的角色指示，返回你的构思。"
 
         print("\n--- 发送给LLM的完整提示: ---")
         print(user_prompt)
