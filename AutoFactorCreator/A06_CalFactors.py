@@ -540,54 +540,93 @@ def format_results_to_json(results: dict) -> str:
 
 
 if __name__ == '__main__':
-    # 定义所有需要用到的数据的路径
-    data_paths_main = {
-        'amount': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_amount_df.parquet',
-        'close': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_close_df.parquet',
-        'high': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_high_df.parquet',
-        'log_return': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_log_df.parquet',
-        'low': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_low_df.parquet',
-        'open': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_open_df.parquet',
-        'vol': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/processed_vol_df.parquet',
-        'benchmark_ew': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/benchmark_ew_log_returns.parquet',
-        'benchmark_min_var': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/benchmark_min_var_log_returns.parquet',
-        'benchmark_erc': '/Users/chenjunming/Desktop/KevinGit/PyFinance/Data/Processed_ETF_Data/benchmark_erc_log_returns.parquet'
-    }
+    import argparse
+    import os
 
-    # 以字典形式定义因子计算公式 (AST)
-    user_ast_main = {
-        "func": "divide",
-        "args": {
-            "a": {
-                "func": "rolling_sum",
-                "args": {
-                    "data": {
-                        "var": "log_return"
-                    },
-                    "window": 20.0,
-                    "axis": 0.0
-                }
-            },
-            "b": {
-                "func": "rolling_std",
-                "args": {
-                    "data": {
-                        "var": "log_return"
-                    },
-                    "window": 20.0,
-                    "axis": 0.0
-                }
-            }
-        }
-    }
-
-    # 调用主函数并获取JSON报告
-    json_report = generate_factor_report(
-        user_ast=user_ast_main,
-        data_paths=data_paths_main,
-        close_path_key='close',
-        return_type='simple'
+    # 1. 设置命令行参数解析器
+    parser = argparse.ArgumentParser(description="从AST计算并评估金融因子。")
+    parser.add_argument(
+        '--data_dir',
+        type=str,
+        default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'Data', 'Processed_ETF_Data'),
+        help='包含所有处理过的 .parquet 数据文件的目录路径。'
+    )
+    parser.add_argument(
+        '--ast',
+        type=str,
+        help='表示因子计算逻辑的AST的JSON字符串。'
+    )
+    parser.add_argument(
+        '--ast_file',
+        type=str,
+        help='包含因子AST JSON内容的文件路径。如果同时提供了 --ast，则此项将被忽略。'
+    )
+    parser.add_argument(
+        '--close_key',
+        type=str,
+        default='close',
+        help='在数据路径中对应收盘价数据的键名。'
+    )
+    parser.add_argument(
+        '--return_type',
+        type=str,
+        default='simple',
+        choices=['simple', 'log'],
+        help='远期收益率的计算方式。'
     )
 
-    # 打印最终的JSON报告
+    args = parser.parse_args()
+
+    # 2. 获取因子AST
+    user_ast = None
+    if args.ast:
+        try:
+            user_ast = json.loads(args.ast)
+        except json.JSONDecodeError:
+            print("错误: --ast 参数提供的字符串不是一个有效的JSON。")
+            exit(1)
+    elif args.ast_file:
+        try:
+            with open(args.ast_file, 'r', encoding='utf-8') as f:
+                user_ast = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"错误: 无法从 --ast_file 指定的路径读取或解析JSON: {e}")
+            exit(1)
+
+    if not user_ast:
+        print("警告 ⚠️: 必须通过 --ast 或 --ast_file 提供一个有效的因子AST。")
+        # 打印一个默认的AST作为示例
+        user_ast = {
+            "func": "divide",
+            "args": {
+                "a": {"func": "rolling_sum", "args": {"data": {"var": "log_return"}, "window": 20, "axis": 0}},
+                "b": {"func": "rolling_std", "args": {"data": {"var": "log_return"}, "window": 20, "axis": 0}}
+            }
+        }
+        print(f"\n示例:")
+        print(f"python A06_CalFactors.py --ast '{json.dumps(user_ast)}'")
+
+    # 3. 基于数据目录构建数据路径字典
+    data_paths_main = {
+        'amount': os.path.join(args.data_dir, 'processed_amount_df.parquet'),
+        'close': os.path.join(args.data_dir, 'processed_close_df.parquet'),
+        'high': os.path.join(args.data_dir, 'processed_high_df.parquet'),
+        'log_return': os.path.join(args.data_dir, 'processed_log_df.parquet'),
+        'low': os.path.join(args.data_dir, 'processed_low_df.parquet'),
+        'open': os.path.join(args.data_dir, 'processed_open_df.parquet'),
+        'vol': os.path.join(args.data_dir, 'processed_vol_df.parquet'),
+        'benchmark_ew': os.path.join(args.data_dir, 'benchmark_ew_log_returns.parquet'),
+        'benchmark_min_var': os.path.join(args.data_dir, 'benchmark_min_var_log_returns.parquet'),
+        'benchmark_erc': os.path.join(args.data_dir, 'benchmark_erc_log_returns.parquet')
+    }
+
+    # 4. 调用主函数并获取JSON报告
+    json_report = generate_factor_report(
+        user_ast=user_ast,
+        data_paths=data_paths_main,
+        close_path_key=args.close_key,
+        return_type=args.return_type
+    )
+
+    # 5. 打印最终的JSON报告
     print(json_report)
