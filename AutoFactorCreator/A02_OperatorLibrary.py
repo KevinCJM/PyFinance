@@ -229,6 +229,7 @@ def rolling_sum(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
     返回:
         np.ndarray: 滚动累加和的结果。形状为与输入数据相同，但前 'window - 1' 个位置为 NaN。
     """
+    axis = int(axis)
     if data.shape[axis] < window:
         return np.full_like(data, np.nan)
 
@@ -327,6 +328,35 @@ def rolling_min(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
 
     result = np.full(data.shape, np.nan)
     result[:, window - 1:] = min_values
+
+    if axis == 0:
+        result = result.T
+    return result
+
+
+def rolling_std(data: np.ndarray, window: int, axis: int = 0) -> np.ndarray:
+    """
+    功能描述: 在指定窗口内计算数据的滚动标准差，计算时忽略NaN值。
+
+    参数:
+        data (np.ndarray): 输入数据，NumPy数组格式。
+        window (int): 滚动窗口的大小。
+        axis (int): 计算的轴向。0表示按行（时间序列），1表示按列（横截面）。默认为0。
+
+    返回:
+        np.ndarray: 滚动标准差的结果。形状为与输入数据相同，但前 'window - 1' 个位置为 NaN。
+    """
+    if data.shape[axis] < window:
+        return np.full_like(data, np.nan)
+
+    if axis == 0:
+        data = data.T
+
+    windows = _rolling_window(data, window)
+    std_values = np.nanstd(windows, axis=-1)
+
+    result = np.full(data.shape, np.nan)
+    result[:, window - 1:] = std_values
 
     if axis == 0:
         result = result.T

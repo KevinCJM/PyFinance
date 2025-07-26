@@ -428,8 +428,18 @@ def convert_ast_format(node):
         # 按照函数实际的参数顺序遍历参数
         for key in arg_order:
             if key in args:
+                arg_node = args[key]
+                # 如果参数是需要整数的特定参数（如window, axis），并且它是一个字面量值，则进行转换
+                if key in ['window', 'axis', 'span', 'halflife', 'periods_per_year', 'ddof']:
+                    if not isinstance(arg_node, dict):  # 确保它不是一个嵌套的AST节点
+                        try:
+                            # 转换为整数，以防止类型错误
+                            arg_node = int(float(arg_node))
+                        except (ValueError, TypeError):
+                            # 如果转换失败，则保持原样，让后续流程处理潜在错误
+                            pass
                 # 对每个参数进行递归转换，并添加到 children 列表中
-                children.append(convert_ast_format(args[key]))
+                children.append(convert_ast_format(arg_node))
 
         # 将子节点列表赋值给新节点的 'children' 属性
         new_node['children'] = children
@@ -441,7 +451,8 @@ def convert_ast_format(node):
     return {'type': 'literal', 'value': node}
 
 
-def generate_factor_report(user_ast: dict, data_paths: dict, close_path_key: str = 'close', return_type: str = 'simple') -> str:
+def generate_factor_report(user_ast: dict, data_paths: dict, close_path_key: str = 'close',
+                           return_type: str = 'simple') -> str:
     """
     一个封装了完整因子计算和评估流程的主函数。
 
@@ -540,56 +551,26 @@ if __name__ == '__main__':
 
     # 以字典形式定义因子计算公式 (AST)
     user_ast_main = {
-        "func": "subtract",
+        "func": "divide",
         "args": {
             "a": {
-                "func": "cumulative_sum",
-                "args": {
-                    "data": {
-                        "func": "excess_return",
-                        "args": {
-                            "data": {
-                                "var": "log_return"
-                            },
-                            "benchmark_data": {
-                                "var": "benchmark_ew"
-                            },
-                            "axis": 0
-                        }
-                    },
-                    "axis": 0
-                }
-            },
-            "b": {
                 "func": "rolling_sum",
                 "args": {
                     "data": {
-                        "func": "subtract",
-                        "args": {
-                            "a": {
-                                "func": "exponential_moving_average",
-                                "args": {
-                                    "data": {
-                                        "var": "log_return"
-                                    },
-                                    "span": 20,
-                                    "axis": 0
-                                }
-                            },
-                            "b": {
-                                "func": "ts_std",
-                                "args": {
-                                    "data": {
-                                        "var": "log_return"
-                                    },
-                                    "window": 20,
-                                    "axis": 0
-                                }
-                            }
-                        }
+                        "var": "log_return"
                     },
-                    "window": 5,
-                    "axis": 0
+                    "window": 20.0,
+                    "axis": 0.0
+                }
+            },
+            "b": {
+                "func": "rolling_std",
+                "args": {
+                    "data": {
+                        "var": "log_return"
+                    },
+                    "window": 20.0,
+                    "axis": 0.0
                 }
             }
         }

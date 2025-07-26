@@ -8,6 +8,7 @@
 import os
 import json
 import logging
+import traceback
 
 # 导入项目中的核心模块
 from AutoFactorCreator.A03_FinancialAgent import FinancialMathematicianAgent
@@ -99,6 +100,7 @@ class Scheduler:
                 # 在历史记录中记下这次失败
                 error_report = {"因子性能分析": f"计算失败: {e}",
                                 "因子升级建议": "检查AST结构，可能是算子使用错误或数据问题。"}
+                logging.error(traceback.format_exc())
                 self.fm_agent.add_history_factor_result(current_ast, error_report)
                 # 构思一个全新的因子并继续
                 current_ast = self.fm_agent.propose_factor_or_operator()
@@ -172,7 +174,7 @@ if __name__ == '__main__':
     }
 
     # 定义一个初始研究方向 (可选, 如果设为None, 则由AI自由发挥)
-    INITIAL_TOPIC = "构建一个衡量市场短期波动性的因子，并将其与资产的超额收益相结合。"
+    INITIAL_TOPIC = "构建一个用于预测短期未来收益率的因子, 并与波动率预测相结合。"
 
     # 实例化并运行调度器
     scheduler = Scheduler(

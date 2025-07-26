@@ -1,5 +1,5 @@
 {
-    "LLM_MODEL": "DeepSeek-V3",
-    "API_KEY": "eyJhbGciOiJIUzI1NiJ9",
+    "LLM_MODEL": "gpt-4o",
+    "API_KEY": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjYWlmdS16aHVqaW4iLCJpYXQiOjE3NDkxNzI0Njh9.Yb_Vi4UlfXVxWBpdHVovIDPUCSpUcSPX8Z8L0puui7E",
     "LLM_URL": "http://lightcode-uis.hundsun.com:8080/uis/v1/chat/completions"
 }
