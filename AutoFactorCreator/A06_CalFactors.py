@@ -137,8 +137,13 @@ class FactorCalculator:
                 args = [cache[dep_id] for dep_id in node_info['deps']]
                 # 从算子库中获取对应的计算函数
                 func = getattr(op_lib, node_info['node']['func'])
-                # 执行计算
-                result = func(*args)
+                # 在一个上下文中执行计算，以抑制预期的、可安全忽略的运行时警告
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    with warnings.catch_warnings():
+                        # 抑制在计算标准差时，当窗口内有效数据点不足时产生的自由度警告
+                        warnings.filterwarnings('ignore', message='Degrees of freedom <= 0 for slice.')
+                        # 执行计算
+                        result = func(*args)
             else:
                 raise ValueError(f"执行计划中存在不支持的节点类型: {node_type}")
 
