@@ -526,8 +526,7 @@ def format_results_to_json(results: dict) -> str:
         },
         "group_return_analysis": {
             # 将分组收益转换为字典以便序列化
-            "mean_group_returns": group_res['mean_group_returns'].to_dict(),
-            "monotonicity": group_res['monotonicity']
+            "mean_group_returns": group_res['mean_group_returns'].to_dict()
         },
         "long_short_portfolio_analysis": {
             "sharpe_ratio": ls_res['sharpe_ratio']
@@ -535,7 +534,6 @@ def format_results_to_json(results: dict) -> str:
     }
 
     # 使用json.dumps生成格式化的JSON字符串
-    # 使用indent参数使其更具可读性
     return json.dumps(report_dict, indent=4)
 
 
@@ -597,10 +595,16 @@ if __name__ == '__main__':
         print("警告 ⚠️: 必须通过 --ast 或 --ast_file 提供一个有效的因子AST。")
         # 打印一个默认的AST作为示例
         user_ast = {
-            "func": "divide",
+            "func": "rolling_corr",
             "args": {
-                "a": {"func": "rolling_sum", "args": {"data": {"var": "log_return"}, "window": 20, "axis": 0}},
-                "b": {"func": "rolling_std", "args": {"data": {"var": "log_return"}, "window": 20, "axis": 0}}
+                "a": {
+                    "var": "log_return"
+                },
+                "b": {
+                    "var": "benchmark_ew"
+                },
+                "window": 30.0,
+                "axis": 0.0
             }
         }
         print(f"\n示例:")

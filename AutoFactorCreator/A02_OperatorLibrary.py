@@ -816,8 +816,18 @@ def rolling_corr(a: np.ndarray, b: np.ndarray, window: int, axis: int = 0) -> np
     if axis != 0:
         raise ValueError("rolling_corr only supports axis=0 (time-series correlation).")
 
-    if a.shape != b.shape:
-        raise ValueError("Inputs a and b must have the same shape.")
+    # 允许在其中一个输入是单列（例如基准）时进行广播
+    if a.shape[0] != b.shape[0]:
+        raise ValueError("输入 a 和 b 必须有相同的行数（时间周期）。")
+
+    # 如果 b 是基准 (T, 1) 而 a 是资产 (T, N)，则广播 b。
+    if a.ndim == 2 and b.ndim == 2 and b.shape[1] == 1 and a.shape[1] > 1:
+        b = np.repeat(b, a.shape[1], axis=1)
+    # 如果 a 是基准 (T, 1) 而 b 是资产 (T, N)，则广播 a。
+    elif a.ndim == 2 and b.ndim == 2 and a.shape[1] == 1 and b.shape[1] > 1:
+        a = np.repeat(a, b.shape[1], axis=1)
+    elif a.shape != b.shape:
+        raise ValueError(f"输入 a 和 b 的形状不兼容: {a.shape} vs {b.shape}")
 
     result = np.full(a.shape, np.nan)
 
@@ -850,8 +860,18 @@ def rolling_cov(a: np.ndarray, b: np.ndarray, window: int, axis: int = 0) -> np.
     if axis != 0:
         raise ValueError("rolling_cov only supports axis=0 (time-series covariance).")
 
-    if a.shape != b.shape:
-        raise ValueError("Inputs a and b must have the same shape.")
+    # 允许在其中一个输入是单列（例如基准）时进行广播
+    if a.shape[0] != b.shape[0]:
+        raise ValueError("输入 a 和 b 必须有相同的行数（时间周期）。")
+
+    # 如果 b 是基准 (T, 1) 而 a 是资产 (T, N)，则广播 b。
+    if a.ndim == 2 and b.ndim == 2 and b.shape[1] == 1 and a.shape[1] > 1:
+        b = np.repeat(b, a.shape[1], axis=1)
+    # 如果 a 是基准 (T, 1) 而 b 是资产 (T, N)，则广播 a。
+    elif a.ndim == 2 and b.ndim == 2 and a.shape[1] == 1 and b.shape[1] > 1:
+        a = np.repeat(a, b.shape[1], axis=1)
+    elif a.shape != b.shape:
+        raise ValueError(f"输入 a 和 b 的形状不兼容: {a.shape} vs {b.shape}")
 
     result = np.full(a.shape, np.nan)
 
@@ -1167,8 +1187,15 @@ def alpha(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int =
     if axis != 0:
         raise ValueError("alpha only supports axis=0 (time-series).")
 
-    if data.shape != benchmark_data.shape:
-        raise ValueError("data and benchmark_data must have the same shape.")
+    # 允许在其中一个输入是单列（例如基准）时进行广播
+    if data.shape[0] != benchmark_data.shape[0]:
+        raise ValueError("输入 data 和 benchmark_data 必须有相同的行数（时间周期）。")
+
+    # 如果 benchmark_data 是基准 (T, 1) 而 data 是资产 (T, N)，则广播 benchmark_data。
+    if data.ndim == 2 and benchmark_data.ndim == 2 and benchmark_data.shape[1] == 1 and data.shape[1] > 1:
+        benchmark_data = np.repeat(benchmark_data, data.shape[1], axis=1)
+    elif data.shape != benchmark_data.shape:
+        raise ValueError(f"输入 data 和 benchmark_data 的形状不兼容: {data.shape} vs {benchmark_data.shape}")
 
     result = np.full_like(data, np.nan, dtype=float)
 
@@ -1205,8 +1232,15 @@ def beta(data: np.ndarray, benchmark_data: np.ndarray, window: int, axis: int = 
     if axis != 0:
         raise ValueError("beta only supports axis=0 (time-series).")
 
-    if data.shape != benchmark_data.shape:
-        raise ValueError("data and benchmark_data must have the same shape.")
+    # 允许在其中一个输入是单列（例如基准）时进行广播
+    if data.shape[0] != benchmark_data.shape[0]:
+        raise ValueError("输入 data 和 benchmark_data 必须有相同的行数（时间周期）。")
+
+    # 如果 benchmark_data 是基准 (T, 1) 而 data 是资产 (T, N)，则广播 benchmark_data。
+    if data.ndim == 2 and benchmark_data.ndim == 2 and benchmark_data.shape[1] == 1 and data.shape[1] > 1:
+        benchmark_data = np.repeat(benchmark_data, data.shape[1], axis=1)
+    elif data.shape != benchmark_data.shape:
+        raise ValueError(f"输入 data 和 benchmark_data 的形状不兼容: {data.shape} vs {benchmark_data.shape}")
 
     result = np.full_like(data, np.nan, dtype=float)
 
