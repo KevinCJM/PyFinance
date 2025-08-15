@@ -354,17 +354,30 @@ def main(input_parquet='test_news_clean.parquet',
     plt.close()
 
     # ====== Jaccard 护栏阈值与直方图 ======
-    q80_j = float(np.quantile(top1_jacc, 0.80))
-    q90_j = float(np.quantile(top1_jacc, 0.90))
-    q98_j = float(np.quantile(top1_jacc, 0.98))
-    T_jacc_guard = q80_j
-    print(f"[INFO] Jaccard quantiles: q80={q80_j:.6f}, "
-          f"q90={q90_j:.6f}, q98={q98_j:.6f} (guard=T_jacc={T_jacc_guard:.6f})")
+    # 负类 Jaccard（复用你采的随机对；上面已有 neg_cont）
+    neg_jacc = np.empty(i_idx.size, dtype=np.float32)
+    w = 0
+    for s in range(0, i_idx.size, B):
+        e = min(i_idx.size, s + B)
+        for k in range(s, e):
+            a = sets[i_idx[k]];
+            b = sets[j_idx[k]]
+            neg_jacc[w] = jaccard_from_sets(a, b)
+            w += 1
+    neg_jacc = neg_jacc[:w]
+
+    def threshold_by_fpr_new(bg_scores, k_neighbors, fp_per_node=0.05):
+        q = (1.0 - fp_per_node) ** (1.0 / max(1, k_neighbors))
+        return float(np.quantile(bg_scores, q))
+
+    # 用更紧的护栏（比如单独给 Jaccard 设 ε_j）
+    T_jacc_guard = threshold_by_fpr_new(neg_jacc, k_neighbors=k_neighbors, fp_per_node=0.01)
+    print(f"[INFO] Jaccard guard by FPR: {T_jacc_guard:.6f}")
 
     print(f"[INFO] 绘制直方图（jaccard） → {hist_png_jacc}")
     plt.figure(figsize=(9, 4.8))
     plt.hist(top1_jacc, bins=128, range=(0.0, 1.0), density=True, alpha=0.85)
-    for name, val in [('q80(guard)', q80_j), ('q90', q90_j), ('q98', q98_j)]:
+    for name, val in [('fpr', T_jacc_guard)]:
         plt.axvline(val, linestyle='--', linewidth=1.2, label=f"{name}: {val:.3f}")
     plt.xlabel("Top-1 Jaccard (character n-gram sets)")
     plt.ylabel("density")
