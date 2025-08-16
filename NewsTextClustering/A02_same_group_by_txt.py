@@ -3,6 +3,7 @@ import hashlib
 import numpy as np
 import pandas as pd
 from heapq import nlargest
+from numba import njit, prange
 import matplotlib.pyplot as plt
 from sklearn.mixture import GaussianMixture
 from typing import List, Tuple, Optional, Dict
@@ -23,6 +24,351 @@ except Exception:
 
 def current_time_str():
     return pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+# -------- CSR 打包：把变长的指纹集 / 候选列表压平成一维数组 + 偏移量 --------
+def pack_sets_uint64(sets_list: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    # sets_list：每篇文档的去重升序 uint64 指纹集合
+    n = len(sets_list)
+    offs = np.empty(n + 1, dtype=np.int64)
+    offs[0] = 0
+    total = 0
+    for i in range(n):
+        total += sets_list[i].size
+        offs[i + 1] = total
+    flat = np.empty(total, dtype=np.uint64)
+    pos = 0
+    for arr in sets_list:
+        m = arr.size
+        if m:
+            flat[pos:pos + m] = arr
+            pos += m
+    return flat, offs
+
+
+def pack_candidates_int32(cand_lists: Dict[int, List[int]], n: int) -> Tuple[np.ndarray, np.ndarray]:
+    offs = np.empty(n + 1, dtype=np.int64)
+    offs[0] = 0
+    total = 0
+    for i in range(n):
+        total += len(cand_lists.get(i, []))
+        offs[i + 1] = total
+    flat = np.empty(total, dtype=np.int32)
+    pos = 0
+    for i in range(n):
+        js = cand_lists.get(i, [])
+        if js:
+            a = np.asarray(js, dtype=np.int32)
+            flat[pos:pos + a.size] = a
+            pos += a.size
+    return flat, offs
+
+
+# -------- Numba 核心：两指针交集 + top1 计算（并行） --------
+@njit
+def _inter_size_sorted_region(S, a0, a1, b0, b1) -> int:
+    i = a0
+    j = b0
+    cnt = 0
+    while i < a1 and j < b1:
+        ai = S[i]
+        bj = S[j]
+        if ai == bj:
+            cnt += 1
+            i += 1
+            j += 1
+        elif ai < bj:
+            i += 1
+        else:
+            j += 1
+    return cnt
+
+
+@njit(parallel=True)
+def compute_top1_cont_jacc(S_flat, S_offs, C_flat, C_offs):
+    """
+    S_flat: 所有文档的指纹串联数组 (uint64)
+    S_offs: 每文档在 S_flat 的 [start,end) 偏移 (int64), 长度 n+1
+    C_flat: 所有候选的串联数组 (int32)
+    C_offs: 每文档候选的 [start,end) 偏移 (int64), 长度 n+1
+    返回：top1_cont, top1_jacc （float32）
+    """
+    n = S_offs.shape[0] - 1
+    top_cont = np.zeros(n, dtype=np.float32)
+    top_jacc = np.zeros(n, dtype=np.float32)
+    for i in prange(n):
+        s = C_offs[i]
+        e = C_offs[i + 1]
+        if e <= s:
+            continue
+        ai0 = S_offs[i]
+        ai1 = S_offs[i + 1]
+        a_len = ai1 - ai0
+        best_c = 0.0
+        best_j = 0.0
+        for p in range(s, e):
+            j = int(C_flat[p])
+            bj0 = S_offs[j]
+            bj1 = S_offs[j + 1]
+            inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
+            b_len = bj1 - bj0
+            # containment
+            min_len = a_len if a_len < b_len else b_len
+            denom_c = 1 if min_len <= 0 else min_len
+            c = inter / denom_c
+            if c > best_c:
+                best_c = c
+            # jaccard
+            union = a_len + b_len - inter
+            jacc = 0.0 if union <= 0 else inter / union
+            if jacc > best_j:
+                best_j = jacc
+        top_cont[i] = best_c
+        top_jacc[i] = best_j
+    return top_cont, top_jacc
+
+
+# ---------- 文本 -> Unicode 码点扁平化 ----------
+def _to_codepoints_flat(docs: List[str]) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    返回:
+      flat_cp: 所有文档拼接后的 uint32 码点数组
+      offs_cp: 每文档在 flat_cp 中的 [start, end) 偏移, 长度 n+1
+    """
+    n = len(docs)
+    offs = np.empty(n + 1, dtype=np.int64)
+    offs[0] = 0
+    cps = []
+    total = 0
+    for i, s in enumerate(docs):
+        # Python 端转码：对 CJK 安全，逐字符 ord
+        a = np.fromiter((ord(ch) for ch in s), dtype=np.uint32, count=len(s))
+        cps.append(a)
+        total += a.size
+        offs[i + 1] = total
+    if total == 0:
+        return np.empty(0, dtype=np.uint32), offs
+    flat = np.empty(total, dtype=np.uint32)
+    pos = 0
+    for a in cps:
+        m = a.size
+        if m:
+            flat[pos:pos + m] = a
+            pos += m
+    return flat, offs
+
+
+# ---------- Numba: FNV-1a 64bit 对 u32 序列做滑窗哈希 ----------
+@njit
+def _fnv1a_u32_slice(arr_u32, start, length) -> np.uint64:
+    h = np.uint64(1469598103934665603)  # FNV offset basis
+    fnv = np.uint64(1099511628211)  # FNV prime
+    for t in range(length):
+        h ^= np.uint64(arr_u32[start + t])
+        h *= fnv  # uint64 溢出自动按 2^64 wrap
+    return h
+
+
+@njit(parallel=True)
+def _hash_windows_for_docs(flat_cp, offs_cp, ngram, out_hashes, offs_hash):
+    """
+    对每个文档并行计算所有长度为 ngram 的窗口哈希。
+    规则与原 char_ngrams 一致：若 L==0 -> 无片段；若 0<L<=ngram -> 仅一个窗口(整篇)。
+    结果写入 out_hashes 的每个文档片段 [offs_hash[i], offs_hash[i+1])
+    """
+    n_docs = offs_cp.shape[0] - 1
+    for i in prange(n_docs):
+        s = offs_cp[i]
+        e = offs_cp[i + 1]
+        L = e - s
+        dst = offs_hash[i]
+        if L <= 0:
+            continue
+        if L <= ngram:
+            out_hashes[dst] = _fnv1a_u32_slice(flat_cp, s, L)
+        else:
+            m = L - ngram + 1
+            for p in range(m):
+                out_hashes[dst + p] = _fnv1a_u32_slice(flat_cp, s + p, ngram)
+
+
+def build_shingle_sets_numba(docs: List[str], ngram: int = 5) -> List[np.ndarray]:
+    """
+    返回与旧版 shingle_set 一致的结果类型：每篇是升序去重后的 uint64 数组。
+    """
+    n = len(docs)
+    flat_cp, offs_cp = _to_codepoints_flat(docs)
+
+    # 先算每篇窗口数用于一次性分配
+    lens = (offs_cp[1:] - offs_cp[:-1]).astype(np.int64)
+    counts = np.where(lens <= 0, 0,
+                      np.where(lens <= ngram, 1, lens - ngram + 1)).astype(np.int64)
+    offs_hash = np.empty(n + 1, dtype=np.int64)
+    offs_hash[0] = 0
+    np.cumsum(counts, out=offs_hash[1:])
+    total = int(offs_hash[-1])
+
+    out_hashes = np.empty(total, dtype=np.uint64)
+    if total:
+        _hash_windows_for_docs(flat_cp, offs_cp, ngram, out_hashes, offs_hash)
+
+    # 分文档 unique & sort（C 端实现，足够快）
+    sets: List[np.ndarray] = []
+    for i in range(n):
+        a = out_hashes[offs_hash[i]:offs_hash[i + 1]]
+        if a.size == 0:
+            sets.append(np.empty(0, dtype=np.uint64))
+        else:
+            sets.append(np.unique(a))  # unique 本身会排序
+    return sets
+
+
+# ---------- 把 sets/candidates 压平成 CSR ----------
+
+
+def pack_candidates_int32_sorted(cand_lists, n):
+    # 排序去重，便于 binary search 做 mutual 检查
+    offs = np.empty(n + 1, dtype=np.int64)
+    offs[0] = 0
+    tot = 0
+    tmp = []
+    for i in range(n):
+        js = cand_lists.get(i, [])
+        if len(js):
+            a = np.asarray(js, dtype=np.int32)
+            a = np.unique(a)  # 排序 + 去重
+            tmp.append(a)
+            tot += a.size
+        else:
+            tmp.append(np.empty(0, dtype=np.int32))
+        offs[i + 1] = tot
+    flat = np.empty(tot, dtype=np.int32)
+    p = 0
+    for a in tmp:
+        m = a.size
+        if m:
+            flat[p:p + m] = a
+            p += m
+    return flat, offs
+
+
+# ---------- 低层两指针交集（操作扁平数组的片段） ----------
+@njit
+def _inter_size_sorted_region(S, a0, a1, b0, b1):
+    i = a0
+    j = b0
+    cnt = 0
+    while i < a1 and j < b1:
+        ai = S[i]
+        bj = S[j]
+        if ai == bj:
+            cnt += 1
+            i += 1
+            j += 1
+        elif ai < bj:
+            i += 1
+        else:
+            j += 1
+    return cnt
+
+
+@njit
+def _contains_sorted(A, s, e, x):
+    lo = s
+    hi = e - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        v = A[mid]
+        if v == x:
+            return True
+        elif v < x:
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return False
+
+
+# ---------- Numba 并行：筛边 + per-node topM ----------
+@njit(parallel=True)
+def build_edges_numba(S_flat, S_offs, C_flat, C_offs,
+                      T_cont, T_jacc, topM, mutual_required):
+    """
+    返回两个长度为 n*topM 的数组 (u,v)，多余位置为 -1
+    只写 i<j 的边，天然去重
+    """
+    n = S_offs.shape[0] - 1
+    edges_u = np.full(n * topM, -1, dtype=np.int32)
+    edges_v = np.full(n * topM, -1, dtype=np.int32)
+
+    for i in prange(n):
+        ai0 = S_offs[i]
+        ai1 = S_offs[i + 1]
+        a_len = ai1 - ai0
+        cs = C_offs[i]
+        ce = C_offs[i + 1]
+
+        # 本节点的 topM（按 containment 排序）
+        best_js = np.full(topM, -1, dtype=np.int32)
+        best_sc = np.full(topM, -1.0, dtype=np.float32)
+
+        for p in range(cs, ce):
+            j = int(C_flat[p])
+            # 只让小编号指向大编号，避免重复边
+            if j <= i:
+                continue
+
+            bj0 = S_offs[j]
+            bj1 = S_offs[j + 1]
+            inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
+            b_len = bj1 - bj0
+
+            # containment / jaccard
+            min_len = a_len if a_len < b_len else b_len
+            denom_c = 1 if min_len <= 0 else min_len
+            c = inter / denom_c
+            union = a_len + b_len - inter
+            jacc = 0.0 if union <= 0 else inter / union
+
+            if c < T_cont or jacc < T_jacc:
+                continue
+
+            if mutual_required:
+                # 检查 i 是否出现在 j 的候选中（C_flat[C_offs[j]:C_offs[j+1]) 是升序）
+                if not _contains_sorted(C_flat, C_offs[j], C_offs[j + 1], i):
+                    continue
+
+            # 线性维护本节点 topM（M 很小，线性足够快）
+            placed = False
+            for k in range(topM):
+                if best_js[k] == -1:
+                    best_js[k] = j
+                    best_sc[k] = c
+                    placed = True
+                    break
+            if not placed:
+                # 找出当前最小的一个，若 c 更大则替换
+                minpos = 0
+                minval = best_sc[0]
+                for k in range(1, topM):
+                    if best_sc[k] < minval:
+                        minval = best_sc[k]
+                        minpos = k
+                if c > minval:
+                    best_js[minpos] = j
+                    best_sc[minpos] = c
+
+        # 写回（每节点最多 topM 条，与 i<j 规则一起避免重复）
+        base = i * topM
+        outc = 0
+        for k in range(topM):
+            j = best_js[k]
+            if j != -1:
+                edges_u[base + outc] = i
+                edges_v[base + outc] = j
+                outc += 1
+
+    return edges_u, edges_v
+
 
 # ========= 基础：字符 n-gram 指纹（去重集合） =========
 
@@ -273,34 +619,21 @@ def main(input_parquet='test_news_clean.parquet',
     print(f"{current_time_str()} [INFO] 样本数 n = {n}")
 
     print(f"{current_time_str()} [INFO] 构建字符 {ngram_cont}-gram 指纹集合（去重）...")
-    sets = [shingle_set(t, n=ngram_cont) for t in docs]
+    sets = build_shingle_sets_numba(docs, ngram=ngram_cont)
 
     print(f"{current_time_str()} [INFO] 构建 MinHash（ngram={ngram_lsh}, num_perm={num_perm}）并建立索引...")
     sigs = build_minhash_signatures(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
     query = build_index_and_query_topk(sigs, k_neighbors=k_neighbors)
 
-    print(f"{current_time_str()} [INFO] 计算每篇的 top-1 最大包含度 / Jaccard ...")
-    top1_cont = np.zeros(n, dtype=np.float32)
-    top1_jacc = np.zeros(n, dtype=np.float32)
+    print(f"{current_time_str()} [INFO] 计算候选（仅召回，不算分数）...")
     cand_lists: Dict[int, List[int]] = {}
     for i in range(n):
-        js = query(i)
-        cand_lists[i] = js
-        if not js:
-            continue
-        Ai = sets[i]
-        best_c = 0.0
-        best_j = 0.0
-        for j in js:
-            Bj = sets[j]
-            c = max_containment(Ai, Bj)
-            if c > best_c:
-                best_c = c
-            jacc = jaccard_from_sets(Ai, Bj)
-            if jacc > best_j:
-                best_j = jacc
-        top1_cont[i] = best_c
-        top1_jacc[i] = best_j
+        cand_lists[i] = query(i)
+
+    print(f"{current_time_str()} [INFO] 打包 CSR 结构并并行计算 top-1 分数 ...")
+    S_flat, S_offs = pack_sets_uint64(sets)  # 指纹集合打包
+    C_flat, C_offs = pack_candidates_int32(cand_lists, n)  # 候选打包
+    top1_cont, top1_jacc = compute_top1_cont_jacc(S_flat, S_offs, C_flat, C_offs)
 
     # 负类分布（用于 FPR 地板）
     m_neg = min(int(neg_pairs), max(10_000, 20 * n))
@@ -360,7 +693,6 @@ def main(input_parquet='test_news_clean.parquet',
     plt.close()
 
     # ====== Jaccard 护栏阈值与直方图 ======
-    # 负类 Jaccard（复用你采的随机对；上面已有 neg_cont）
     neg_jacc = np.empty(i_idx.size, dtype=np.float32)
     w = 0
     for s in range(0, i_idx.size, B):
@@ -372,12 +704,12 @@ def main(input_parquet='test_news_clean.parquet',
             w += 1
     neg_jacc = neg_jacc[:w]
 
-    def threshold_by_fpr_new(bg_scores, k_neighbors, fp_per_node=0.05):
+    def threshold_by_fpr_new(bg_scores, k_neighbors, fp_per_node=0.01):
         q = (1.0 - fp_per_node) ** (1.0 / max(1, k_neighbors))
         return float(np.quantile(bg_scores, q))
 
     # 用更紧的护栏（比如单独给 Jaccard 设 ε_j）
-    T_jacc_guard = threshold_by_fpr_new(neg_jacc, k_neighbors=k_neighbors, fp_per_node=0.01)
+    T_jacc_guard = threshold_by_fpr_new(neg_jacc, k_neighbors=k_neighbors, fp_per_node=0.001)
     print(f"{current_time_str()} [INFO] Jaccard guard by FPR: {T_jacc_guard:.6f}")
 
     print(f"{current_time_str()} [INFO] 绘制直方图（jaccard） → {hist_png_jacc}")
@@ -394,32 +726,22 @@ def main(input_parquet='test_news_clean.parquet',
     plt.close()
 
     # ====== 建图：互为近邻 + per-node topM + 双阈值 ======
-    print(f"{current_time_str()} [INFO] 建图（互为近邻 + per-node topM + 双阈值）...")
-    edges_set = set()
-    for i in range(n):
-        js = cand_lists[i]
-        if not js:
-            continue
-        Ai = sets[i]
-        conts = np.empty(len(js), dtype=np.float32)
-        jaccs = np.empty(len(js), dtype=np.float32)
-        for t, j in enumerate(js):
-            Bj = sets[j]
-            conts[t] = max_containment(Ai, Bj)
-            jaccs[t] = jaccard_from_sets(Ai, Bj)
-        mutual = np.array([i in cand_lists.get(j, []) for j in js], dtype=bool
-                          ) if mutual_required else np.ones(len(js), dtype=bool)
-        mask = (conts >= T_final) & (jaccs >= T_jacc_guard) & mutual
-        idxs = np.where(mask)[0]
-        if idxs.size > topM:
-            top_idx = np.argpartition(-conts[idxs], topM - 1)[:topM]
-            idxs = idxs[top_idx]
-        for t in idxs:
-            j = js[t]
-            u, v = (i, j) if i < j else (j, i)
-            edges_set.add((u, v))
+    print(f"{current_time_str()} [INFO] 建图（numba 并行，互为近邻 + per-node topM + 双阈值）...")
 
-    edges = list(edges_set)
+    # 先把 sets / candidates 打包成 CSR
+    S_flat, S_offs = pack_sets_uint64(sets)
+    C_flat, C_offs = pack_candidates_int32_sorted(cand_lists, n)
+
+    # Numba 并行筛边（只产出 i<j 的边，天然去重）
+    edges_u, edges_v = build_edges_numba(
+        S_flat, S_offs, C_flat, C_offs,
+        T_cont=T_final, T_jacc=T_jacc_guard,
+        topM=int(topM), mutual_required=bool(mutual_required)
+    )
+
+    # 回到 Python 侧，整理有效边
+    mask = edges_u >= 0
+    edges = [(int(u), int(v)) for u, v in zip(edges_u[mask], edges_v[mask])]
     print(f"{current_time_str()} [INFO] 保留边数：{len(edges)}")
 
     groups = union_find_groups(n, edges)
@@ -465,5 +787,5 @@ if __name__ == '__main__':
         fp_per_node=0.05,  # 目标每节点误边概率（FPR 地板）
         neg_pairs=200_000,  # 负样本随机对采样数
         mutual_required=True,  # 只保留互为近邻的边
-        quick_test=2_000  # 调试用截断
+        quick_test=20_000  # 调试用的样本数量 (None则表示全量)
     )
