@@ -72,7 +72,7 @@ RE_JRJ_NAV = re.compile(
     flags=re.UNICODE
 )
 
-# 例：该基金近1个月收益率0.06%,同类排名588|1911;近3个月收益率6.99%,同类排名1130|1900;今年来收益率11.62%,同类排名295|1870.
+# —————————————— 金融界净值类快讯数据提取 ——————————————
 RE_JRJ_TAIL = re.compile(
     r'近1个月收益率(?P<ret_1m>-?\d+(?:\.\d+)?)%,同类排名(?P<rank_1m>\d+)\|(?P<base_1m>\d+);'
     r'近3个月收益率(?P<ret_3m>-?\d+(?:\.\d+)?)%,同类排名(?P<rank_3m>\d+)\|(?P<base_3m>\d+);'
@@ -134,7 +134,7 @@ def extract_jrj_nav_rows(res: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# —— 重仓股快讯提取（最新披露数据显示…十大重仓股） ——
+# —————————————— 重仓股快讯提取（最新披露数据显示…十大重仓股） ——————————————
 RE_TOP_HOLDINGS = re.compile(
     r'最新披露数据显示,'  # 起始锚点（允许前面还有别的话，extract会search）
     r'截(?:至|止)'  # 截至/截止 兼容
@@ -228,7 +228,82 @@ def extract_top_holdings_rows(res: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# 压缩连续的句点
+# —————————————— 证券之星盘中消息提取（兼容“时间在公司前/后”的两种写法 ——————————————
+RE_SZX_HEAD = re.compile(
+    r'^证券之星(?P<month>\d{1,2})月(?P<day>\d{1,2})日盘中消息,'
+    r'(?:'
+    r'(?P<comp1>[^,(，]+)\((?P<code1>\d{6})\)(?P<h1>\d{1,2})点(?P<m1>\d{1,2})分'  # 公司→时间
+    r'|'
+    r'(?P<h2>\d{1,2})点(?P<m2>\d{1,2})分(?P<comp2>[^,(，]+)\((?P<code2>\d{6})\)'  # 时间→公司
+    r')'
+    r'(?P<event>[^。\.]*)[。\.]',
+    flags=re.UNICODE
+)
+
+RE_SZX_PRICE = re.compile(
+    r'(?:当前股价为|目前价格)'
+    r'(?P<price>\d+(?:\.\d+)?)(?:元)?[,，]?\s*'
+    r'(?:(?P<ud>涨|跌|上涨|下跌)\s*(?P<pct>\d+(?:\.\d+)?)%)?',
+    flags=re.UNICODE
+)
+
+UD_SIGN = {'涨': 1, '上涨': 1, '跌': -1, '下跌': -1}
+
+
+def extract_szx_intraday_rows(res: pd.DataFrame) -> pd.DataFrame:
+    """
+    从预处理结果 res（需含 text_norm）抽取“证券之星xx月xx日盘中消息”类快讯。
+    返回结构化字段；无匹配返回空表。
+    """
+    if 'text_norm' not in res.columns:
+        return pd.DataFrame()
+
+    t = res['text_norm']
+
+    # 头部解析（公司/代码/时间/事件句）
+    head = t.str.extract(RE_SZX_HEAD)
+
+    mask = head['month'].notna()
+    if not mask.any():
+        return pd.DataFrame()
+
+    head = head.loc[mask].reset_index(drop=True)
+
+    # 统一公司与代码（时间在前/后两种写法合并）
+    comp = head['comp1'].fillna(head['comp2'])
+    code = head['code1'].fillna(head['code2'])
+    hh = head['h1'].fillna(head['h2'])
+    mm = head['m1'].fillna(head['m2'])
+
+    # 解析价格与涨跌幅（向量化）
+    price_ext = t.loc[mask].str.extract(RE_SZX_PRICE)
+    price = pd.to_numeric(price_ext['price'], errors='coerce')
+    pct = pd.to_numeric(price_ext['pct'], errors='coerce')
+    sign = price_ext['ud'].map(UD_SIGN).astype('float64')
+    chg_pct = pct.where(pct.notna(), pd.NA)
+    # 若存在方向词，则赋予符号
+    chg_pct = (chg_pct * sign).astype('Float64')
+
+    # 审计保留原文
+    base_cols = [c for c in ['title', 'text', 'title_norm', 'text_norm', 'doc_norm'] if c in res.columns]
+    base = res.loc[mask, base_cols].reset_index(drop=True)
+
+    out = pd.DataFrame({
+        'month': pd.to_numeric(head['month'], errors='coerce').astype('Int64'),
+        'day': pd.to_numeric(head['day'], errors='coerce').astype('Int64'),
+        'time_hhmm': hh.str.zfill(2) + ':' + mm.str.zfill(2),
+        'company': comp,
+        'code': code,
+        'event': head['event'].str.strip(),  # 例：股价创60日新高 / 触及涨停板 / 触及跌停板
+        'price': price,  # 当前/目前价格
+        'chg_pct': chg_pct  # 涨跌幅（带正负号）
+    })
+
+    out = pd.concat([base, out], axis=1)
+    return out
+
+
+# —————————————— 压缩连续的句点 ——————————————
 RE_MULTI_DOTS = re.compile(r'\.{2,}')
 
 # 单字符映射（translate 更快）；包含半角化/统一标点/去装饰符
@@ -442,6 +517,20 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
         print(f"[INFO] 剩余条数：{len(res)}")
     else:
         print("[INFO] 未匹配到重仓股快讯。")
+
+    # —— 抽取“证券之星盘中消息”并单独导出 ——
+    szx_df = extract_szx_intraday_rows(res)
+    if not szx_df.empty:
+        szx_excel = "szx_intraday_news_clean.xlsx"
+        szx_parquet = "szx_intraday_news_clean.parquet"
+        szx_df.to_excel(szx_excel, index=False)
+        szx_df.to_parquet(szx_parquet, index=False)
+        print(f"[INFO] 证券之星盘中消息匹配 {len(szx_df)} 条，已另存：{szx_excel} & {szx_parquet}")
+        print(f"[INFO] 从原数据中剔除证券之星盘中消息")
+        res = res[~res['doc_norm'].isin(szx_df['doc_norm'])].reset_index(drop=True)
+        print(f"[INFO] 剩余条数：{len(res)}")
+    else:
+        print("[INFO] 未匹配到证券之星盘中消息。")
 
     write_outputs(res, out_pq, out_excel)
     print(f"[INFO] 写出完成。")
