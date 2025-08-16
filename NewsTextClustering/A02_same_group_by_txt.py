@@ -1,13 +1,11 @@
 import os
 import math
 import hashlib
-from typing import List, Tuple, Optional, Iterable, Dict
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
 from sklearn.mixture import GaussianMixture
+from typing import List, Tuple, Optional, Iterable, Dict
 
 try:
     from datasketch import MinHash, MinHashLSHForest
@@ -56,8 +54,8 @@ def inter_size_sorted(a: np.ndarray, b: np.ndarray) -> int:
     while i < na and j < nb:
         ai, bj = a[i], b[j]
         if ai == bj:
-            cnt += 1;
-            i += 1;
+            cnt += 1
+            i += 1
             j += 1
         elif ai < bj:
             i += 1
@@ -172,7 +170,7 @@ def thr_rightmost_valley(scores: np.ndarray, bins: int = 256, smooth_sigma: floa
     if smooth_sigma and smooth_sigma > 0:
         r = int(3 * smooth_sigma)
         x = np.arange(-r, r + 1, dtype=float)
-        k = np.exp(-0.5 * (x / smooth_sigma) ** 2);
+        k = np.exp(-0.5 * (x / smooth_sigma) ** 2)
         k /= k.sum()
         hist = np.convolve(hist.astype(float), k, mode='same')
     H = hist
@@ -360,7 +358,7 @@ def main(input_parquet='test_news_clean.parquet',
     for s in range(0, i_idx.size, B):
         e = min(i_idx.size, s + B)
         for k in range(s, e):
-            a = sets[i_idx[k]];
+            a = sets[i_idx[k]]
             b = sets[j_idx[k]]
             neg_jacc[w] = jaccard_from_sets(a, b)
             w += 1
