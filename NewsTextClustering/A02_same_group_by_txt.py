@@ -1,11 +1,10 @@
 import os
-import math
 import hashlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.mixture import GaussianMixture
-from typing import List, Tuple, Optional, Iterable, Dict
+from typing import List, Tuple, Optional, Dict
 
 try:
     from datasketch import MinHash, MinHashLSHForest
