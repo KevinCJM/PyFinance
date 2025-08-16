@@ -223,6 +223,132 @@ def build_shingle_sets_numba(docs: List[str], ngram: int = 5) -> List[np.ndarray
     return sets
 
 
+@njit(parallel=True)
+def compute_pairs_cont(S_flat, S_offs, i_idx, j_idx):
+    """
+    只计算 max-containment，返回 cont (float32, m)
+    """
+    m = i_idx.shape[0]
+    cont = np.empty(m, dtype=np.float32)
+    for k in prange(m):
+        i = int(i_idx[k])
+        j = int(j_idx[k])
+        ai0 = S_offs[i]
+        ai1 = S_offs[i + 1]
+        bj0 = S_offs[j]
+        bj1 = S_offs[j + 1]
+        inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
+        a_len = ai1 - ai0
+        b_len = bj1 - bj0
+        # containment
+        min_len = a_len if a_len < b_len else b_len
+        denom_c = 1 if min_len <= 0 else min_len
+        cont[k] = inter / denom_c
+    return cont
+
+
+@njit(parallel=True)
+def compute_pairs_cont_jacc(S_flat, S_offs, i_idx, j_idx):
+    """
+    同时计算 max-containment 和 Jaccard，返回 (cont, jacc)
+    """
+    m = i_idx.shape[0]
+    cont = np.empty(m, dtype=np.float32)
+    jacc = np.empty(m, dtype=np.float32)
+    for k in prange(m):
+        i = int(i_idx[k])
+        j = int(j_idx[k])
+        ai0 = S_offs[i]
+        ai1 = S_offs[i + 1]
+        bj0 = S_offs[j]
+        bj1 = S_offs[j + 1]
+        inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
+        a_len = ai1 - ai0
+        b_len = bj1 - bj0
+        # containment
+        min_len = a_len if a_len < b_len else b_len
+        denom_c = 1 if min_len <= 0 else min_len
+        cont[k] = inter / denom_c
+        # jaccard
+        union = a_len + b_len - inter
+        jacc[k] = 0.0 if union <= 0 else inter / union
+    return cont, jacc
+
+
+@njit(parallel=True)
+def _minhash_from_sets_numba(S_flat, S_offs, A, B):
+    """
+    对每篇文档的 uint64 指纹集合（升序、unique）计算 MinHash 签名。
+    hash 函数族：h_i(x) = A[i]*x + B[i] （uint64 环上自然溢出）
+    返回: sigs [n_docs, num_perm] (uint64)
+    """
+    n = S_offs.shape[0] - 1
+    num_perm = A.shape[0]
+    sigs = np.empty((n, num_perm), dtype=np.uint64)
+    MAXU = np.uint64(0xFFFFFFFFFFFFFFFF)
+
+    for i in prange(n):
+        # 初始化每个 permutation 的当前最小值为 MAX
+        for p in range(num_perm):
+            sigs[i, p] = MAXU
+
+        s = S_offs[i];
+        e = S_offs[i + 1]
+        if e <= s:
+            continue  # 空集合保持 MAXU
+
+        # 遍历该文档的全部 shingle 指纹
+        for t in range(s, e):
+            x = S_flat[t]
+            # 逐 permutation 更新最小值
+            for p in range(num_perm):
+                # uint64 乘/加自动 wrap，不需要显式取模
+                hv = A[p] * x + B[p]
+                if hv < sigs[i, p]:
+                    sigs[i, p] = hv
+    return sigs
+
+
+def _make_hash_params(num_perm: int, seed: int = 1):
+    # 生成 uint64 的 A/B，避免 0；A 取奇数更稳
+    rng = np.random.RandomState(seed)
+    A = rng.randint(1, np.iinfo(np.uint64).max, size=num_perm, dtype=np.uint64)
+    B = rng.randint(0, np.iinfo(np.uint64).max, size=num_perm, dtype=np.uint64)
+    A |= np.uint64(1)  # 设为奇数
+    return A, B
+
+
+def build_minhash_signatures_numba(texts: List[str], ngram: int = 4, num_perm: int = 256, seed: int = 1) -> List[
+    MinHash]:
+    """
+    用 numba 加速的 MinHash 计算：
+      1) 用（推荐的）numba 版 shingle 构建成 uint64 集合（升序去重）
+      2) numba 并行计算签名矩阵
+      3) Python 侧封装为 datasketch.MinHash（赋值 hashvalues）
+    """
+    # 1) 构建文档的 uint64 shingle 集合
+    try:
+        sets = build_shingle_sets_numba(texts, ngram=ngram)  # 如果你已引入该函数，优先使用
+    except NameError:
+        # 回退到你已有的逐文档 shingle_set（较慢，但功能一致）
+        sets = [shingle_set(t, n=ngram) for t in texts]
+
+    # 2) 打包为 CSR，并用 numba 并行计算签名
+    S_flat, S_offs = pack_sets_uint64(sets)
+    A, B = _make_hash_params(num_perm=num_perm, seed=seed)
+    sig_mat = _minhash_from_sets_numba(S_flat, S_offs, A, B)  # (n_docs, num_perm) uint64
+
+    # 3) 封装为 datasketch.MinHash（避免 Python 级逐 token update）
+    sigs: List[MinHash] = []
+    n = sig_mat.shape[0]
+    for i in range(n):
+        m = MinHash(num_perm=num_perm, seed=seed)
+        # 直接写入 hashvalues（datasketch 使用该数组进行 LSH）
+        m.hashvalues = sig_mat[i].copy()
+        sigs.append(m)
+    return sigs
+
+
 # ---------- 把 sets/candidates 压平成 CSR ----------
 
 
@@ -622,7 +748,10 @@ def main(input_parquet='test_news_clean.parquet',
     sets = build_shingle_sets_numba(docs, ngram=ngram_cont)
 
     print(f"{current_time_str()} [INFO] 构建 MinHash（ngram={ngram_lsh}, num_perm={num_perm}）并建立索引...")
+    print(f"{current_time_str()} [INFO] - 索引方法：LSH Forest (ngram={ngram_lsh}, num_perm={num_perm})")
     sigs = build_minhash_signatures(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
+    # sigs = build_minhash_signatures_numba(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
+    print(f"{current_time_str()} [INFO] - 查询方法：Top-K LSH Forest (k={k_neighbors})")
     query = build_index_and_query_topk(sigs, k_neighbors=k_neighbors)
 
     print(f"{current_time_str()} [INFO] 计算候选（仅召回，不算分数）...")
@@ -642,18 +771,9 @@ def main(input_parquet='test_news_clean.parquet',
     i_idx = rng.integers(0, n, size=m_neg, endpoint=False)
     j_idx = rng.integers(0, n, size=m_neg, endpoint=False)
     mask = (i_idx != j_idx)
-    i_idx, j_idx = i_idx[mask], j_idx[mask]
-    neg_cont = np.empty(i_idx.size, dtype=np.float32)
-    B = 2048
-    w = 0
-    for s in range(0, i_idx.size, B):
-        e = min(i_idx.size, s + B)
-        for k in range(s, e):
-            a = sets[i_idx[k]]
-            b = sets[j_idx[k]]
-            neg_cont[w] = max_containment(a, b)
-            w += 1
-    neg_cont = neg_cont[:w]
+    i_idx = i_idx[mask].astype(np.int64)
+    j_idx = j_idx[mask].astype(np.int64)
+    neg_cont = compute_pairs_cont(S_flat, S_offs, i_idx, j_idx)
 
     # ====== 阈值（基于 top1_cont） ======
     scores = top1_cont.copy()  # 复制top1_cont得分用于后续阈值计算
@@ -665,27 +785,27 @@ def main(input_parquet='test_news_clean.parquet',
     T3 = thr_upper_maxgap(scores, q0=0.6)  # 上界最大间隔方法计算阈值
     T_fpr = threshold_by_fpr(neg_cont, k_neighbors=k_neighbors, fp_per_node=fp_per_node)  # 基于FPR计算阈值下限
 
-    # # 过滤无效阈值并计算融合阈值
-    # Ts = [t for t in [T1, T2, T3] if t is not None and np.isfinite(t)]
-    # # 如果有有效阈值则取中位数，否则使用98%分位数作为候选阈值
-    # T_cont = (float(np.median(Ts)) if Ts else float(np.quantile(scores, 0.98)))
-    #
-    # # 计算90%和98%分位数作为阈值下限参考
-    # q90_cont = float(np.quantile(scores, 0.90))
-    # q98_cont = float(np.quantile(scores, 0.98))
-    # # 确保T_cont不低于90%分位数
-    # T_cont = max(T_cont, q90_cont)
-    # # 最终阈值取T_cont和T_fpr中的较大值
-    # T_final = float(max(T_cont, T_fpr))
-    # # 将最终阈值限制在合理范围内
-    # T_final = float(np.clip(T_final, 0.0, 0.995))
-    #
-    # # 打印各方法计算的阈值信息
-    # print(f"{current_time_str()} [INFO] 阈值：GMM_post={T1}, rightmost_valley={T2}, "
-    #       f"upper_maxgap={T3}, FPR_floor={T_fpr:.6f}")
-    # print(f"{current_time_str()} [INFO] q90_cont={q90_cont:.6f}, q98_cont={q98_cont:.6f}, "
-    #       f"T_cont_fused={T_cont:.6f}")
-    T_final = thr_rightmost_valley(scores, bins=256, smooth_sigma=2.0, min_span=10)
+    # 过滤无效阈值并计算融合阈值
+    Ts = [t for t in [T1, T2, T3] if t is not None and np.isfinite(t)]
+    # 如果有有效阈值则取中位数，否则使用98%分位数作为候选阈值
+    T_cont = (float(np.median(Ts)) if Ts else float(np.quantile(scores, 0.98)))
+
+    # 计算90%和98%分位数作为阈值下限参考
+    q90_cont = float(np.quantile(scores, 0.90))
+    q98_cont = float(np.quantile(scores, 0.98))
+    # 确保T_cont不低于90%分位数
+    T_cont = max(T_cont, q90_cont)
+    # 最终阈值取T_cont和T_fpr中的较大值
+    T_final = float(max(T_cont, T_fpr))
+    # 将最终阈值限制在合理范围内
+    T_final = float(np.clip(T_final, 0.0, 0.995))
+
+    # 打印各方法计算的阈值信息
+    print(f"{current_time_str()} [INFO] 阈值：GMM_post={T1}, rightmost_valley={T2}, "
+          f"upper_maxgap={T3}, FPR_floor={T_fpr:.6f}")
+    print(f"{current_time_str()} [INFO] q90_cont={q90_cont:.6f}, q98_cont={q98_cont:.6f}, "
+          f"T_cont_fused={T_cont:.6f}")
+    # T_final = thr_rightmost_valley(scores, bins=256, smooth_sigma=2.0, min_span=10)
     print(f"{current_time_str()} [INFO] 阈值 T_final={T_final:.6f}")
 
     # ====== 画图 1：top1_cont 直方图 + 阈值/分位线 ======
@@ -704,22 +824,17 @@ def main(input_parquet='test_news_clean.parquet',
     plt.close()
 
     # ====== Jaccard 护栏阈值与直方图 ======
-    neg_jacc = np.empty(i_idx.size, dtype=np.float32)
-    w = 0
-    for s in range(0, i_idx.size, B):
-        e = min(i_idx.size, s + B)
-        for k in range(s, e):
-            a = sets[i_idx[k]]
-            b = sets[j_idx[k]]
-            neg_jacc[w] = jaccard_from_sets(a, b)
-            w += 1
-    neg_jacc = neg_jacc[:w]
+    # 一次性并行计算 neg_cont 和 neg_jacc
+    neg_cont, neg_jacc = compute_pairs_cont_jacc(S_flat, S_offs, i_idx, j_idx)
 
+    # containment 的 FPR 地板（你已有）
+    T_fpr = threshold_by_fpr(neg_cont, k_neighbors=k_neighbors, fp_per_node=fp_per_node)
+
+    # Jaccard 的 FPR 护栏（给更严格的 ε_j 也没问题）
     def threshold_by_fpr_new(bg_scores, k_neighbors, fp_per_node=0.01):
         q = (1.0 - fp_per_node) ** (1.0 / max(1, k_neighbors))
         return float(np.quantile(bg_scores, q))
 
-    # 用更紧的护栏（比如单独给 Jaccard 设 ε_j）
     T_jacc_guard = threshold_by_fpr_new(neg_jacc, k_neighbors=k_neighbors, fp_per_node=0.001)
     print(f"{current_time_str()} [INFO] Jaccard guard by FPR: {T_jacc_guard:.6f}")
 
