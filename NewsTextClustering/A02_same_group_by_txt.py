@@ -258,10 +258,10 @@ def main(input_parquet='test_news_clean.parquet',
          fp_per_node=0.05,
          neg_pairs=200_000,
          mutual_required=True,
-         quick_test=False):
+         quick_test=None):
     df = pd.read_parquet(input_parquet)
     if quick_test:
-        df = df.iloc[:2000].copy()
+        df = df.iloc[:quick_test].copy()
     if 'doc_norm' not in df.columns:
         if {'title_norm', 'text_norm'}.issubset(df.columns):
             df['doc_norm'] = df['title_norm'].astype(str).str.cat(df['text_norm'].astype(str), sep='。').str.strip()
@@ -432,10 +432,9 @@ def main(input_parquet='test_news_clean.parquet',
     print(f"{current_time_str()} [INFO] 分组完成：{n_groups} 个相同新闻组，共 {n_in_groups} 篇进入组。")
 
     df_out.to_parquet(out_parquet, index=False)
-    try:
-        df_out.to_excel(out_excel, index=False)
-    except Exception as e:
-        print(f"{current_time_str()} [WARN] 写 Excel 失败：{e}")
+    print(f"{current_time_str()} [INFO] 结果保存 → {out_parquet}")
+    df_out.to_excel(out_excel, index=False)
+    print(f"{current_time_str()} [INFO] 结果保存 → {out_excel}")
 
     meta = {
         'T_gmm_posterior': T1, 'T_rightmost_valley': T2, 'T_upper_maxgap': T3,
@@ -466,5 +465,5 @@ if __name__ == '__main__':
         fp_per_node=0.05,  # 目标每节点误边概率（FPR 地板）
         neg_pairs=200_000,  # 负样本随机对采样数
         mutual_required=True,  # 只保留互为近邻的边
-        quick_test=True  # 调试用截断
+        quick_test=2_000  # 调试用截断
     )
