@@ -749,8 +749,8 @@ def main(input_parquet='test_news_clean.parquet',
 
     print(f"{current_time_str()} [INFO] 构建 MinHash（ngram={ngram_lsh}, num_perm={num_perm}）并建立索引...")
     print(f"{current_time_str()} [INFO] - 索引方法：LSH Forest (ngram={ngram_lsh}, num_perm={num_perm})")
-    sigs = build_minhash_signatures(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
-    # sigs = build_minhash_signatures_numba(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
+    # sigs = build_minhash_signatures(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
+    sigs = build_minhash_signatures_numba(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
     print(f"{current_time_str()} [INFO] - 查询方法：Top-K LSH Forest (k={k_neighbors})")
     query = build_index_and_query_topk(sigs, k_neighbors=k_neighbors)
 
@@ -805,7 +805,7 @@ def main(input_parquet='test_news_clean.parquet',
           f"upper_maxgap={T3}, FPR_floor={T_fpr:.6f}")
     print(f"{current_time_str()} [INFO] q90_cont={q90_cont:.6f}, q98_cont={q98_cont:.6f}, "
           f"T_cont_fused={T_cont:.6f}")
-    # T_final = thr_rightmost_valley(scores, bins=256, smooth_sigma=2.0, min_span=10)
+    T_final = T2
     print(f"{current_time_str()} [INFO] 阈值 T_final={T_final:.6f}")
 
     # ====== 画图 1：top1_cont 直方图 + 阈值/分位线 ======

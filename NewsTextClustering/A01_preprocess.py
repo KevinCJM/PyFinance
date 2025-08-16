@@ -69,8 +69,68 @@ RE_TYC = re.compile(
     r")"
 )
 
-# —— 金融界净值快讯提取 ——
-# 例：金融界2024年11月1日消息,万家颐和灵活配置混合A(519198)最新净值1.5545元,下跌1.87%.（或“增长”）
+# —————————————— 工商信息变更 ——————————————
+RE_BIZREG_DISCLOSURE = re.compile(
+    r'(?P<year>19|20\d{2})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日'
+    r'(?:披露|公告)[,:，：]\s*'
+    r'(?P<company>.*?)'
+    r'工商登记信息发生以下变动[,:，：]\s*'
+    r'(?P<details>.*)$',
+    flags=re.UNICODE | re.DOTALL
+)
+
+
+def extract_bizreg_disclosure_rows(res: pd.DataFrame) -> pd.DataFrame:
+    """
+    从预处理结果 res（需含 text_norm）中抽取：
+    “YYYY年M月D日披露, XXX公司 工商登记信息发生以下变动: <details>” 整段。
+    返回含原文与结构化字段；无匹配返回空表。
+    """
+    if 'text_norm' not in res.columns:
+        return pd.DataFrame()
+
+    t = res['text_norm']
+    ext = t.str.extract(RE_BIZREG_DISCLOSURE)
+
+    mask = ext['year'].notna()
+    if not mask.any():
+        return pd.DataFrame()
+
+    ext = ext.loc[mask].reset_index(drop=True)
+
+    # 日期
+    date = pd.to_datetime(
+        ext['year'].astype(str) + '-' +
+        ext['month'].astype(str).str.zfill(2) + '-' +
+        ext['day'].astype(str).str.zfill(2),
+        errors='coerce'
+    )
+
+    # 组装“只要这段”的纯文本（含日期+披露+公司+变动）
+    extracted_text = (
+            ext['year'].astype(str) + '年' +
+            ext['month'].astype(str) + '月' +
+            ext['day'].astype(str) + '日披露,' +
+            ext['company'].str.strip() +
+            '工商登记信息发生以下变动:' +
+            ext['details'].str.strip()
+    )
+
+    # 原文列（审计用，若不存在相应列则自动跳过）
+    base_cols = [c for c in ['title', 'text', 'title_norm', 'text_norm', 'doc_norm'] if c in res.columns]
+    base = res.loc[mask, base_cols].reset_index(drop=True)
+
+    out = pd.DataFrame({
+        'date': date,
+        'company': ext['company'].str.strip(),
+        'details': ext['details'].str.strip(),
+        'extracted_text': extracted_text
+    })
+
+    return pd.concat([base, out], axis=1)
+
+
+# —————————————— 金融界净值快讯提取 ——————————————
 RE_JRJ_NAV = re.compile(
     r'^金融界'
     r'(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日消息,'  # 日期
@@ -671,6 +731,20 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
         print(f"[INFO] 剩余条数：{len(res)}")
     else:
         print("[INFO] 未匹配到机构评级快讯。")
+
+    # —— 抽取“工商登记信息发生以下变动”整段并单独导出 ——
+    biz_df = extract_bizreg_disclosure_rows(res)
+    if not biz_df.empty:
+        biz_excel = "bizreg_disclosure_news_clean.xlsx"
+        biz_parquet = "bizreg_disclosure_news_clean.parquet"
+        biz_df.to_excel(biz_excel, index=False)
+        biz_df.to_parquet(biz_parquet, index=False)
+        print(f"[INFO] 工商变更披露类匹配 {len(biz_df)} 条，已另存：{biz_excel} & {biz_parquet}")
+        print(f"[INFO] 从原数据中剔除工商变更披露类")
+        res = res[~res['doc_norm'].isin(biz_df['doc_norm'])].reset_index(drop=True)
+        print(f"[INFO] 剩余条数：{len(res)}")
+    else:
+        print("[INFO] 未匹配到工商变更披露类正文。")
 
     write_outputs(res, out_pq, out_excel)
     print(f"[INFO] 写出完成。")
