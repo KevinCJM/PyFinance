@@ -259,7 +259,7 @@ def main(input_parquet='test_news_clean.parquet',
          quick_test=False):
     df = pd.read_parquet(input_parquet)
     if quick_test:
-        df = df.iloc[:200].copy()
+        df = df.iloc[:2000].copy()
     if 'doc_norm' not in df.columns:
         if {'title_norm', 'text_norm'}.issubset(df.columns):
             df['doc_norm'] = df['title_norm'].astype(str).str.cat(df['text_norm'].astype(str), sep='。').str.strip()
@@ -312,7 +312,7 @@ def main(input_parquet='test_news_clean.parquet',
     for s in range(0, i_idx.size, B):
         e = min(i_idx.size, s + B)
         for k in range(s, e):
-            a = sets[i_idx[k]];
+            a = sets[i_idx[k]]
             b = sets[j_idx[k]]
             neg_cont[w] = max_containment(a, b)
             w += 1
@@ -432,7 +432,6 @@ def main(input_parquet='test_news_clean.parquet',
         print(f"[WARN] 写 Excel 失败：{e}")
 
     meta = {
-        # 'q90_cont': q90_cont, 'q98_cont': q98_cont,
         'T_gmm_posterior': T1, 'T_rightmost_valley': T2, 'T_upper_maxgap': T3,
         'T_fpr_floor': float(T_fpr),
         'T_cont_fused': float(T_cont),
