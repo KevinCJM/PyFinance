@@ -656,26 +656,37 @@ def main(input_parquet='test_news_clean.parquet',
     neg_cont = neg_cont[:w]
 
     # ====== 阈值（基于 top1_cont） ======
-    scores = top1_cont.copy()
+    scores = top1_cont.copy()  # 复制top1_cont得分用于后续阈值计算
     print(f"{current_time_str()} [INFO] 计算自动阈值（基于 top1_cont）...")
-    T1 = thr_gmm_posterior(scores, Kmax=4, tau=0.95)
-    T2 = thr_rightmost_valley(scores, bins=256, smooth_sigma=2.0, min_span=10)
-    T3 = thr_upper_maxgap(scores, q0=0.6)
-    T_fpr = threshold_by_fpr(neg_cont, k_neighbors=k_neighbors, fp_per_node=fp_per_node)
 
-    Ts = [t for t in [T1, T2, T3] if t is not None and np.isfinite(t)]
-    T_cont = (float(np.median(Ts)) if Ts else float(np.quantile(scores, 0.98)))
-    # 分位地板 & 最终阈值
-    q90_cont = float(np.quantile(scores, 0.90))
-    q98_cont = float(np.quantile(scores, 0.98))
-    T_cont = max(T_cont, q90_cont)
-    T_final = float(max(T_cont, T_fpr))
-    T_final = float(np.clip(T_final, 0.0, 0.995))
+    # 使用多种方法计算候选阈值
+    T1 = thr_gmm_posterior(scores, Kmax=4, tau=0.95)  # GMM后验概率方法计算阈值
+    T2 = thr_rightmost_valley(scores, bins=256, smooth_sigma=2.0, min_span=10)  # 最右谷值方法计算阈值
+    T3 = thr_upper_maxgap(scores, q0=0.6)  # 上界最大间隔方法计算阈值
+    T_fpr = threshold_by_fpr(neg_cont, k_neighbors=k_neighbors, fp_per_node=fp_per_node)  # 基于FPR计算阈值下限
 
-    print(f"{current_time_str()} [INFO] 阈值：GMM_post={T1}, rightmost_valley={T2}, "
-          f"upper_maxgap={T3}, FPR_floor={T_fpr:.6f}")
-    print(f"{current_time_str()} [INFO] q90_cont={q90_cont:.6f}, q98_cont={q98_cont:.6f}, "
-          f"T_cont_fused={T_cont:.6f}, T_final={T_final:.6f}")
+    # # 过滤无效阈值并计算融合阈值
+    # Ts = [t for t in [T1, T2, T3] if t is not None and np.isfinite(t)]
+    # # 如果有有效阈值则取中位数，否则使用98%分位数作为候选阈值
+    # T_cont = (float(np.median(Ts)) if Ts else float(np.quantile(scores, 0.98)))
+    #
+    # # 计算90%和98%分位数作为阈值下限参考
+    # q90_cont = float(np.quantile(scores, 0.90))
+    # q98_cont = float(np.quantile(scores, 0.98))
+    # # 确保T_cont不低于90%分位数
+    # T_cont = max(T_cont, q90_cont)
+    # # 最终阈值取T_cont和T_fpr中的较大值
+    # T_final = float(max(T_cont, T_fpr))
+    # # 将最终阈值限制在合理范围内
+    # T_final = float(np.clip(T_final, 0.0, 0.995))
+    #
+    # # 打印各方法计算的阈值信息
+    # print(f"{current_time_str()} [INFO] 阈值：GMM_post={T1}, rightmost_valley={T2}, "
+    #       f"upper_maxgap={T3}, FPR_floor={T_fpr:.6f}")
+    # print(f"{current_time_str()} [INFO] q90_cont={q90_cont:.6f}, q98_cont={q98_cont:.6f}, "
+    #       f"T_cont_fused={T_cont:.6f}")
+    T_final = thr_rightmost_valley(scores, bins=256, smooth_sigma=2.0, min_span=10)
+    print(f"{current_time_str()} [INFO] 阈值 T_final={T_final:.6f}")
 
     # ====== 画图 1：top1_cont 直方图 + 阈值/分位线 ======
     print(f"{current_time_str()} [INFO] 绘制直方图（containment） → {hist_png_cont}")
@@ -787,5 +798,5 @@ if __name__ == '__main__':
         fp_per_node=0.05,  # 目标每节点误边概率（FPR 地板）
         neg_pairs=200_000,  # 负样本随机对采样数
         mutual_required=True,  # 只保留互为近邻的边
-        quick_test=20_000  # 调试用的样本数量 (None则表示全量)
+        quick_test=50_000  # 调试用的样本数量 (None则表示全量)
     )

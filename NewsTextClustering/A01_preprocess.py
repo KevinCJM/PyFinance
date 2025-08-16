@@ -59,6 +59,175 @@ RE_BAODAO = re.compile(
     r'[^,.;:，。；：]*?报道'  # 到“报道”为止（不跨句）'
 )
 
+# —— 金融界净值快讯提取 ——
+# 例：金融界2024年11月1日消息,万家颐和灵活配置混合A(519198)最新净值1.5545元,下跌1.87%.（或“增长”）
+RE_JRJ_NAV = re.compile(
+    r'^金融界'
+    r'(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日消息,'  # 日期
+    r'(?P<fund_name>[^()，,]+)\((?P<code>\d{6})\)'  # 基金名 + 6位代码
+    r'最新净值(?P<nav>\d+(?:\.\d+)?)元,'  # 最新净值
+    r'(?P<dir>增长|上涨|上升|下跌|下降)'  # 方向
+    r'(?P<chg>-?\d+(?:\.\d+)?)%'  # 百分比
+    r'[。\.，,]?',  # 末尾可选标点
+    flags=re.UNICODE
+)
+
+# 例：该基金近1个月收益率0.06%,同类排名588|1911;近3个月收益率6.99%,同类排名1130|1900;今年来收益率11.62%,同类排名295|1870.
+RE_JRJ_TAIL = re.compile(
+    r'近1个月收益率(?P<ret_1m>-?\d+(?:\.\d+)?)%,同类排名(?P<rank_1m>\d+)\|(?P<base_1m>\d+);'
+    r'近3个月收益率(?P<ret_3m>-?\d+(?:\.\d+)?)%,同类排名(?P<rank_3m>\d+)\|(?P<base_3m>\d+);'
+    r'(?:今年来|年内)收益率(?P<ret_ytd>-?\d+(?:\.\d+)?)%,同类排名(?P<rank_ytd>\d+)\|(?P<base_ytd>\d+)',
+    flags=re.UNICODE
+)
+
+DIR_SIGN_MAP = {'增长': 1, '上涨': 1, '上升': 1, '下跌': -1, '下降': -1}
+
+
+def extract_jrj_nav_rows(res: pd.DataFrame) -> pd.DataFrame:
+    """
+    在预处理结果 res 上（包含 text_norm）向量化抽取“金融界净值类快讯”。
+    返回含解析字段的 DataFrame；若无匹配，返回空表。
+    """
+    if 'text_norm' not in res.columns:
+        return pd.DataFrame()
+
+    t = res['text_norm']
+    head = t.str.extract(RE_JRJ_NAV)
+
+    mask = head['year'].notna()
+    if not mask.any():
+        return pd.DataFrame()
+
+    # 基础列（保留原文便于审计）
+    base = res.loc[mask, ['title', 'text', 'title_norm', 'text_norm', 'doc_norm']].reset_index(drop=True)
+
+    # 头部结构化字段
+    head = head.loc[mask].reset_index(drop=True)
+    date_str = (
+            head['year'].astype(str) + '-' +
+            head['month'].astype(str).str.zfill(2) + '-' +
+            head['day'].astype(str).str.zfill(2)
+    )
+
+    # 尾段结构化字段（可选）
+    tail = t.loc[mask].str.extract(RE_JRJ_TAIL)
+
+    out = pd.DataFrame({
+        'date': pd.to_datetime(date_str, errors='coerce'),
+        'fund_name': head['fund_name'],
+        'fund_code': head['code'],
+        'nav': pd.to_numeric(head['nav'], errors='coerce'),
+        'direction': head['dir'],
+        # 规范化涨跌幅：方向（±1）* |数值|
+        'chg_pct': pd.to_numeric(head['chg'], errors='coerce').abs() *
+                   head['dir'].map(DIR_SIGN_MAP).astype('float64')
+    })
+
+    # 追加尾段字段（若缺失则为 NaN）
+    for col in ['ret_1m', 'ret_3m', 'ret_ytd']:
+        out[col] = pd.to_numeric(tail.get(col), errors='coerce')
+    for col in ['rank_1m', 'base_1m', 'rank_3m', 'base_3m', 'rank_ytd', 'base_ytd']:
+        out[col] = pd.to_numeric(tail.get(col), errors='coerce', downcast='integer')
+
+    # 合并回原文，便于人工核对
+    out = pd.concat([base, out], axis=1)
+    return out
+
+
+# —— 重仓股快讯提取（最新披露数据显示…十大重仓股） ——
+RE_TOP_HOLDINGS = re.compile(
+    r'最新披露数据显示,'  # 起始锚点（允许前面还有别的话，extract会search）
+    r'截(?:至|止)'  # 截至/截止 兼容
+    r'(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日'
+    r'(?:消息)?,'  # 可选“消息,”
+    r'(?P<company>[^,;，；]+?)'  # 公司名（到“现身/出现在”之前）
+    r'(?:现身|出现在)'  # 现身/出现在
+    r'(?P<funds>\d+)只基金的(?:前)?十大重仓股(?:中)?,'  # “前十大”可选，“中”可选
+    r'较上季度(?:'  # 同环比描述
+    r'(?P<dir>增加|减少)(?:了)?(?P<delta>\d+)只'  # 增加/减少（可带“了”）
+    r'|持平)'  # 或“持平”
+    r'[;,，]'  # 分隔符
+    r'合计持有(?P<shares>\d+(?:\.\d+)?)(?P<shares_unit>[万亿]?)股,'  # 股数 + 单位
+    r'(?:持股|持仓)市值(?P<mv>\d+(?:\.\d+)?)(?P<mv_unit>万亿|万|亿)元'  # 金额 + 单位（含“万亿”）
+    r'(?:|(?=,|，|。|\.))[,，]?'  # 后面可能还有逗号
+    r'为公募基金第(?P<rank>\d+)大重仓股'
+    r'(?:\((?:按)?[^)]*(?:市值|持股市值)[^)]*\))?',  # 括注里“排序/排名/按…市值…” 等都放宽
+    flags=re.UNICODE
+)
+
+TOP_DIR_SIGN = {'增加': 1, '减少': -1}
+UNIT_TO_NUM = {'': 1.0, '万': 1e4, '亿': 1e8, '万亿': 1e12}  # 金额/股数统一倍数表
+
+
+def extract_top_holdings_rows(res: pd.DataFrame) -> pd.DataFrame:
+    """
+    在预处理结果 res（需含 text_norm）上抽取“最新披露数据显示…十大/前十大重仓股”类新闻。
+    返回结构化字段；无匹配返回空表。
+    """
+    if 'text_norm' not in res.columns:
+        return pd.DataFrame()
+
+    ext = res['text_norm'].str.extract(RE_TOP_HOLDINGS)  # search 语义
+    mask = ext['year'].notna()
+    if not mask.any():
+        return pd.DataFrame()
+
+    ext = ext.loc[mask].reset_index(drop=True)
+
+    # 日期
+    date = pd.to_datetime(
+        ext['year'].astype(str) + '-' +
+        ext['month'].astype(str).str.zfill(2) + '-' +
+        ext['day'].astype(str).str.zfill(2),
+        errors='coerce'
+    )
+
+    # 基础数值
+    funds = pd.to_numeric(ext['funds'], errors='coerce').astype('Int64')
+
+    # 同环比变化：增加/减少 → ±delta；持平 → 0
+    has_dir = ext['dir'].notna()
+    qoq_change = pd.Series(pd.NA, index=ext.index, dtype='Int64')
+    qoq_change.loc[has_dir] = (
+            ext.loc[has_dir, 'dir'].map(TOP_DIR_SIGN).astype('float64') *
+            pd.to_numeric(ext.loc[has_dir, 'delta'], errors='coerce')
+    ).round().astype('Int64')
+    qoq_change.loc[~has_dir] = 0  # “持平”分支
+
+    # 股数：原值×单位
+    shares_val = pd.to_numeric(ext['shares'], errors='coerce')
+    shares_mul = ext['shares_unit'].map(UNIT_TO_NUM).astype('float64')
+    shares_abs = shares_val * shares_mul  # 股
+
+    # 金额：原值×单位（兼容 万亿/万/亿）
+    mv_val = pd.to_numeric(ext['mv'], errors='coerce')
+    mv_mul = ext['mv_unit'].map(UNIT_TO_NUM).astype('float64')
+    mv_cny = mv_val * mv_mul  # 元
+
+    rank = pd.to_numeric(ext['rank'], errors='coerce').astype('Int64')
+
+    # 原文列（便于审计）
+    base_cols = [c for c in ['title', 'text', 'title_norm', 'text_norm', 'doc_norm'] if c in res.columns]
+    base = res.loc[mask, base_cols].reset_index(drop=True)
+
+    out = pd.DataFrame({
+        'date': date,
+        'company': ext['company'],
+        'fund_count': funds,
+        'qoq_change': qoq_change,  # 较上季度变化：+/-N；持平=0
+        'shares': shares_abs,  # 绝对股数（股）
+        'shares_value': shares_val,  # 原值
+        'shares_unit': ext['shares_unit'],  # '', '万', '亿'
+        'market_value_cny': mv_cny,  # 绝对金额（元）
+        'market_value_value': mv_val,  # 原值
+        'market_value_unit': ext['mv_unit'],  # '万', '亿', '万亿'
+        'rank_by_mktvalue': rank
+    })
+
+    out = pd.concat([base, out], axis=1)
+    return out
+
+
 # 压缩连续的句点
 RE_MULTI_DOTS = re.compile(r'\.{2,}')
 
@@ -85,7 +254,20 @@ PHRASE_MAP = {
     'Wind数据显示,': '', 'Wind资讯,': '', 'Wind资讯': '',
     'YY点评:': '', 'YY点评': '',
     '👇点击下方👇组团集卡抽红包,省到就是赚到': '',
+    '👆如果您希望可以时常见面，欢迎标星🌟收藏哦~': '',
+    '👆如果您希望可以时常见面,欢迎标星🌟收藏哦~': '',
     'irm.cn': 'irm', 'e公司讯,': '',
+    '智通财经APP讯,': '', '智通财经APP获悉,': '', '智东西(公众号:zhidxcom)': '',
+    '证券之星消息,': '', '证券时报网讯,': '', '证券时报企查查APP显示,近日,': '',
+    '资讯正文/!normalize.cssv7.0.0|MITLicense|github.com/necolas/normalize.css/html(line-height:1.15;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%)body(margin:0)article,aside,footer,header,nav,section(display:block)h1(font-size:2em;margin:.67em0)figcaption,figure,main(display:block)figure(margin:1em40px)hr(-webkit-box-sizing:content-box;box-sizing:content-box;height:0;overflow:visible)pre(font-family:monospace,monospace;font-size:1em)a(background-color:rgba(0,0,0,0);-webkit-text-decoration-skip:objects)abbr(title)(border-bottom:none;text-decoration:underline;-webkit-text-decoration:underlinedotted;text-decoration:underlinedotted)b,strong(font-weight:inherit;font-weight:bolder)code,kbd,samp(font-family:monospace,monospace;font-size:1em)dfn(font-style:italic)mark(background-color:ff0;color:000)small(font-size:80%)sub,sup(font-size:75%;line-height:0;position:relative;vertical-align:baseline)sub(bottom:-.25em)sup(top:-.5em)audio,video(display:inline-block)audio:not((controls))(display:none;height:0)img(border-style:none)svg:not(:root)(overflow:hidden)button,input,optgroup,select,textarea(font-family:sans-serif;font-size:100%;line-height:1.15;margin:0)button,input(overflow:visible)button,select(text-transform:none)(type=reset),(type=submit),button,html(type=button)(-webkit-appearance:button)(type=button)::-moz-focus-inner,(type=reset)::-moz-focus-inner,(type=submit)::-moz-focus-inner,button::-moz-focus-inner(border-style:none;padding:0)(type=button):-moz-focusring,(type=reset):-moz-focusring,(type=submit):-moz-focusring,button:-moz-focusring(outline:1pxdottedButtonText)fieldset(padding:.35em.75em.625em)legend(-webkit-box-sizing:border-box;box-sizing:border-box;color:inherit;display:table;max-width:100%;padding:0;white-space:normal)progress(display:inline-block;vertical-align:baseline)textarea(overflow:auto)(type=checkbox),(type=radio)(-webkit-box-sizing:border-box;box-sizing:border-box;padding:0)(type=number)::-webkit-inner-spin-button,(type=number)::-webkit-outer-spin-button(height:auto)(type=search)(-webkit-appearance:textfield;outline-offset:-2px)(type=search)::-webkit-search-cancel-button,(type=search)::-webkit-search-decoration(-webkit-appearance:none)::-webkit-file-upload-button(-webkit-appearance:button;font:inherit)details,menu(display:block)summary(display:list-item)canvas(display:inline-block)template(display:none)(hidden)(display:none):root(font-size:50px)ul(padding:0;margin:0)ulli(list-style:none)ai-news-detail(color:333;font-family:PingFangSCRegular,PingFangSC-Regular,microsoftyahei,"\5B8B\4F53",tahoma,arial,simsun,sans-serif;padding:.32rem.32rem.48rem)ai-news-detail)p(font-size:.32rem;line-height:.44rem;margin:00.58rem)ai-news-detail.change-list)li(margin:00.52rem)ai-news-detail.change-list)lih2(font-size:.3rem;line-height:.42rem;margin:00.38rem;font-family:PingFangSC-Medium,PingFangSC-Regular,PingFangSCRegular,microsoftyahei,"\5B8B\4F53",tahoma,arial,simsun,sans-serif)ai-news-detail.change-list)li)ul(display:-webkit-box;display:-webkit-flex;display:-ms-flexbox;display:flex)ai-news-detail.change-list)li)ulli(-webkit-box-flex:1;-webkit-flex:1;-ms-flex:1;flex:1;padding:000.37rem)ai-news-detail.change-list)li)ulli:first-of-type(padding:0.37rem00;position:relative)ai-news-detail.change-list)li)ulli:first-of-type:after(content:"";position:absolute;top:50%;right:0;height:80%;width:1px;background:dfdfdf;-webkit-transform:scaleX(.5)translateY(-50%);-ms-transform:scaleX(.5)translateY(-50%);transform:scaleX(.5)translateY(-50%))ai-news-detail.change-list)li)ullih3(color:999;font-size:.26rem;line-height:.36rem;margin:00.16rem)ai-news-detail.change-list)li)ulli.compare-itemp(margin:0;line-height:.46rem;font-size:.28rem)': '',
+    '资讯正文     /*! normalize.css v7.0.0 | MIT License | github.com/necolas/normalize.css */html{line-height:1.15;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%}body{margin:0}article,aside,footer,header,nav,section{display:block}h1{font-size:2em;margin:.67em 0}figcaption,figure,main{display:block}figure{margin:1em 40px}hr{-webkit-box-sizing:content-box;box-sizing:content-box;height:0;overflow:visible}pre{font-family:monospace,monospace;font-size:1em}a{background-color:rgba(0,0,0,0);-webkit-text-decoration-skip:objects}abbr[title]{border-bottom:none;text-decoration:underline;-webkit-text-decoration:underline dotted;text-decoration:underline dotted}b,strong{font-weight:inherit;font-weight:bolder}code,kbd,samp{font-family:monospace,monospace;font-size:1em}dfn{font-style:italic}mark{background-color:#ff0;color:#000}small{font-size:80%}sub,sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}sub{bottom:-.25em}sup{top:-.5em}audio,video{display:inline-block}audio:not([controls]){display:none;height:0}img{border-style:none}svg:not(:root){overflow:hidden}button,input,optgroup,select,textarea{font-family:sans-serif;font-size:100%;line-height:1.15;margin:0}button,input{overflow:visible}button,select{text-transform:none}[type=reset],[type=submit],button,html [type=button]{-webkit-appearance:button}[type=button]::-moz-focus-inner,[type=reset]::-moz-focus-inner,[type=submit]::-moz-focus-inner,button::-moz-focus-inner{border-style:none;padding:0}[type=button]:-moz-focusring,[type=reset]:-moz-focusring,[type=submit]:-moz-focusring,button:-moz-focusring{outline:1px dotted ButtonText}fieldset{padding:.35em .75em .625em}legend{-webkit-box-sizing:border-box;box-sizing:border-box;color:inherit;display:table;max-width:100%;padding:0;white-space:normal}progress{display:inline-block;vertical-align:baseline}textarea{overflow:auto}[type=checkbox],[type=radio]{-webkit-box-sizing:border-box;box-sizing:border-box;padding:0}[type=number]::-webkit-inner-spin-button,[type=number]::-webkit-outer-spin-button{height:auto}[type=search]{-webkit-appearance:textfield;outline-offset:-2px}[type=search]::-webkit-search-cancel-button,[type=search]::-webkit-search-decoration{-webkit-appearance:none}::-webkit-file-upload-button{-webkit-appearance:button;font:inherit}details,menu{display:block}summary{display:list-item}canvas{display:inline-block}template{display:none}[hidden]{display:none}:root{font-size:50px}ul{padding:0;margin:0}ul li{list-style:none}#ai-news-detail{color:#333;font-family:PingFang SC Regular,PingFangSC-Regular,microsoft yahei,"\5B8B\4F53",tahoma,arial,simsun,sans-serif;padding:.32rem .32rem .48rem}#ai-news-detail>p{font-size:.32rem;line-height:.44rem;margin:0 0 .58rem}#ai-news-detail .change-list>li{margin:0 0 .52rem}#ai-news-detail .change-list>li h2{font-size:.3rem;line-height:.42rem;margin:0 0 .38rem;font-family:PingFangSC-Medium,PingFangSC-Regular,PingFang SC Regular,microsoft yahei,"\5B8B\4F53",tahoma,arial,simsun,sans-serif}#ai-news-detail .change-list>li>ul{display:-webkit-box;display:-webkit-flex;display:-ms-flexbox;display:flex}#ai-news-detail .change-list>li>ul li{-webkit-box-flex:1;-webkit-flex:1;-ms-flex:1;flex:1;padding:0 0 0 .37rem}#ai-news-detail .change-list>li>ul li:first-of-type{padding:0 .37rem 0 0;position:relative}#ai-news-detail .change-list>li>ul li:first-of-type:after{content:"";position:absolute;top:50%;right:0;height:80%;width:1px;background:#dfdfdf;-webkit-transform:scaleX(.5) translateY(-50%);-ms-transform:scaleX(.5) translateY(-50%);transform:scaleX(.5) translateY(-50%)}#ai-news-detail .change-list>li>ul li h3{color:#999;font-size:.26rem;line-height:.36rem;margin:0 0 .16rem}#ai-news-detail .change-list>li>ul li .compare-item p{margin:0;line-height:.46rem;font-size:.28rem} ': '',
+    '转自:上海证券报中国证券网上证报中国证券网讯': '', '转自:上海证券报': '', '转自:商务微新闻': '',
+    '转自:山西发布': '', '转自:人民日报海外版': '', '转自:人民日报': '', '转自:人民政协网': '', '转自:人民政协报': '',
+    '转自:上海证券报中国证券网讯': '', '转自:上观新闻': '', '转自:上海市基金同业公会': '', '转自:人民论坛': '',
+    '转自:衢州日报': '', '转自:青蕉视频': '', '转自:秦皇岛新闻网': '', '转自:千龙网中新网': '', '转自:千龙网': '',
+    '转自:起点新闻': '', '转自:齐鲁晚报': '', '转自:齐鲁壹点': '', '转自:齐鲁网': '', '转自:前瞻网': '',
+    '转自:中国新闻网': '', '转自:中国网': '', '转自:期货日报': '', '转自:农民日报': '', '转自:内蒙古日报': '',
+    '转自:南京晨报': '', '转自:南湖晚报': '', '转自:南方日报': '', '转自:辽宁日报': '', '转自:九派新闻': '',
     '????': '', '???': ''
 }
 if PHRASE_MAP:
@@ -232,6 +414,34 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
     )
 
     print(f"[INFO] 预处理完成，剩余条数：{len(res)}")
+
+    # —— 在预处理结果上提取“金融界净值类快讯”并单独导出 ——
+    jrj_df = extract_jrj_nav_rows(res)
+    if not jrj_df.empty:
+        jrj_excel = "jrj_news_clean.xlsx"
+        jrj_parquet = "jrj_news_clean.parquet"
+        jrj_df.to_excel(jrj_excel, index=False)
+        jrj_df.to_parquet(jrj_parquet, index=False)
+        print(f"[INFO] 金融界净值类新闻匹配 {len(jrj_df)} 条，已另存为：{jrj_excel} & {jrj_parquet}")
+        print(f"[INFO] 从原数据中剔除金融界基金新闻")
+        res = res[~res['doc_norm'].isin(jrj_df['doc_norm'])].reset_index(drop=True)
+        print(f"[INFO] 剩余条数：{len(res)}")
+    else:
+        print("[INFO] 未匹配到金融界净值类新闻。")
+
+    # —— 抽取“最新披露数据显示…十大重仓股”并单独导出 ——
+    top_df = extract_top_holdings_rows(res)
+    if not top_df.empty:
+        top_excel = "top_holdings_news_clean.xlsx"
+        top_parquet = "top_holdings_news_clean.parquet"
+        top_df.to_excel(top_excel, index=False)
+        top_df.to_parquet(top_parquet, index=False)
+        print(f"[INFO] 重仓股快讯匹配 {len(top_df)} 条，已另存：{top_excel} & {top_parquet}")
+        print(f"[INFO] 从原数据中剔除重仓股快讯")
+        res = res[~res['doc_norm'].isin(top_df['doc_norm'])].reset_index(drop=True)
+        print(f"[INFO] 剩余条数：{len(res)}")
+    else:
+        print("[INFO] 未匹配到重仓股快讯。")
 
     write_outputs(res, out_pq, out_excel)
     print(f"[INFO] 写出完成。")
