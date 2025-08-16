@@ -313,6 +313,117 @@ def extract_szx_intraday_rows(res: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# —————————————— 机构评级快讯（行首“机构:维持|上调|下调 …”） ——————————————
+RE_RT_HEAD = re.compile(
+    r'^(?P<inst>[^:：]+)[:：]'
+    r'(?P<action>维持|上调|下调)'
+    r'(?P<name>[^,，()\uFF08\uFF09]+?)'  # 公司/国家/实体名（允许英文字母/斜杠等，直到逗号或括号）
+    r'(?:\((?P<ticker>[A-Z0-9][A-Z0-9.\-]{0,19})\))?'  # 可选股票代码：如 TWLO.US / 600000.SH
+    r'评级?',  # “评级”可有可无
+    flags=re.UNICODE
+)
+
+# 评级变化两种写法：① 由A调整至B评级；② 评级至/为B
+RE_RT_CHANGE = re.compile(r'由(?P<rt_from>[^,，。\.]+?)调整至(?P<rt_to>[^,，。\.]+?)评级', flags=re.UNICODE)
+RE_RT_TOONLY = re.compile(r'评级(?:至|为)(?P<rt_to_only>[^,，。\.]+)', flags=re.UNICODE)
+
+# 目标价两种写法：① 目标价由X货币调整至Y货币；② 目标价为/目标价 X货币
+RE_RT_TP_CHANGE = re.compile(
+    r'目标价(?:为)?由(?P<tp_from>\d+(?:\.\d+)?)(?P<cur_from>[A-Za-z\u4e00-\u9fa5]+)'
+    r'调整至(?P<tp_to>\d+(?:\.\d+)?)(?P<cur_to>[A-Za-z\u4e00-\u9fa5]+)',
+    flags=re.UNICODE
+)
+RE_RT_TP_SINGLE = re.compile(
+    r'目标价(?:为)?(?P<tp_single>\d+(?:\.\d+)?)(?P<cur_single>[A-Za-z\u4e00-\u9fa5]+)',
+    flags=re.UNICODE
+)
+
+# 展望/前景
+RE_RT_OUTLOOK = re.compile(r'(?:前景|评级)?展望(?P<outlook>[^,，。\.]+)', flags=re.UNICODE)
+
+# 动作符号：上调=+1，下调=-1，维持=0
+RT_ACTION_SIGN = {'上调': 1, '下调': -1, '维持': 0}
+
+# 货币文本 → 代码
+CURRENCY_MAP = {
+    '美元': 'USD', '美金': 'USD', '港元': 'HKD', '港币': 'HKD', '人民币': 'CNY', '元': 'CNY',
+    '欧元': 'EUR', '英镑': 'GBP', '日元': 'JPY', '加元': 'CAD'
+}
+
+
+def extract_rating_change_rows(res: pd.DataFrame) -> pd.DataFrame:
+    """
+    在预处理结果 res（需含 text_norm）上抽取“机构评级变动”类新闻。
+    返回结构化字段；无匹配返回空表。
+    """
+    if 'text_norm' not in res.columns:
+        return pd.DataFrame()
+
+    t = res['text_norm']
+
+    # 1) 头部：机构 / 动作 / 名称 / 代码
+    head = t.str.extract(RE_RT_HEAD)
+    mask = head['inst'].notna()
+    if not mask.any():
+        return pd.DataFrame()
+
+    head = head.loc[mask].reset_index(drop=True)
+    sub = t.loc[mask].reset_index(drop=True)  # 与 head 对齐的正文片段
+
+    # 2) 评级变化
+    chg = sub.str.extract(RE_RT_CHANGE)
+    to_only = sub.str.extract(RE_RT_TOONLY)
+
+    rating_from = chg['rt_from']
+    rating_to = chg['rt_to'].where(chg['rt_to'].notna(), to_only['rt_to_only'])
+
+    # 3) 目标价
+    tp_chg = sub.str.extract(RE_RT_TP_CHANGE)
+    tp_single = sub.str.extract(RE_RT_TP_SINGLE)
+
+    # 变化式
+    tp_from = pd.to_numeric(tp_chg['tp_from'], errors='coerce')
+    cur_from = tp_chg['cur_from'].map(CURRENCY_MAP).fillna(tp_chg['cur_from'])
+    tp_to = pd.to_numeric(tp_chg['tp_to'], errors='coerce')
+    cur_to = tp_chg['cur_to'].map(CURRENCY_MAP).fillna(tp_chg['cur_to'])
+
+    # 单值式（仅当变化式缺失时启用）
+    tp_one = pd.to_numeric(tp_single['tp_single'], errors='coerce')
+    cur_one = tp_single['cur_single'].map(CURRENCY_MAP).fillna(tp_single['cur_single'])
+
+    tp_from = tp_from.where(tp_from.notna(), pd.NA)
+    cur_from = cur_from.where(tp_from.notna(), pd.NA)
+    tp_to = tp_to.where(tp_to.notna(), pd.NA)
+    cur_to = cur_to.where(tp_to.notna(), pd.NA)
+
+    # 4) 展望/前景
+    outk = sub.str.extract(RE_RT_OUTLOOK)['outlook']
+
+    # 5) 结构化输出
+    base_cols = [c for c in ['title', 'text', 'title_norm', 'text_norm', 'doc_norm'] if c in res.columns]
+    base = res.loc[mask, base_cols].reset_index(drop=True)
+
+    out = pd.DataFrame({
+        'institution': head['inst'],
+        'action': head['action'],
+        'action_sign': head['action'].map(RT_ACTION_SIGN).astype('Int64'),
+        'entity_name': head['name'].str.strip(),
+        'ticker': head['ticker'],
+        'rating_from': rating_from,
+        'rating_to': rating_to,
+        'tp_from': tp_from.astype('Float64'),
+        'currency_from': cur_from,
+        'tp_to': tp_to.astype('Float64'),
+        'currency_to': cur_to,
+        'tp_single': tp_one.astype('Float64'),
+        'currency_single': cur_one,
+        'outlook': outk
+    })
+
+    out = pd.concat([base, out], axis=1)
+    return out
+
+
 # —————————————— 压缩连续的句点 ——————————————
 RE_MULTI_DOTS = re.compile(r'\.{2,}')
 
@@ -546,6 +657,20 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
         print(f"[INFO] 剩余条数：{len(res)}")
     else:
         print("[INFO] 未匹配到证券之星盘中消息。")
+
+    # —— 抽取“机构评级变动”并单独导出 ——
+    rate_df = extract_rating_change_rows(res)
+    if not rate_df.empty:
+        rate_excel = "rating_change_news_clean.xlsx"
+        rate_parquet = "rating_change_news_clean.parquet"
+        rate_df.to_excel(rate_excel, index=False)
+        rate_df.to_parquet(rate_parquet, index=False)
+        print(f"[INFO] 机构评级快讯匹配 {len(rate_df)} 条，已另存：{rate_excel} & {rate_parquet}")
+        print(f"[INFO] 从原数据中剔除机构评级快讯")
+        res = res[~res['doc_norm'].isin(rate_df['doc_norm'])].reset_index(drop=True)
+        print(f"[INFO] 剩余条数：{len(res)}")
+    else:
+        print("[INFO] 未匹配到机构评级快讯。")
 
     write_outputs(res, out_pq, out_excel)
     print(f"[INFO] 写出完成。")
