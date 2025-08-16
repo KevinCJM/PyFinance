@@ -2,6 +2,7 @@ import os
 import hashlib
 import numpy as np
 import pandas as pd
+from heapq import nlargest
 import matplotlib.pyplot as plt
 from sklearn.mixture import GaussianMixture
 from typing import List, Tuple, Optional, Dict
@@ -19,6 +20,9 @@ try:
 except Exception:
     HAS_LSH = False
 
+
+def current_time_str():
+    return pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
 
 # ========= 基础：字符 n-gram 指纹（去重集合） =========
 
@@ -122,7 +126,7 @@ def build_index_and_query_topk(sigs: List[MinHash], k_neighbors: int = 40):
             return out
 
         return query
-    from heapq import nlargest
+
     def query(i: int) -> List[int]:
         scores = [(sigs[i].jaccard(sigs[j]), j) for j in range(n) if j != i]
         return [j for _, j in nlargest(k_neighbors, scores)]
@@ -228,7 +232,8 @@ def union_find_groups(n: int, edges: List[Tuple[int, int]]) -> np.ndarray:
             rank[ra] += 1
 
     for u, v in edges:
-        if u != v: union(u, v)
+        if u != v:
+            union(u, v)
     for i in range(n):
         parent[i] = find(i)
 
@@ -265,16 +270,16 @@ def main(input_parquet='test_news_clean.parquet',
 
     docs = df['doc_norm'].astype(str).tolist()
     n = len(docs)
-    print(f"[INFO] 样本数 n = {n}")
+    print(f"{current_time_str()} [INFO] 样本数 n = {n}")
 
-    print(f"[INFO] 构建字符 {ngram_cont}-gram 指纹集合（去重）...")
+    print(f"{current_time_str()} [INFO] 构建字符 {ngram_cont}-gram 指纹集合（去重）...")
     sets = [shingle_set(t, n=ngram_cont) for t in docs]
 
-    print(f"[INFO] 构建 MinHash（ngram={ngram_lsh}, num_perm={num_perm}）并建立索引...")
+    print(f"{current_time_str()} [INFO] 构建 MinHash（ngram={ngram_lsh}, num_perm={num_perm}）并建立索引...")
     sigs = build_minhash_signatures(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
     query = build_index_and_query_topk(sigs, k_neighbors=k_neighbors)
 
-    print("[INFO] 计算每篇的 top-1 最大包含度 / Jaccard ...")
+    print(f"{current_time_str()} [INFO] 计算每篇的 top-1 最大包含度 / Jaccard ...")
     top1_cont = np.zeros(n, dtype=np.float32)
     top1_jacc = np.zeros(n, dtype=np.float32)
     cand_lists: Dict[int, List[int]] = {}
@@ -289,15 +294,17 @@ def main(input_parquet='test_news_clean.parquet',
         for j in js:
             Bj = sets[j]
             c = max_containment(Ai, Bj)
-            if c > best_c: best_c = c
+            if c > best_c:
+                best_c = c
             jacc = jaccard_from_sets(Ai, Bj)
-            if jacc > best_j: best_j = jacc
+            if jacc > best_j:
+                best_j = jacc
         top1_cont[i] = best_c
         top1_jacc[i] = best_j
 
     # 负类分布（用于 FPR 地板）
     m_neg = min(int(neg_pairs), max(10_000, 20 * n))
-    print(f"[INFO] 采样负类随机对 m = {m_neg} ...")
+    print(f"{current_time_str()} [INFO] 采样负类随机对 m = {m_neg} ...")
     rng = np.random.default_rng(42)
     i_idx = rng.integers(0, n, size=m_neg, endpoint=False)
     j_idx = rng.integers(0, n, size=m_neg, endpoint=False)
@@ -317,7 +324,7 @@ def main(input_parquet='test_news_clean.parquet',
 
     # ====== 阈值（基于 top1_cont） ======
     scores = top1_cont.copy()
-    print("[INFO] 计算自动阈值（基于 top1_cont）...")
+    print(f"{current_time_str()} [INFO] 计算自动阈值（基于 top1_cont）...")
     T1 = thr_gmm_posterior(scores, Kmax=4, tau=0.95)
     T2 = thr_rightmost_valley(scores, bins=256, smooth_sigma=2.0, min_span=10)
     T3 = thr_upper_maxgap(scores, q0=0.6)
@@ -332,11 +339,13 @@ def main(input_parquet='test_news_clean.parquet',
     T_final = float(max(T_cont, T_fpr))
     T_final = float(np.clip(T_final, 0.0, 0.995))
 
-    print(f"[INFO] 阈值：GMM_post={T1}, rightmost_valley={T2}, upper_maxgap={T3}, FPR_floor={T_fpr:.6f}")
-    print(f"[INFO] q90_cont={q90_cont:.6f}, q98_cont={q98_cont:.6f}, T_cont_fused={T_cont:.6f}, T_final={T_final:.6f}")
+    print(f"{current_time_str()} [INFO] 阈值：GMM_post={T1}, rightmost_valley={T2}, "
+          f"upper_maxgap={T3}, FPR_floor={T_fpr:.6f}")
+    print(f"{current_time_str()} [INFO] q90_cont={q90_cont:.6f}, q98_cont={q98_cont:.6f}, "
+          f"T_cont_fused={T_cont:.6f}, T_final={T_final:.6f}")
 
     # ====== 画图 1：top1_cont 直方图 + 阈值/分位线 ======
-    print(f"[INFO] 绘制直方图（containment） → {hist_png_cont}")
+    print(f"{current_time_str()} [INFO] 绘制直方图（containment） → {hist_png_cont}")
     plt.figure(figsize=(9, 4.8))
     plt.hist(scores, bins=128, range=(0.0, 1.0), density=True, alpha=0.85)
     for name, val in [('GMM_post', T1), ('right_valley', T2), ('upper_gap', T3), ('FPR', T_fpr), ('final', T_final)]:
@@ -369,9 +378,9 @@ def main(input_parquet='test_news_clean.parquet',
 
     # 用更紧的护栏（比如单独给 Jaccard 设 ε_j）
     T_jacc_guard = threshold_by_fpr_new(neg_jacc, k_neighbors=k_neighbors, fp_per_node=0.01)
-    print(f"[INFO] Jaccard guard by FPR: {T_jacc_guard:.6f}")
+    print(f"{current_time_str()} [INFO] Jaccard guard by FPR: {T_jacc_guard:.6f}")
 
-    print(f"[INFO] 绘制直方图（jaccard） → {hist_png_jacc}")
+    print(f"{current_time_str()} [INFO] 绘制直方图（jaccard） → {hist_png_jacc}")
     plt.figure(figsize=(9, 4.8))
     plt.hist(top1_jacc, bins=128, range=(0.0, 1.0), density=True, alpha=0.85)
     for name, val in [('fpr', T_jacc_guard)]:
@@ -385,7 +394,7 @@ def main(input_parquet='test_news_clean.parquet',
     plt.close()
 
     # ====== 建图：互为近邻 + per-node topM + 双阈值 ======
-    print("[INFO] 建图（互为近邻 + per-node topM + 双阈值）...")
+    print(f"{current_time_str()} [INFO] 建图（互为近邻 + per-node topM + 双阈值）...")
     edges_set = set()
     for i in range(n):
         js = cand_lists[i]
@@ -411,7 +420,7 @@ def main(input_parquet='test_news_clean.parquet',
             edges_set.add((u, v))
 
     edges = list(edges_set)
-    print(f"[INFO] 保留边数：{len(edges)}")
+    print(f"{current_time_str()} [INFO] 保留边数：{len(edges)}")
 
     groups = union_find_groups(n, edges)
     df_out = df.copy()
@@ -420,13 +429,13 @@ def main(input_parquet='test_news_clean.parquet',
 
     n_groups = int(df_out['same_group_id'].nunique(dropna=True))
     n_in_groups = int(df_out['same_group_id'].notna().sum())
-    print(f"[INFO] 分组完成：{n_groups} 个相同新闻组，共 {n_in_groups} 篇进入组。")
+    print(f"{current_time_str()} [INFO] 分组完成：{n_groups} 个相同新闻组，共 {n_in_groups} 篇进入组。")
 
     df_out.to_parquet(out_parquet, index=False)
     try:
         df_out.to_excel(out_excel, index=False)
     except Exception as e:
-        print(f"[WARN] 写 Excel 失败：{e}")
+        print(f"{current_time_str()} [WARN] 写 Excel 失败：{e}")
 
     meta = {
         'T_gmm_posterior': T1, 'T_rightmost_valley': T2, 'T_upper_maxgap': T3,
@@ -439,7 +448,7 @@ def main(input_parquet='test_news_clean.parquet',
         'fp_per_node': fp_per_node, 'mutual_required': mutual_required, 'neg_pairs': int(m_neg)
     }
     pd.DataFrame([meta]).to_csv(os.path.splitext(out_parquet)[0] + "_thresholds.csv", index=False)
-    print("[INFO] 全部完成。")
+    print(f"{current_time_str()} [INFO] 全部完成。")
 
 
 if __name__ == '__main__':
