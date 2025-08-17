@@ -5,6 +5,8 @@
 @Author: Kevin-Chen
 @Descriptions: 
 """
+import traceback
+
 # -*- coding: utf-8 -*-
 """
 Independent News Detection (Two-Stage)
@@ -55,6 +57,10 @@ HAS_DATASKETCH = True
 
 
 # ------------------------- Utils -------------------------
+
+def _to_1d(a):
+    return np.asarray(a).ravel()
+
 
 def current_time_str():
     return pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -506,22 +512,53 @@ def lexical_char_scores(docs: List[str],
                         ngram_lsh=4, ngram_cont=5,
                         num_perm=128, k_neighbors=40,
                         neg_pairs=200_000):
+    """
+    基于字符级别的MinHash与LSH技术，计算文档间的相似度得分，并生成正负样本对的连续性与Jaccard相似度。
+
+    参数:
+        docs (List[str]): 输入的文档列表，每个元素是一个字符串。
+        ngram_lsh (int): 用于构建MinHash签名时的n-gram长度，默认为4。
+        ngram_cont (int): 用于计算连续性相似度时的n-gram长度，默认为5。
+        num_perm (int): MinHash中使用的哈希函数数量，默认为128。
+        k_neighbors (int): LSH召回阶段每个查询点返回的近邻数量，默认为40。
+        neg_pairs (int): 生成的负样本对数量上限，默认为200,000。
+
+    返回:
+        tuple:
+            top1_cont (np.ndarray): 每个文档与其最相似邻居的连续性相似度。
+            top1_jacc (np.ndarray): 每个文档与其最相似邻居的Jaccard相似度。
+            cont_neg (np.ndarray): 负样本对的连续性相似度。
+            jacc_neg (np.ndarray): 负样本对的Jaccard相似度。
+    """
+
     print(f"{current_time_str()} [INFO] (lex-char) 构建 MinHash & LSH 召回 ...")
+    # 构建MinHash签名和对应的集合表示，并生成扁平化结构用于后续处理
     sigs, sets, (S_flat, S_offs) = build_minhash_signatures_numba(docs, ngram=ngram_lsh, num_perm=num_perm, seed=1)
+    # 构建LSH索引并查询每个文档的top-k近邻
     query = build_index_and_query_topk(sigs, k_neighbors=k_neighbors)
+
     print(f"{current_time_str()} [INFO] (lex-char) 计算候选并精算 top1(cont/jacc) ...")
+    # 查询每个文档的候选邻居列表
     cand_lists: Dict[int, List[int]] = {i: query(i) for i in range(len(docs))}
+    # 将候选列表打包为扁平数组和偏移数组，便于批量处理
     C_flat, C_offs = pack_candidates_int32(cand_lists, len(docs))
+    # 计算每个文档与其最相似邻居（top1）的连续性和Jaccard相似度
     top1_cont, top1_jacc = compute_top1_cont_jacc(S_flat, S_offs, C_flat, C_offs)
-    # 负对
+
+    # 负对采样与计算
     rng = np.random.default_rng(42)
     n = len(docs)
+    # 控制负样本数量不超过设定值，并保证至少有10,000或20倍文档数的负样本
     m_neg = min(int(neg_pairs), max(10_000, 20 * n))
+    # 随机生成负样本对索引
     i_idx = rng.integers(0, n, size=m_neg, endpoint=False)
     j_idx = rng.integers(0, n, size=m_neg, endpoint=False)
+    # 过滤掉相同索引对
     mask = (i_idx != j_idx)
+    # 计算负样本对的连续性和Jaccard相似度
     cont_neg, jacc_neg = compute_pairs_cont_jacc(S_flat, S_offs, i_idx[mask].astype(np.int64),
                                                  j_idx[mask].astype(np.int64))
+
     return top1_cont, top1_jacc, cont_neg, jacc_neg
 
 
@@ -550,62 +587,120 @@ def _pair_cosine_sparse(X: sparse.csr_matrix, i_idx: np.ndarray, j_idx: np.ndarr
     return vals
 
 
-def lexical_tfidf_scores(docs: List[str], ngram_range=(1, 2), min_df=3, max_features=None,
+# ---- TF-IDF (fixed for Chinese) ----
+def lexical_tfidf_scores(docs: List[str],
+                         analyzer_kind: str = 'char',  # 'char' 或 'jieba'
+                         ngram_range=(2, 4),  # char n-gram 推荐 2~4
+                         min_df=3,
                          neg_pairs=200_000):
-    print(f"{current_time_str()} [INFO] (lex-tfidf) 构建 TF-IDF ...")
-    vectorizer = TfidfVectorizer(ngram_range=ngram_range, min_df=min_df, max_features=max_features,
-                                 norm='l2', use_idf=True)
-    X = vectorizer.fit_transform(docs)  # L2 normalized
-    print(f"{current_time_str()} [INFO] (lex-tfidf) 最近邻 ...")
-    top1, _ = _cosine_top1_sparse(X, n_neighbors=2)
-    # 负对
-    n = len(docs)
+    print(f"{current_time_str()} [INFO] (lex-tfidf) 构建 TF-IDF (analyzer={analyzer_kind}) ...")
+
+    if analyzer_kind == 'jieba':
+        if not HAS_JIEBA:
+            raise RuntimeError("未安装 jieba：请改用 analyzer_kind='char' 或安装 jieba")
+        vectorizer = TfidfVectorizer(tokenizer=jieba.lcut, token_pattern=None,
+                                     ngram_range=(1, 2), min_df=min_df, norm='l2')
+    else:
+        vectorizer = TfidfVectorizer(analyzer='char', ngram_range=ngram_range,
+                                     min_df=min_df, norm='l2')
+
+    X = vectorizer.fit_transform(docs)  # L2 normalized (稀疏)
+
+    # 仅非零行做邻居搜索；零行 top1=0，避免 0/0 ⇒ cos=1 的假高峰
+    nz_mask = _to_1d(X.getnnz(axis=1)) > 0
+
+    top1 = np.zeros(X.shape[0], dtype=np.float32)
+    if nz_mask.any():
+        nn = NearestNeighbors(metric='cosine', algorithm='brute', n_neighbors=2, n_jobs=-1)
+        nn.fit(X[nz_mask])
+        dists, _ = nn.kneighbors(X[nz_mask], return_distance=True)
+        top1[nz_mask] = (1.0 - dists[:, 1]).astype(np.float32)
+
+    # 负对：只在非零行里抽样
     rng = np.random.default_rng(123)
-    m_neg = min(int(neg_pairs), max(10_000, 20 * n))
-    i_idx = rng.integers(0, n, size=m_neg, endpoint=False)
-    j_idx = rng.integers(0, n, size=m_neg, endpoint=False)
-    mask = (i_idx != j_idx)
-    neg = _pair_cosine_sparse(X, i_idx[mask], j_idx[mask])
+    nz_idx = np.flatnonzero(nz_mask)
+    if nz_idx.size >= 2:
+        m_neg = min(int(neg_pairs), max(10_000, 20 * nz_idx.size))
+        i_idx = rng.choice(nz_idx, size=m_neg, replace=True)
+        j_idx = rng.choice(nz_idx, size=m_neg, replace=True)
+        mask = (i_idx != j_idx)
+        neg = _pair_cosine_sparse(X, i_idx[mask], j_idx[mask])
+    else:
+        neg = np.zeros(0, dtype=np.float32)
+
     return top1, neg
 
 
-def lexical_bm25_scores(docs: List[str], k1=1.2, b=0.75, min_df=3, ngram_range=(1, 2),
+# ---- BM25 (fixed for Chinese) ----
+def lexical_bm25_scores(docs: List[str],
+                        analyzer_kind: str = 'char',  # 'char' 或 'jieba'
+                        ngram_range=(2, 4),  # char n-gram 推荐 2~4
+                        min_df=3,
+                        k1=1.2, b=0.75,
                         neg_pairs=200_000):
-    print(f"{current_time_str()} [INFO] (lex-bm25) 生成稀疏 BM25 权重 ...")
-    cv = CountVectorizer(ngram_range=ngram_range, min_df=min_df)
+    print(f"{current_time_str()} [INFO] (lex-bm25) 生成稀疏 BM25 (analyzer={analyzer_kind}) ...")
+
+    if analyzer_kind == 'jieba':
+        if not HAS_JIEBA:
+            raise RuntimeError("未安装 jieba：请改用 analyzer_kind='char' 或安装 jieba")
+        cv = CountVectorizer(tokenizer=jieba.lcut, token_pattern=None,
+                             ngram_range=(1, 2), min_df=min_df)
+    else:
+        cv = CountVectorizer(analyzer='char', ngram_range=ngram_range, min_df=min_df)
+
     TF = cv.fit_transform(docs).astype(np.float32)  # csr
-    N, dl = TF.shape[0], np.asarray(TF.sum(axis=1)).ravel()  # 每文档长度
+    N = TF.shape[0]
+    dl = _to_1d(TF.sum(axis=1))  # 每文档长度
     avgdl = float(dl.mean()) + 1e-9
-    # df
-    df = np.diff(TF.tocsc().indptr).astype(np.float32)
-    idf = np.log((N - df + 0.5) / (df + 0.5) + 1.0).astype(np.float32)  # shape [V]
-    # 构造 BM25 加权矩阵（逐非零）
-    TF = TF.tocsr()
+
+    # df & idf
+    df = np.diff(TF.tocsc().indptr).astype(np.float32)  # 每列文档频次
+    idf = np.log((N - df + 0.5) / (df + 0.5) + 1.0).astype(np.float32)
+
+    # BM25 权重
+    TF = TF.tocsr();
     TF.sort_indices()
-    data = TF.data
-    indptr = TF.indptr
+    data = TF.data;
+    indptr = TF.indptr;
     indices = TF.indices
     bm25_data = np.empty_like(data)
     for i in range(N):
         s, e = indptr[i], indptr[i + 1]
+        if s == e:
+            continue
         tf_i = data[s:e]
         cols = indices[s:e]
         denom = tf_i + k1 * (1.0 - b + b * (dl[i] / avgdl))
         bm25_data[s:e] = idf[cols] * (tf_i * (k1 + 1.0) / denom)
+
     X = sparse.csr_matrix((bm25_data, indices, indptr), shape=TF.shape, dtype=np.float32)
-    # L2 normalize
-    row_norm = np.sqrt(X.multiply(X).sum(axis=1)).A1 + 1e-12
-    X = sparse.diags(1.0 / row_norm).dot(X)
-    print(f"{current_time_str()} [INFO] (lex-bm25) 最近邻 ...")
-    top1, _ = _cosine_top1_sparse(X, n_neighbors=2)
-    # 负对
-    n = N
+
+    # L2 归一化：对所有行统一缩放（避免切片赋值的稀疏坑）
+    row_norm = _to_1d(np.sqrt(X.multiply(X).sum(axis=1)))
+    scale = np.where(row_norm > 0, 1.0 / (row_norm + 1e-12), 0.0)
+    X = sparse.diags(scale).dot(X)
+
+    # KNN 仅对非零行
+    nz_mask = scale > 0
+    top1 = np.zeros(N, dtype=np.float32)
+    if nz_mask.any():
+        nn = NearestNeighbors(metric='cosine', algorithm='brute', n_neighbors=2, n_jobs=-1)
+        nn.fit(X[nz_mask])
+        dists, _ = nn.kneighbors(X[nz_mask], return_distance=True)
+        top1[nz_mask] = (1.0 - dists[:, 1]).astype(np.float32)
+
+    # 负对：只采样非零行
     rng = np.random.default_rng(321)
-    m_neg = min(int(neg_pairs), max(10_000, 20 * n))
-    i_idx = rng.integers(0, n, size=m_neg, endpoint=False)
-    j_idx = rng.integers(0, n, size=m_neg, endpoint=False)
-    mask = (i_idx != j_idx)
-    neg = _pair_cosine_sparse(X, i_idx[mask], j_idx[mask])
+    nz_idx = np.flatnonzero(nz_mask)
+    if nz_idx.size >= 2:
+        m_neg = min(int(neg_pairs), max(10_000, 20 * nz_idx.size))
+        i_idx = rng.choice(nz_idx, size=m_neg, replace=True)
+        j_idx = rng.choice(nz_idx, size=m_neg, replace=True)
+        mask = (i_idx != j_idx)
+        neg = _pair_cosine_sparse(X, i_idx[mask], j_idx[mask])
+    else:
+        neg = np.zeros(0, dtype=np.float32)
+
     return top1, neg
 
 
@@ -750,16 +845,42 @@ def semantic_model_scores(texts: List[str], model_name: str,
 def estimate_indep_threshold(scores: np.ndarray, neg_scores: Optional[np.ndarray],
                              bins=256, smooth_sigma=2.0,
                              k_neighbors=40, fp_per_node=0.05) -> float:
+    """
+    估计独立阈值，用于区分正负样本的分离点
+
+    该函数通过多种策略计算阈值：首先尝试基于分数分布的最左谷点，如果不可用则使用
+    基于负样本的FPR（假阳性率）方法，最后根据多种情况选择最优阈值。
+
+    参数:
+        scores: numpy数组，包含所有样本的分数值
+        neg_scores: 可选的numpy数组，包含负样本的分数值，用于FPR计算
+        bins: int，直方图分箱数量，默认为256
+        smooth_sigma: float，平滑高斯核的标准差，默认为2.0
+        k_neighbors: int，用于FPR计算的邻居数量，默认为40
+        fp_per_node: float，每个节点允许的假阳性率，默认为0.05
+
+    返回:
+        float: 计算得到的阈值
+    """
+    # 计算分数分布最左侧的谷点作为阈值
     t_left = thr_leftmost_valley(scores, bins=bins, smooth_sigma=smooth_sigma)
+
+    # 如果提供了负样本分数，则计算基于FPR的阈值
     t_fpr = None
     if neg_scores is not None and neg_scores.size > 0:
         t_fpr = threshold_by_fpr(neg_scores, k_neighbors=k_neighbors, fp_per_node=fp_per_node)
+
+    # 根据不同情况选择返回的阈值
     if t_left is None and t_fpr is None:
+        # 如果两种方法都失败，返回分数第15百分位数作为默认阈值
         return float(np.quantile(np.clip(scores, 0.0, 1.0), 0.15))
     if t_left is None:
+        # 如果只有FPR阈值可用，返回FPR阈值
         return float(t_fpr)
     if t_fpr is None:
+        # 如果只有左谷点阈值可用，返回左谷点阈值
         return float(t_left)
+    # 如果两种阈值都可用，返回两者中的较大值
     return float(max(t_left, t_fpr))
 
 
@@ -816,7 +937,8 @@ def main(input_parquet='test_news_clean.parquet',
         meta_rows.append({'route': 'lex_char', 'T_indep': T_char, 'mean': float(np.mean(lex_char)),
                           'median': float(np.median(lex_char))})
     except Exception as e:
-        warnings.warn(f"(lex-char) 失败：{e}")
+        warnings.warn(f"(lex-char) 失败")
+        print(traceback.format_exc())
         lex_char = np.zeros(n, dtype=np.float32)
         T_char = 0.0
 
@@ -830,7 +952,8 @@ def main(input_parquet='test_news_clean.parquet',
         meta_rows.append({'route': 'lex_tfidf', 'T_indep': T_tfidf, 'mean': float(np.mean(tfidf1)),
                           'median': float(np.median(tfidf1))})
     except Exception as e:
-        warnings.warn(f"(lex-tfidf) 失败：{e}")
+        warnings.warn(f"(lex-tfidf) 失败")
+        print(traceback.format_exc())
         tfidf1 = np.zeros(n, dtype=np.float32)
         T_tfidf = 0.0
 
@@ -844,7 +967,8 @@ def main(input_parquet='test_news_clean.parquet',
         meta_rows.append({'route': 'lex_bm25', 'T_indep': T_bm25, 'mean': float(np.mean(bm251)),
                           'median': float(np.median(bm251))})
     except Exception as e:
-        warnings.warn(f"(lex-bm25) 失败：{e}")
+        warnings.warn(f"(lex-bm25) 失败")
+        print(traceback.format_exc())
         bm251 = np.zeros(n, dtype=np.float32)
         T_bm25 = 0.0
 
@@ -858,7 +982,8 @@ def main(input_parquet='test_news_clean.parquet',
         meta_rows.append({'route': f'lex_simhash_{simhash_level}', 'T_indep': T_sim, 'mean': float(np.mean(sim1)),
                           'median': float(np.median(sim1))})
     except Exception as e:
-        warnings.warn(f"(lex-simhash) 失败：{e}")
+        warnings.warn(f"(lex-simhash) 失败")
+        print(traceback.format_exc())
         sim1 = np.zeros(n, dtype=np.float32)
         T_sim = 0.0
 
