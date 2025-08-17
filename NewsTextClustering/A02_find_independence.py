@@ -958,8 +958,8 @@ def main(input_parquet='test_news_clean.parquet',
 if __name__ == '__main__':
     # 典型执行：保持命名入参
     main(
-        input_parquet='test_news_clean.parquet',
-        out_dir='independent_news',
+        input_parquet='A01_test_news_clean.parquet',
+        out_dir='A02_independent_news',
         # ----- Stage-1 (lexical) -----
         ngram_lsh=4, ngram_cont=5, num_perm=128, k_neighbors=40,
         tfidf_min_df=3, bm25_min_df=3, ngram_range=(1, 2),
