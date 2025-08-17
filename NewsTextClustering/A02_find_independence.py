@@ -120,10 +120,90 @@ def thr_leftmost_valley(scores: np.ndarray, bins: int = 256,
     return float(thr)
 
 
-def threshold_by_fpr(bg_scores: np.ndarray, k_neighbors: int, fp_per_node: float = 0.05) -> float:
+def threshold_by_fpr(bg_scores: np.ndarray, k_neighbors: int, fp_per_node: float = 0.2) -> float:
     """同你原脚本：给定随机负对分布，目标每节点误报率上限 -> 分位数阈值"""
     q = (1.0 - fp_per_node) ** (1.0 / max(1, k_neighbors))
     return float(np.quantile(np.clip(bg_scores, 0.0, 1.0), q))
+
+
+def _gaussian_kernel(sigma: float) -> np.ndarray:
+    r = int(max(1, round(3 * float(sigma))))
+    x = np.arange(-r, r + 1, dtype=float)
+    k = np.exp(-0.5 * (x / float(sigma)) ** 2)
+    k /= k.sum()
+    return k
+
+
+def thr_leftmost_valley_smooth(scores: np.ndarray,
+                               bins: int = 256,
+                               sigma: float = 1.4,  # 小σ，保护左窄峰
+                               eps_head: float = 0.01,  # 跳过极靠左的毛刺（x<eps_head）
+                               min_peak_rel: float = 0.04,  # 峰相对高度阈（相对全局振幅）
+                               min_sep_frac: float = 0.03  # 两峰的最小间隔（相对 bins）
+                               ) -> float | None:
+    """
+    在平滑密度 Hs 上，取“从左到右的第1个主要峰 p1”和“其右第1个主要峰 p2”，
+    返回 p1 与 p2 之间的谷底。主要峰的判定：高度 ≥ min_peak_rel * (max(H)-min(H))，
+    且中心位置 x>=eps_head，且与上一个峰的距离 ≥ min_sep。
+    """
+    v = np.clip(np.asarray(scores, float), 0.0, 1.0)
+    H, edges = np.histogram(v, bins=bins, range=(0.0, 1.0), density=True)
+
+    # 高斯平滑（反射边界）
+    r = int(max(1, round(3 * sigma)))
+    xk = np.arange(-r, r + 1, dtype=float)
+    k = np.exp(-0.5 * (xk / sigma) ** 2);
+    k /= k.sum()
+    Hs = np.convolve(np.pad(H, (r, r), mode='reflect'), k, mode='same')[r:-r]
+
+    xs = 0.5 * (edges[:-1] + edges[1:])
+    amp = Hs.max() - Hs.min()
+    thr_peak = Hs.min() + min_peak_rel * amp
+    min_sep = max(1, int(round(min_sep_frac * bins)))
+
+    # 用一阶差分找极值
+    d = np.diff(Hs)
+    peaks = []
+    for i in range(1, bins - 1):
+        if d[i - 1] > 0 and d[i] <= 0:  # 上升转下降
+            if xs[i] >= eps_head and Hs[i] >= thr_peak:
+                # 与上一主峰距离检查
+                if not peaks or (i - peaks[-1]) >= min_sep:
+                    peaks.append(i)
+
+    if len(peaks) < 2:
+        return None
+
+    p1, p2 = peaks[0], peaks[1]
+    # p1 与 p2 之间的谷
+    j = p1 + int(np.argmin(Hs[p1:p2 + 1]))
+    return float(0.5 * (edges[j] + edges[j + 1]))
+
+
+def plot_hist_with_smooth(scores, thresholds: dict, title, xlabel, out_png,
+                          bins=256, sigma=2.5):
+    v = np.clip(np.asarray(scores, float), 0.0, 1.0)
+    H, edges = np.histogram(v, bins=bins, range=(0.0, 1.0), density=True)
+    # 平滑
+    k = _gaussian_kernel(sigma)
+    r = (len(k) - 1) // 2
+    Hs = np.convolve(np.pad(H, (r, r), mode='reflect'), k, mode='same')[r:-r]
+    xs = 0.5 * (edges[1:] + edges[:-1])
+
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(9, 4.8))
+    plt.hist(v, bins=bins, range=(0.0, 1.0), density=True, alpha=0.75)
+    plt.plot(xs, Hs, linewidth=1.5)  # 平滑密度曲线
+    for name, val in thresholds.items():
+        if val is not None and np.isfinite(val):
+            plt.axvline(float(val), linestyle='--', linewidth=1.2, label=f"{name}: {float(val):.3f}")
+    plt.xlabel(xlabel);
+    plt.ylabel("density");
+    plt.title(title);
+    plt.legend();
+    plt.tight_layout();
+    plt.savefig(out_png, dpi=150);
+    plt.close()
 
 
 # ------------------------- Lexical: char n-gram -------------------------
@@ -843,8 +923,8 @@ def semantic_model_scores(texts: List[str], model_name: str,
 # ------------------------- Threshold Fusion -------------------------
 
 def estimate_indep_threshold(scores: np.ndarray, neg_scores: Optional[np.ndarray],
-                             bins=256, smooth_sigma=2.0,
-                             k_neighbors=40, fp_per_node=0.05) -> float:
+                             bins=256, smooth_sigmas=(1.5, 2.5, 3.0),
+                             k_neighbors=40, fp_per_node=None) -> float:
     """
     估计独立阈值，用于区分正负样本的分离点
 
@@ -857,30 +937,35 @@ def estimate_indep_threshold(scores: np.ndarray, neg_scores: Optional[np.ndarray
         bins: int，直方图分箱数量，默认为256
         smooth_sigma: float，平滑高斯核的标准差，默认为2.0
         k_neighbors: int，用于FPR计算的邻居数量，默认为40
-        fp_per_node: float，每个节点允许的假阳性率，默认为0.05
+        fp_per_node: float，每个节点允许的假阳性率，默认为0.2
 
     返回:
         float: 计算得到的阈值
     """
     # 计算分数分布最左侧的谷点作为阈值
-    t_left = thr_leftmost_valley(scores, bins=bins, smooth_sigma=smooth_sigma)
+    # t_left = thr_leftmost_valley(scores, bins=bins, smooth_sigma=smooth_sigma)
+    t_left = thr_leftmost_valley_smooth(scores, bins=bins)
 
     # 如果提供了负样本分数，则计算基于FPR的阈值
     t_fpr = None
-    if neg_scores is not None and neg_scores.size > 0:
+    if fp_per_node is not None and neg_scores is not None and neg_scores.size > 0:
         t_fpr = threshold_by_fpr(neg_scores, k_neighbors=k_neighbors, fp_per_node=fp_per_node)
 
     # 根据不同情况选择返回的阈值
     if t_left is None and t_fpr is None:
         # 如果两种方法都失败，返回分数第15百分位数作为默认阈值
+        print(f"{current_time_str()} [INFO] 阈值：无有效阈值，使用第15百分位数作为默认阈值")
         return float(np.quantile(np.clip(scores, 0.0, 1.0), 0.15))
     if t_left is None:
         # 如果只有FPR阈值可用，返回FPR阈值
+        print(f"{current_time_str()} [INFO] 阈值：无左谷点阈值，使用FPR阈值={t_fpr:.6f}")
         return float(t_fpr)
     if t_fpr is None:
         # 如果只有左谷点阈值可用，返回左谷点阈值
+        print(f"{current_time_str()} [INFO] 阈值：无FPR阈值，使用左谷点阈值={t_left:.6f}")
         return float(t_left)
     # 如果两种阈值都可用，返回两者中的较大值
+    print(f"{current_time_str()} [INFO] 阈值：左谷点={t_left:.6f}, FPR={t_fpr:.6f}")
     return float(max(t_left, t_fpr))
 
 
@@ -930,10 +1015,14 @@ def main(input_parquet='test_news_clean.parquet',
             k_neighbors=k_neighbors, neg_pairs=lex_neg_pairs
         )
         lex_char = np.maximum(cont1, jacc1)
+        print(f"{current_time_str()} [INFO] (lex-char) char n-gram 完成")
         T_char = estimate_indep_threshold(lex_char, np.maximum(cont_neg, jacc_neg),
-                                          k_neighbors=k_neighbors, fp_per_node=0.05)
-        plot_hist(lex_char, {'left+fpr': T_char}, "Lexical(char-ngrams) Top-1", "score",
-                  os.path.join(out_dir, 'hist_lex_char.png'))
+                                          k_neighbors=k_neighbors, fp_per_node=None)
+        print(f"{current_time_str()} [INFO] (lex-char) 字符 n-gram 阈值 T_char = {T_char:.6f}")
+        # plot_hist(lex_char, {'left+fpr': T_char}, "Lexical(char-ngrams) Top-1", "score",
+        #           os.path.join(out_dir, 'hist_lex_char.png'))
+        plot_hist_with_smooth(lex_char, {'left+fpr': T_char}, "Lexical(char-ngrams) Top-1",
+                              "score", os.path.join(out_dir, 'hist_lex_char.png'))
         meta_rows.append({'route': 'lex_char', 'T_indep': T_char, 'mean': float(np.mean(lex_char)),
                           'median': float(np.median(lex_char))})
     except Exception as e:
@@ -946,9 +1035,14 @@ def main(input_parquet='test_news_clean.parquet',
     try:
         tfidf1, tfidf_neg = lexical_tfidf_scores(docs, ngram_range=ngram_range, min_df=tfidf_min_df,
                                                  neg_pairs=lex_neg_pairs)
-        T_tfidf = estimate_indep_threshold(tfidf1, tfidf_neg, k_neighbors=k_neighbors, fp_per_node=0.05)
-        plot_hist(tfidf1, {'left+fpr': T_tfidf}, "Lexical(TF-IDF) Top-1", "cosine",
-                  os.path.join(out_dir, 'hist_lex_tfidf.png'))
+        print(f"{current_time_str()} [INFO] (lex-tfidf) TF-IDF 完成")
+        T_tfidf = estimate_indep_threshold(tfidf1, tfidf_neg, k_neighbors=k_neighbors,
+                                           fp_per_node=None)
+        print(f"{current_time_str()} [INFO] (lex-tfidf) 阈值 T_tfidf = {T_tfidf:.6f}")
+        # plot_hist(tfidf1, {'left+fpr': T_tfidf}, "Lexical(TF-IDF) Top-1", "cosine",
+        #           os.path.join(out_dir, 'hist_lex_tfidf.png'))
+        plot_hist_with_smooth(tfidf1, {'left+fpr': T_tfidf}, "Lexical(TF-IDF) Top-1", "cosine",
+                              os.path.join(out_dir, 'hist_lex_tfidf.png'))
         meta_rows.append({'route': 'lex_tfidf', 'T_indep': T_tfidf, 'mean': float(np.mean(tfidf1)),
                           'median': float(np.median(tfidf1))})
     except Exception as e:
@@ -961,9 +1055,13 @@ def main(input_parquet='test_news_clean.parquet',
     try:
         bm251, bm25_neg = lexical_bm25_scores(docs, min_df=bm25_min_df, ngram_range=ngram_range,
                                               neg_pairs=lex_neg_pairs)
-        T_bm25 = estimate_indep_threshold(bm251, bm25_neg, k_neighbors=k_neighbors, fp_per_node=0.05)
-        plot_hist(bm251, {'left+fpr': T_bm25}, "Lexical(BM25) Top-1", "cosine",
-                  os.path.join(out_dir, 'hist_lex_bm25.png'))
+        print(f"{current_time_str()} [INFO] (lex-bm25) BM25 完成")
+        T_bm25 = estimate_indep_threshold(bm251, bm25_neg, k_neighbors=k_neighbors, fp_per_node=None)
+        print(f"{current_time_str()} [INFO] (lex-bm25) 阈值 T_bm25 = {T_bm25:.6f}")
+        # plot_hist(bm251, {'left+fpr': T_bm25}, "Lexical(BM25) Top-1", "cosine",
+        #           os.path.join(out_dir, 'hist_lex_bm25.png'))
+        plot_hist_with_smooth(bm251, {'left+fpr': T_bm25}, "Lexical(BM25) Top-1", "cosine",
+                              os.path.join(out_dir, 'hist_lex_bm25.png'))
         meta_rows.append({'route': 'lex_bm25', 'T_indep': T_bm25, 'mean': float(np.mean(bm251)),
                           'median': float(np.median(bm251))})
     except Exception as e:
@@ -973,25 +1071,28 @@ def main(input_parquet='test_news_clean.parquet',
         T_bm25 = 0.0
 
     # 4) SimHash
-    try:
-        sim1, sim_neg = lexical_simhash_scores(docs, level=simhash_level, bands=simhash_bands,
-                                               band_bits=simhash_band_bits, neg_pairs=lex_neg_pairs)
-        T_sim = estimate_indep_threshold(sim1, sim_neg, k_neighbors=k_neighbors, fp_per_node=0.05)
-        plot_hist(sim1, {'left+fpr': T_sim}, f"Lexical(SimHash-{simhash_level}) Top-1", "1 - Hamming/64",
-                  os.path.join(out_dir, 'hist_lex_simhash.png'))
-        meta_rows.append({'route': f'lex_simhash_{simhash_level}', 'T_indep': T_sim, 'mean': float(np.mean(sim1)),
-                          'median': float(np.median(sim1))})
-    except Exception as e:
-        warnings.warn(f"(lex-simhash) 失败")
-        print(traceback.format_exc())
-        sim1 = np.zeros(n, dtype=np.float32)
-        T_sim = 0.0
+    # try:
+    #     sim1, sim_neg = lexical_simhash_scores(docs, level=simhash_level, bands=simhash_bands,
+    #                                            band_bits=simhash_band_bits, neg_pairs=lex_neg_pairs)
+    #     print(f"{current_time_str()} [INFO] (lex-simhash) SimHash 完成")
+    #     T_sim = estimate_indep_threshold(sim1, sim_neg, k_neighbors=k_neighbors, fp_per_node=0.2)
+    #     print(f"{current_time_str()} [INFO] (lex-simhash) 阈值 T_sim = {T_sim:.6f}")
+    #     plot_hist(sim1, {'left+fpr': T_sim}, f"Lexical(SimHash-{simhash_level}) Top-1", "1 - Hamming/64",
+    #               os.path.join(out_dir, 'hist_lex_simhash.png'))
+    #     meta_rows.append({'route': f'lex_simhash_{simhash_level}', 'T_indep': T_sim, 'mean': float(np.mean(sim1)),
+    #                       'median': float(np.median(sim1))})
+    # except Exception as e:
+    #     warnings.warn(f"(lex-simhash) 失败")
+    #     print(traceback.format_exc())
+    #     sim1 = np.zeros(n, dtype=np.float32)
+    #     T_sim = 0.0
+    T_sim = 0.0
 
     # 预选规则（任一通道判独立）
     indep_stage1_mask = ((lex_char < T_char - lex_delta) |
                          (tfidf1 < T_tfidf - lex_delta) |
-                         (bm251 < T_bm25 - lex_delta) |
-                         (sim1 < T_sim - lex_delta))
+                         (bm251 < T_bm25 - lex_delta))
+                         # (sim1 < T_sim - lex_delta))
 
     df_stage1 = df[indep_stage1_mask].copy()
     df_rest_for_sem = df[~indep_stage1_mask].copy()
@@ -1021,7 +1122,7 @@ def main(input_parquet='test_news_clean.parquet',
                                                   neg_pairs=sem_neg_pairs, use_hnsw=sem_use_hnsw)
             if s_top1 is None:
                 continue
-            T_indep = estimate_indep_threshold(s_top1, s_neg, k_neighbors=k_neighbors, fp_per_node=0.05)
+            T_indep = estimate_indep_threshold(s_top1, s_neg, k_neighbors=k_neighbors, fp_per_node=0.1)
             # 右侧否决护栏（更严格）：fp_per_node 更小
             T_dup = threshold_by_fpr(s_neg, k_neighbors=k_neighbors,
                                      fp_per_node=sem_veto_fpr) if s_neg is not None else None
