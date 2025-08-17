@@ -9,7 +9,7 @@ A01_preprocess.py
 
 用法示例：
     python A01_preprocess.py \
-        --input test_news.parquet \
+        --input A00_test_news.parquet \
         --out-parquet test_news_clean.parquet \
         --out-excel test_news_clean.xlsx
 
@@ -651,7 +651,7 @@ def write_outputs(df: pd.DataFrame,
 
 
 def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
-         input_pq='test_news.parquet', out_pq='test_news_clean.parquet', out_excel='test_news_clean.xlsx'):
+         input_pq='A00_test_news.parquet', out_pq='test_news_clean.parquet', out_excel='test_news_clean.xlsx'):
     print(f"[INFO] 读取：{input_pq}")
     df = read_any(input_pq)
 
@@ -679,8 +679,8 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
     # —— 在预处理结果上提取“金融界净值类快讯”并单独导出 ——
     jrj_df = extract_jrj_nav_rows(res)
     if not jrj_df.empty:
-        jrj_excel = "jrj_news_clean.xlsx"
-        jrj_parquet = "jrj_news_clean.parquet"
+        jrj_excel = "A01_jrj_news_clean.xlsx"
+        jrj_parquet = "A01_jrj_news_clean.parquet"
         jrj_df.to_excel(jrj_excel, index=False)
         jrj_df.to_parquet(jrj_parquet, index=False)
         print(f"[INFO] 金融界净值类新闻匹配 {len(jrj_df)} 条，已另存为：{jrj_excel} & {jrj_parquet}")
@@ -693,8 +693,8 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
     # —— 抽取“最新披露数据显示…十大重仓股”并单独导出 ——
     top_df = extract_top_holdings_rows(res)
     if not top_df.empty:
-        top_excel = "top_holdings_news_clean.xlsx"
-        top_parquet = "top_holdings_news_clean.parquet"
+        top_excel = "A01_top_holdings_news_clean.xlsx"
+        top_parquet = "A01_top_holdings_news_clean.parquet"
         top_df.to_excel(top_excel, index=False)
         top_df.to_parquet(top_parquet, index=False)
         print(f"[INFO] 重仓股快讯匹配 {len(top_df)} 条，已另存：{top_excel} & {top_parquet}")
@@ -707,8 +707,8 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
     # —— 抽取“证券之星盘中消息”并单独导出 ——
     szx_df = extract_szx_intraday_rows(res)
     if not szx_df.empty:
-        szx_excel = "szx_intraday_news_clean.xlsx"
-        szx_parquet = "szx_intraday_news_clean.parquet"
+        szx_excel = "A01_szx_intraday_news_clean.xlsx"
+        szx_parquet = "A01_szx_intraday_news_clean.parquet"
         szx_df.to_excel(szx_excel, index=False)
         szx_df.to_parquet(szx_parquet, index=False)
         print(f"[INFO] 证券之星盘中消息匹配 {len(szx_df)} 条，已另存：{szx_excel} & {szx_parquet}")
@@ -721,8 +721,8 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
     # —— 抽取“机构评级变动”并单独导出 ——
     rate_df = extract_rating_change_rows(res)
     if not rate_df.empty:
-        rate_excel = "rating_change_news_clean.xlsx"
-        rate_parquet = "rating_change_news_clean.parquet"
+        rate_excel = "A01_rating_change_news_clean.xlsx"
+        rate_parquet = "A01_rating_change_news_clean.parquet"
         rate_df.to_excel(rate_excel, index=False)
         rate_df.to_parquet(rate_parquet, index=False)
         print(f"[INFO] 机构评级快讯匹配 {len(rate_df)} 条，已另存：{rate_excel} & {rate_parquet}")
@@ -735,8 +735,8 @@ def main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
     # —— 抽取“工商登记信息发生以下变动”整段并单独导出 ——
     biz_df = extract_bizreg_disclosure_rows(res)
     if not biz_df.empty:
-        biz_excel = "bizreg_disclosure_news_clean.xlsx"
-        biz_parquet = "bizreg_disclosure_news_clean.parquet"
+        biz_excel = "A01_bizreg_disclosure_news_clean.xlsx"
+        biz_parquet = "A01_bizreg_disclosure_news_clean.parquet"
         biz_df.to_excel(biz_excel, index=False)
         biz_df.to_parquet(biz_parquet, index=False)
         print(f"[INFO] 工商变更披露类匹配 {len(biz_df)} 条，已另存：{biz_excel} & {biz_parquet}")
@@ -755,6 +755,7 @@ if __name__ == '__main__':
     分别表示: 标题, 正文, 规范化标题, 规范化正文, 合成的文档文本
     '''
     main(drop_dup_title=True, drop_dup_text=True, keep_original=True,
-         input_pq='test_news.parquet',
-         out_pq='test_news_clean.parquet', out_excel='test_news_clean.xlsx'
+         input_pq='A00_test_news.parquet',
+         out_pq='A01_test_news_clean.parquet',
+         out_excel='A01_test_news_clean.xlsx'
          )

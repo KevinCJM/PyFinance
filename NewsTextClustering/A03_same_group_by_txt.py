@@ -795,10 +795,10 @@ def main(input_parquet='test_news_clean.parquet',
     q98_cont = float(np.quantile(scores, 0.98))
     # 确保T_cont不低于90%分位数
     T_cont = max(T_cont, q90_cont)
-    # 最终阈值取T_cont和T_fpr中的较大值
-    T_final = float(max(T_cont, T_fpr))
-    # 将最终阈值限制在合理范围内
-    T_final = float(np.clip(T_final, 0.0, 0.995))
+    # # 最终阈值取T_cont和T_fpr中的较大值
+    # T_final = float(max(T_cont, T_fpr))
+    # # 将最终阈值限制在合理范围内
+    # T_final = float(np.clip(T_final, 0.0, 0.995))
 
     # 打印各方法计算的阈值信息
     print(f"{current_time_str()} [INFO] 阈值：GMM_post={T1}, rightmost_valley={T2}, "
