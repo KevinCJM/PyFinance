@@ -30,7 +30,6 @@ Outputs:
 
 import os
 import math
-import gc
 import hashlib
 import warnings
 from typing import List, Tuple, Optional, Dict
@@ -41,6 +40,7 @@ import matplotlib.pyplot as plt
 
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.neighbors import NearestNeighbors
+from sklearn.mixture import GaussianMixture
 from scipy import sparse
 
 import jieba
@@ -204,6 +204,160 @@ def plot_hist_with_smooth(scores, thresholds: dict, title, xlabel, out_png,
     plt.tight_layout();
     plt.savefig(out_png, dpi=150);
     plt.close()
+
+
+def thr_gmm_posterior(scores: np.ndarray,
+                      Kmax: int = 4,
+                      tau: float = 0.95,
+                      random_state: int = 42) -> float | None:
+    """
+    拟合 K=2..Kmax 的 GMM（BIC 选型），取“均值最大的那个分量”为“相似类”，
+    在 [0,1] 上取第一个 x 使得 post(similar|x) >= tau 作为阈值。
+    返回 None 表示拟合失败或找不到合适阈值。
+    """
+    v = np.clip(np.asarray(scores, float), 0.0, 1.0).reshape(-1, 1)
+    if v.size < 10:
+        print(f"{current_time_str()} [WARN] (gmm-posterior) 输入数据太少，无法拟合 GMM。")
+        return None
+
+    best, best_bic = None, np.inf
+    for K in range(2, Kmax + 1):
+        gm = GaussianMixture(n_components=K, covariance_type='full',
+                             reg_covar=1e-6, max_iter=500, random_state=random_state)
+        gm.fit(v)
+        bic = gm.bic(v)
+        if bic < best_bic:
+            best, best_bic = gm, bic
+
+    if best is None:
+        print(f"{current_time_str()} [WARN] (gmm-posterior) 输入数据太少，无法拟合 GMM。")
+        return None
+
+    w = best.weights_.ravel()
+    mu = best.means_.ravel()
+    sd = np.sqrt(best.covariances_.reshape(-1))
+    dup_idx = int(np.argmax(mu))  # 右侧（相似类）
+
+    xs = np.linspace(0.0, 1.0, 4001)
+    # 混合密度
+    dens = []
+    for k in range(best.n_components):
+        var = sd[k] ** 2 + 1e-12
+        dens.append(w[k] * np.exp(-0.5 * (xs - mu[k]) ** 2 / var) / np.sqrt(2 * np.pi * var))
+    dens = np.vstack(dens)
+    post = dens[dup_idx] / (dens.sum(axis=0) + 1e-12)
+
+    idx = np.argmax(post >= tau)
+    if post[idx] < tau:  # 全段都没到 tau
+        print(f"{current_time_str()} [WARN] (gmm-posterior) 输入数据太少，无法找到合适的阈值。")
+        return None
+    return float(xs[idx])
+
+
+def thr_gmm_valley(scores: np.ndarray,
+                   Kmax: int = 4,
+                   random_state: int = 42,
+                   min_prom_frac: float = 0.03) -> float | None:
+    """
+    1) 对 logit(s) 做 1D GMM（K=2..Kmax，BIC 选型）
+    2) 把混合密度映回 s∈(0,1)：p_s(s)=Σ w_k * N(logit(s); μ_k, σ_k^2) * |dz/ds|
+       其中 z=logit(s), |dz/ds|=1/(s*(1-s))
+    3) 取“最左两座主峰”之间的谷底作为阈值
+    """
+    v = np.clip(np.asarray(scores, float), 1e-6, 1 - 1e-6)
+    z = np.log(v / (1 - v)).reshape(-1, 1)
+
+    # 拟合 GMM（BIC 选型）
+    best, best_bic = None, np.inf
+    for K in range(2, Kmax + 1):
+        gm = GaussianMixture(n_components=K, covariance_type='full',
+                             reg_covar=1e-6, max_iter=500, random_state=random_state)
+        gm.fit(z)
+        bic = gm.bic(z)
+        if bic < best_bic:
+            best, best_bic = gm, bic
+    if best is None:
+        print(f"{current_time_str()} [WARN] (gmm-valley) 输入数据太少，无法拟合 GMM。")
+        return None
+
+    # 在 s∈(0,1) 网格上评估混合密度（手算 1D 高斯 pdf，避免私有 API）
+    xs = np.linspace(1e-6, 1 - 1e-6, 4001)  # s
+    zs = np.log(xs / (1 - xs))  # z=logit(s)
+    mu = best.means_.ravel().astype(float)  # (K,)
+    # 兼容 full/diag/spherical：都还原成每个分量的一维方差
+    cov = best.covariances_
+    if cov.ndim == 3:  # full: (K,1,1)
+        var = cov.reshape(-1)
+    elif cov.ndim == 2:  # diag: (K,1)
+        var = cov[:, 0]
+    else:  # spherical: (K,)
+        var = np.asarray(cov).ravel()
+    sd = np.sqrt(var + 1e-12)
+    w = best.weights_.ravel().astype(float)
+
+    # p_z(z) = Σ w_k * N(z; μ_k, σ_k^2)
+    dens_z = np.zeros_like(xs, dtype=float)
+    for k in range(len(w)):
+        dens_z += w[k] * (np.exp(-0.5 * ((zs - mu[k]) / sd[k]) ** 2) /
+                          (np.sqrt(2 * np.pi) * sd[k]))
+    # 变量替换：p_s(s) = p_z(z) * |dz/ds|, 其中 |dz/ds| = 1 / (s*(1-s))
+    dens_s = dens_z * (1.0 / (xs * (1.0 - xs)))
+
+    # 找局部峰，并按显著性过滤毛刺
+    H = dens_s
+    n = H.size
+    peaks = [i for i in range(1, n - 1) if H[i - 1] < H[i] >= H[i + 1]]
+    if len(peaks) < 2:
+        print(f"{current_time_str()} [WARN] (gmm-valley) 峰数太少，无法找到合适的阈值。")
+        return None
+
+    def valley_between(a, b):
+        if a > b: a, b = b, a
+        j = a + int(np.argmin(H[a:b + 1]))
+        return j, H[j]
+
+    amp = H.max() - H.min()
+    prom = []
+    for pi, p in enumerate(peaks):
+        lp = peaks[pi - 1] if pi - 1 >= 0 else 0
+        rp = peaks[pi + 1] if pi + 1 < len(peaks) else n - 1
+        _, lv = valley_between(lp, p) if lp != p else (0, H[:p + 1].min() if p > 0 else H[p])
+        _, rv = valley_between(p, rp) if rp != p else (n - 1, H[p:].min())
+        prom.append(H[p] - max(lv, rv))
+    keep = np.asarray(prom) >= (min_prom_frac * amp)
+    peaks = [p for p, k in zip(peaks, keep) if k]
+    if len(peaks) < 2:
+        print(f"{current_time_str()} [WARN] (gmm-valley) 峰数太少，无法找到合适的阈值。")
+        return None
+
+    p1, p2 = peaks[0], peaks[1]
+    vi, _ = valley_between(p1, p2)
+    return float(xs[vi])
+
+
+def thr_otsu(scores: np.ndarray, bins: int = 256) -> float | None:
+    """
+    大津法（Otsu）：在 [0,1] 分箱后最大化类间方差，返回对应阈值。
+    """
+    v = np.clip(np.asarray(scores, float), 0.0, 1.0)
+    hist, edges = np.histogram(v, bins=bins, range=(0.0, 1.0))
+    hist = hist.astype(np.float64)
+    tot = hist.sum()
+    if tot <= 0:
+        print(f"{current_time_str()} [WARN] (otsu) 输入数据太少，无法计算 Otsu 阈值。")
+        return None
+    p = hist / tot
+    # 用 bin 中心作为灰度
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    omega = np.cumsum(p)  # 累计权重
+    mu = np.cumsum(p * centers)  # 累计均值
+    mu_T = mu[-1]
+    denom = omega * (1.0 - omega)
+    denom[denom < 1e-12] = np.nan  # 避免除零/极端端点
+    sigma_b2 = (mu_T * omega - mu) ** 2 / denom  # 类间方差
+    # 避开两端极端 bin
+    idx = int(np.nanargmax(sigma_b2[1:-1]) + 1)
+    return float(centers[idx])
 
 
 # ------------------------- Lexical: char n-gram -------------------------
@@ -1018,10 +1172,17 @@ def main(input_parquet='test_news_clean.parquet',
         print(f"{current_time_str()} [INFO] (lex-char) char n-gram 完成")
         T_char = estimate_indep_threshold(lex_char, np.maximum(cont_neg, jacc_neg),
                                           k_neighbors=k_neighbors, fp_per_node=None)
+        T_gmm = thr_gmm_valley(lex_char, Kmax=4)
+        T_otsu = thr_otsu(lex_char, bins=256)
+        thresholds = {
+            "left-valley": T_char,
+            "GMM": T_gmm,
+            "Otsu": T_otsu,
+        }
         print(f"{current_time_str()} [INFO] (lex-char) 字符 n-gram 阈值 T_char = {T_char:.6f}")
         # plot_hist(lex_char, {'left+fpr': T_char}, "Lexical(char-ngrams) Top-1", "score",
         #           os.path.join(out_dir, 'hist_lex_char.png'))
-        plot_hist_with_smooth(lex_char, {'left+fpr': T_char}, "Lexical(char-ngrams) Top-1",
+        plot_hist_with_smooth(lex_char, thresholds, "Lexical(char-ngrams) Top-1",
                               "score", os.path.join(out_dir, 'hist_lex_char.png'))
         meta_rows.append({'route': 'lex_char', 'T_indep': T_char, 'mean': float(np.mean(lex_char)),
                           'median': float(np.median(lex_char))})
@@ -1038,10 +1199,17 @@ def main(input_parquet='test_news_clean.parquet',
         print(f"{current_time_str()} [INFO] (lex-tfidf) TF-IDF 完成")
         T_tfidf = estimate_indep_threshold(tfidf1, tfidf_neg, k_neighbors=k_neighbors,
                                            fp_per_node=None)
+        T_gmm = thr_gmm_valley(tfidf1, Kmax=4)
+        T_otsu = thr_otsu(tfidf1, bins=256)
+        thresholds = {
+            "left-valley": T_tfidf,
+            "GMM": T_gmm,
+            "Otsu": T_otsu,
+        }
         print(f"{current_time_str()} [INFO] (lex-tfidf) 阈值 T_tfidf = {T_tfidf:.6f}")
         # plot_hist(tfidf1, {'left+fpr': T_tfidf}, "Lexical(TF-IDF) Top-1", "cosine",
         #           os.path.join(out_dir, 'hist_lex_tfidf.png'))
-        plot_hist_with_smooth(tfidf1, {'left+fpr': T_tfidf}, "Lexical(TF-IDF) Top-1", "cosine",
+        plot_hist_with_smooth(tfidf1, thresholds, "Lexical(TF-IDF) Top-1", "cosine",
                               os.path.join(out_dir, 'hist_lex_tfidf.png'))
         meta_rows.append({'route': 'lex_tfidf', 'T_indep': T_tfidf, 'mean': float(np.mean(tfidf1)),
                           'median': float(np.median(tfidf1))})
@@ -1057,10 +1225,17 @@ def main(input_parquet='test_news_clean.parquet',
                                               neg_pairs=lex_neg_pairs)
         print(f"{current_time_str()} [INFO] (lex-bm25) BM25 完成")
         T_bm25 = estimate_indep_threshold(bm251, bm25_neg, k_neighbors=k_neighbors, fp_per_node=None)
+        T_gmm = thr_gmm_valley(bm251, Kmax=4)
+        T_otsu = thr_otsu(bm251, bins=256)
+        thresholds = {
+            "left-valley": T_bm25,
+            "GMM": T_gmm,
+            "Otsu": T_otsu,
+        }
         print(f"{current_time_str()} [INFO] (lex-bm25) 阈值 T_bm25 = {T_bm25:.6f}")
         # plot_hist(bm251, {'left+fpr': T_bm25}, "Lexical(BM25) Top-1", "cosine",
         #           os.path.join(out_dir, 'hist_lex_bm25.png'))
-        plot_hist_with_smooth(bm251, {'left+fpr': T_bm25}, "Lexical(BM25) Top-1", "cosine",
+        plot_hist_with_smooth(bm251, thresholds, "Lexical(BM25) Top-1", "cosine",
                               os.path.join(out_dir, 'hist_lex_bm25.png'))
         meta_rows.append({'route': 'lex_bm25', 'T_indep': T_bm25, 'mean': float(np.mean(bm251)),
                           'median': float(np.median(bm251))})
@@ -1086,22 +1261,21 @@ def main(input_parquet='test_news_clean.parquet',
     #     print(traceback.format_exc())
     #     sim1 = np.zeros(n, dtype=np.float32)
     #     T_sim = 0.0
-    T_sim = 0.0
 
     # 预选规则（任一通道判独立）
     indep_stage1_mask = ((lex_char < T_char - lex_delta) |
                          (tfidf1 < T_tfidf - lex_delta) |
                          (bm251 < T_bm25 - lex_delta))
-                         # (sim1 < T_sim - lex_delta))
+    # (sim1 < T_sim - lex_delta))
 
     df_stage1 = df[indep_stage1_mask].copy()
     df_rest_for_sem = df[~indep_stage1_mask].copy()
     print(f"{current_time_str()} [INFO] 阶段1预选：独立候选 {len(df_stage1)} / {n}，其余 {len(df_rest_for_sem)}")
 
-    df_stage1.to_parquet(os.path.join(out_dir, 'independent_stage1.parquet'), index=False)
-    df_stage1.to_excel(os.path.join(out_dir, 'independent_stage1.xlsx'), index=False)
-    df_rest_for_sem.to_parquet(os.path.join(out_dir, 'rest_for_semantic.parquet'), index=False)
-    df_rest_for_sem.to_excel(os.path.join(out_dir, 'rest_for_semantic.xlsx'), index=False)
+    # df_stage1.to_parquet(os.path.join(out_dir, 'independent_stage1.parquet'), index=False)
+    # df_stage1.to_excel(os.path.join(out_dir, 'independent_stage1.xlsx'), index=False)
+    # df_rest_for_sem.to_parquet(os.path.join(out_dir, 'rest_for_semantic.parquet'), index=False)
+    # df_rest_for_sem.to_excel(os.path.join(out_dir, 'rest_for_semantic.xlsx'), index=False)
 
     # ===================== Stage-2 Semantic =====================
     print(f"{current_time_str()} [INFO] ===== 阶段2：语义通道（在预选池上精筛） =====")
@@ -1166,19 +1340,30 @@ def main(input_parquet='test_news_clean.parquet',
             # 未通过语义精筛的 + 阶段1未入池的 -> 下一阶段去做去重
             df_for_dedup = pd.concat([df_rest_for_sem, df_stage1.loc[~final_mask]], ignore_index=True)
 
-    # 保存最终结果
-    df_indep_final.to_parquet(os.path.join(out_dir, 'independent_final.parquet'), index=False)
-    df_indep_final.to_excel(os.path.join(out_dir, 'independent_final.xlsx'), index=False)
-    df_for_dedup.to_parquet(os.path.join(out_dir, 'news_for_dedup.parquet'), index=False)
-    df_for_dedup.to_excel(os.path.join(out_dir, 'news_for_dedup.xlsx'), index=False)
+    # ===== 只输出一个 Excel/Parquet，带 group 字段 =====
+    # group 规则：独立新闻 = -1，其他 = NaN（后续“相同/相似新闻”再填充具体组号）
+    mask_indep = pd.Series(False, index=df.index)
+    if not df_indep_final.empty:
+        mask_indep.loc[df_indep_final.index] = True
 
-    # 保存阈值元数据
+    df_out = df.copy()
+    df_out['group'] = np.nan
+    df_out.loc[mask_indep, 'group'] = -1
+
+    # 仅输出一个 Excel（你需要的话，也可以顺带保存一个同构的 parquet）
+    out_xlsx = os.path.join(out_dir, 'news_with_groups.xlsx')
+    df_out.to_excel(out_xlsx, index=False)
+
+    # （可选）若你仍想有同名的单表 parquet，取消下一行注释
+    # df_out.to_parquet(os.path.join(out_dir, 'news_with_groups.parquet'), index=False)
+
+    # 阈值元数据仍然保留，便于追溯
     meta_df = pd.DataFrame(meta_rows)
     meta_df.to_csv(os.path.join(out_dir, 'independent_thresholds_meta.csv'), index=False)
 
     print(f"{current_time_str()} [INFO] 阶段1独立候选：{len(df_stage1)}")
-    print(f"{current_time_str()} [INFO] 最终独立：{len(df_indep_final)}，剩余进入去重：{len(df_for_dedup)}")
-    print(f"{current_time_str()} [INFO] 全部完成。输出目录：{out_dir}")
+    print(f"{current_time_str()} [INFO] 最终独立：{int(mask_indep.sum())}，其余待后续分组：{int((~mask_indep).sum())}")
+    print(f"{current_time_str()} [INFO] 单表输出完成：{out_xlsx}")
 
 
 if __name__ == '__main__':
@@ -1196,5 +1381,5 @@ if __name__ == '__main__':
         sem_use_hnsw=True, sem_neg_pairs=200_000, sem_delta=0.02,
         sem_vote='majority', sem_vote_ratio=0.67, sem_veto_fpr=0.001,
         # ----- misc -----
-        quick_test=50_000  # 例如 50000 做快速实验
+        quick_test=20_000  # 例如 50000 做快速实验
     )
