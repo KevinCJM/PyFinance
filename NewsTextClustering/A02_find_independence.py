@@ -6,31 +6,8 @@
 @Descriptions: 
 """
 import traceback
-
-# -*- coding: utf-8 -*-
-"""
-Independent News Detection (Two-Stage)
--------------------------------------
-Stage-1 (lexical only):
-  - char n-gram + Containment / Jaccard (Numba, MinHash-LSH 召回)
-  - TF-IDF cosine
-  - BM25 cosine (sparse BM25 -> L2 normalize -> cosine)
-  - SimHash (char/word) + 1 - Hamming/64 近似召回
-
-Stage-2 (semantic on preselected):
-  - Multiple sentence-transformers models (ANN/HNSW)
-  - Majority voting with veto guard
-
-Outputs:
-  - independent_stage1.parquet / .xlsx
-  - independent_final.parquet / .xlsx
-  - news_for_dedup.parquet / .xlsx
-  - histograms & thresholds csv
-"""
-
 import os
 import math
-import hashlib
 import warnings
 from typing import List, Tuple, Optional, Dict
 
