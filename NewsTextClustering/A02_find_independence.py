@@ -91,35 +91,6 @@ def plot_hist(scores: np.ndarray, thresholds: Dict[str, Optional[float]],
     plt.close()
 
 
-def thr_leftmost_valley(scores: np.ndarray, bins: int = 256,
-                        smooth_sigma: float = 2.0, min_span: int = 10) -> Optional[float]:
-    """与“最右谷值”对称：在最左峰与其右侧第一个峰之间找谷底。"""
-    v = np.clip(np.asarray(scores, dtype=float), 0.0, 1.0)
-    hist, edges = np.histogram(v, bins=bins, range=(0.0, 1.0))
-    if smooth_sigma and smooth_sigma > 0:
-        r = int(3 * smooth_sigma)
-        x = np.arange(-r, r + 1, dtype=float)
-        k = np.exp(-0.5 * (x / smooth_sigma) ** 2)
-        k /= k.sum()
-        hist = np.convolve(hist.astype(float), k, mode='same')
-    H = hist
-    # 寻峰
-    peaks = np.where((H[1:-1] > H[:-2]) & (H[1:-1] >= H[2:]))[0] + 1
-    if peaks.size < 2:
-        return None
-    lp = peaks.min()
-    rp_candidates = peaks[peaks > lp]
-    rp = rp_candidates.min()
-    if rp - lp < max(min_span, bins // 50):
-        rp = min(bins - 2, lp + max(min_span, bins // 50))
-    seg = H[lp:rp + 1]
-    if seg.size == 0:
-        return None
-    vi = int(np.argmin(seg)) + lp
-    thr = 0.5 * (edges[vi] + edges[vi + 1])
-    return float(thr)
-
-
 def threshold_by_fpr(bg_scores: np.ndarray, k_neighbors: int, fp_per_node: float = 0.2) -> float:
     """同你原脚本：给定随机负对分布，目标每节点误报率上限 -> 分位数阈值"""
     q = (1.0 - fp_per_node) ** (1.0 / max(1, k_neighbors))
@@ -204,54 +175,6 @@ def plot_hist_with_smooth(scores, thresholds: dict, title, xlabel, out_png,
     plt.tight_layout();
     plt.savefig(out_png, dpi=150);
     plt.close()
-
-
-def thr_gmm_posterior(scores: np.ndarray,
-                      Kmax: int = 4,
-                      tau: float = 0.95,
-                      random_state: int = 42) -> float | None:
-    """
-    拟合 K=2..Kmax 的 GMM（BIC 选型），取“均值最大的那个分量”为“相似类”，
-    在 [0,1] 上取第一个 x 使得 post(similar|x) >= tau 作为阈值。
-    返回 None 表示拟合失败或找不到合适阈值。
-    """
-    v = np.clip(np.asarray(scores, float), 0.0, 1.0).reshape(-1, 1)
-    if v.size < 10:
-        print(f"{current_time_str()} [WARN] (gmm-posterior) 输入数据太少，无法拟合 GMM。")
-        return None
-
-    best, best_bic = None, np.inf
-    for K in range(2, Kmax + 1):
-        gm = GaussianMixture(n_components=K, covariance_type='full',
-                             reg_covar=1e-6, max_iter=500, random_state=random_state)
-        gm.fit(v)
-        bic = gm.bic(v)
-        if bic < best_bic:
-            best, best_bic = gm, bic
-
-    if best is None:
-        print(f"{current_time_str()} [WARN] (gmm-posterior) 输入数据太少，无法拟合 GMM。")
-        return None
-
-    w = best.weights_.ravel()
-    mu = best.means_.ravel()
-    sd = np.sqrt(best.covariances_.reshape(-1))
-    dup_idx = int(np.argmax(mu))  # 右侧（相似类）
-
-    xs = np.linspace(0.0, 1.0, 4001)
-    # 混合密度
-    dens = []
-    for k in range(best.n_components):
-        var = sd[k] ** 2 + 1e-12
-        dens.append(w[k] * np.exp(-0.5 * (xs - mu[k]) ** 2 / var) / np.sqrt(2 * np.pi * var))
-    dens = np.vstack(dens)
-    post = dens[dup_idx] / (dens.sum(axis=0) + 1e-12)
-
-    idx = np.argmax(post >= tau)
-    if post[idx] < tau:  # 全段都没到 tau
-        print(f"{current_time_str()} [WARN] (gmm-posterior) 输入数据太少，无法找到合适的阈值。")
-        return None
-    return float(xs[idx])
 
 
 def thr_gmm_valley(scores: np.ndarray,
@@ -361,177 +284,85 @@ def thr_otsu(scores: np.ndarray, bins: int = 256) -> float | None:
 
 
 # ------------------------- Lexical: char n-gram -------------------------
-
-# 为了自包含，这里内嵌必要的 numba 版本；若无 numba，退回纯 Python（速度慢，但可运行）
-if HAS_NUMBA:
-
-    @njit
-    def _inter_size_sorted_region(S, a0, a1, b0, b1) -> int:
-        i = a0
-        j = b0
-        cnt = 0
-        while i < a1 and j < b1:
-            ai = S[i]
-            bj = S[j]
-            if ai == bj:
-                cnt += 1
-                i += 1
-                j += 1
-            elif ai < bj:
-                i += 1
-            else:
-                j += 1
-        return cnt
+@njit
+def _inter_size_sorted_region(S, a0, a1, b0, b1) -> int:
+    i = a0
+    j = b0
+    cnt = 0
+    while i < a1 and j < b1:
+        ai = S[i]
+        bj = S[j]
+        if ai == bj:
+            cnt += 1
+            i += 1
+            j += 1
+        elif ai < bj:
+            i += 1
+        else:
+            j += 1
+    return cnt
 
 
-    @njit(parallel=True)
-    def compute_top1_cont_jacc(S_flat, S_offs, C_flat, C_offs):
-        n = S_offs.shape[0] - 1
-        top_cont = np.zeros(n, dtype=np.float32)
-        top_jacc = np.zeros(n, dtype=np.float32)
-        for i in prange(n):
-            s = C_offs[i]
-            e = C_offs[i + 1]
-            if e <= s:
-                continue
-            ai0 = S_offs[i]
-            ai1 = S_offs[i + 1]
-            a_len = ai1 - ai0
-            best_c = 0.0
-            best_j = 0.0
-            for p in range(s, e):
-                j = int(C_flat[p])
-                bj0 = S_offs[j]
-                bj1 = S_offs[j + 1]
-                inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
-                b_len = bj1 - bj0
-                # containment
-                min_len = a_len if a_len < b_len else b_len
-                denom_c = 1 if min_len <= 0 else min_len
-                c = inter / denom_c
-                if c > best_c:
-                    best_c = c
-                # jaccard
-                union = a_len + b_len - inter
-                jacc = 0.0 if union <= 0 else inter / union
-                if jacc > best_j:
-                    best_j = jacc
-            top_cont[i] = best_c
-            top_jacc[i] = best_j
-        return top_cont, top_jacc
-
-
-    @njit(parallel=True)
-    def compute_pairs_cont_jacc(S_flat, S_offs, i_idx, j_idx):
-        m = i_idx.shape[0]
-        cont = np.empty(m, dtype=np.float32)
-        jacc = np.empty(m, dtype=np.float32)
-        for k in prange(m):
-            i = int(i_idx[k])
-            j = int(j_idx[k])
-            ai0 = S_offs[i]
-            ai1 = S_offs[i + 1]
+@njit(parallel=True)
+def compute_top1_cont_jacc(S_flat, S_offs, C_flat, C_offs):
+    n = S_offs.shape[0] - 1
+    top_cont = np.zeros(n, dtype=np.float32)
+    top_jacc = np.zeros(n, dtype=np.float32)
+    for i in prange(n):
+        s = C_offs[i]
+        e = C_offs[i + 1]
+        if e <= s:
+            continue
+        ai0 = S_offs[i]
+        ai1 = S_offs[i + 1]
+        a_len = ai1 - ai0
+        best_c = 0.0
+        best_j = 0.0
+        for p in range(s, e):
+            j = int(C_flat[p])
             bj0 = S_offs[j]
             bj1 = S_offs[j + 1]
             inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
-            a_len = ai1 - ai0
             b_len = bj1 - bj0
             # containment
             min_len = a_len if a_len < b_len else b_len
             denom_c = 1 if min_len <= 0 else min_len
-            cont[k] = inter / denom_c
+            c = inter / denom_c
+            if c > best_c:
+                best_c = c
             # jaccard
             union = a_len + b_len - inter
-            jacc[k] = 0.0 if union <= 0 else inter / union
-        return cont, jacc
-else:
-    def _inter_size_sorted_region(S, a0, a1, b0, b1) -> int:
-        i = a0;
-        j = b0;
-        cnt = 0
-        while i < a1 and j < b1:
-            ai = S[i];
-            bj = S[j]
-            if ai == bj:
-                cnt += 1;
-                i += 1;
-                j += 1
-            elif ai < bj:
-                i += 1
-            else:
-                j += 1
-        return cnt
+            jacc = 0.0 if union <= 0 else inter / union
+            if jacc > best_j:
+                best_j = jacc
+        top_cont[i] = best_c
+        top_jacc[i] = best_j
+    return top_cont, top_jacc
 
 
-    def compute_top1_cont_jacc(S_flat, S_offs, C_flat, C_offs):
-        n = S_offs.shape[0] - 1
-        top_cont = np.zeros(n, dtype=np.float32)
-        top_jacc = np.zeros(n, dtype=np.float32)
-        for i in range(n):
-            s, e = C_offs[i], C_offs[i + 1]
-            if e <= s: continue
-            ai0, ai1 = S_offs[i], S_offs[i + 1]
-            a_len = ai1 - ai0
-            best_c = 0.0;
-            best_j = 0.0
-            for p in range(s, e):
-                j = int(C_flat[p])
-                bj0, bj1 = S_offs[j], S_offs[j + 1]
-                inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
-                b_len = bj1 - bj0
-                min_len = a_len if a_len < b_len else b_len
-                denom_c = 1 if min_len <= 0 else min_len
-                c = inter / denom_c
-                if c > best_c: best_c = c
-                union = a_len + b_len - inter
-                jacc = 0.0 if union <= 0 else inter / union
-                if jacc > best_j: best_j = jacc
-            top_cont[i], top_jacc[i] = best_c, best_j
-        return top_cont, top_jacc
-
-
-    def compute_pairs_cont_jacc(S_flat, S_offs, i_idx, j_idx):
-        m = i_idx.shape[0]
-        cont = np.empty(m, dtype=np.float32)
-        jacc = np.empty(m, dtype=np.float32)
-        for k in range(m):
-            i, j = int(i_idx[k]), int(j_idx[k])
-            ai0, ai1 = S_offs[i], S_offs[i + 1]
-            bj0, bj1 = S_offs[j], S_offs[j + 1]
-            inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
-            a_len = ai1 - ai0;
-            b_len = bj1 - bj0
-            min_len = a_len if a_len < b_len else b_len
-            denom_c = 1 if min_len <= 0 else min_len
-            cont[k] = inter / denom_c
-            union = a_len + b_len - inter
-            jacc[k] = 0.0 if union <= 0 else inter / union
-        return cont, jacc
-
-
-def _hash64(b: bytes) -> int:
-    return int.from_bytes(hashlib.blake2b(b, digest_size=8).digest(), 'little', signed=False)
-
-
-def _char_ngrams(s: str, n: int):
-    L = len(s)
-    if L <= n:
-        if s:
-            yield s
-        return
-    for i in range(L - n + 1):
-        yield s[i:i + n]
-
-
-def shingle_set_py(text: str, n: int = 5) -> np.ndarray:
-    if not isinstance(text, str):
-        text = '' if text is None else str(text)
-    xs = {_hash64(g.encode('utf-8')) for g in _char_ngrams(text, n)}
-    if not xs:
-        return np.empty(0, dtype=np.uint64)
-    arr = np.fromiter(xs, dtype=np.uint64, count=len(xs))
-    arr.sort()
-    return arr
+@njit(parallel=True)
+def compute_pairs_cont_jacc(S_flat, S_offs, i_idx, j_idx):
+    m = i_idx.shape[0]
+    cont = np.empty(m, dtype=np.float32)
+    jacc = np.empty(m, dtype=np.float32)
+    for k in prange(m):
+        i = int(i_idx[k])
+        j = int(j_idx[k])
+        ai0 = S_offs[i]
+        ai1 = S_offs[i + 1]
+        bj0 = S_offs[j]
+        bj1 = S_offs[j + 1]
+        inter = _inter_size_sorted_region(S_flat, ai0, ai1, bj0, bj1)
+        a_len = ai1 - ai0
+        b_len = bj1 - bj0
+        # containment
+        min_len = a_len if a_len < b_len else b_len
+        denom_c = 1 if min_len <= 0 else min_len
+        cont[k] = inter / denom_c
+        # jaccard
+        union = a_len + b_len - inter
+        jacc[k] = 0.0 if union <= 0 else inter / union
+    return cont, jacc
 
 
 def pack_sets_uint64(sets_list: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
@@ -571,83 +402,78 @@ def pack_candidates_int32(cand_lists: Dict[int, List[int]], n: int) -> Tuple[np.
 
 
 # ---- Unicode codepoints + numba窗口哈希（更快的 shingle） ----
-if HAS_NUMBA:
-
-    @njit
-    def _fnv1a_u32_slice(arr_u32, start, length) -> np.uint64:
-        h = np.uint64(1469598103934665603)
-        fnv = np.uint64(1099511628211)
-        for t in range(length):
-            h ^= np.uint64(arr_u32[start + t])
-            h *= fnv
-        return h
+@njit
+def _fnv1a_u32_slice(arr_u32, start, length) -> np.uint64:
+    h = np.uint64(1469598103934665603)
+    fnv = np.uint64(1099511628211)
+    for t in range(length):
+        h ^= np.uint64(arr_u32[start + t])
+        h *= fnv
+    return h
 
 
-    @njit(parallel=True)
-    def _hash_windows_for_docs(flat_cp, offs_cp, ngram, out_hashes, offs_hash):
-        n_docs = offs_cp.shape[0] - 1
-        for i in prange(n_docs):
-            s = offs_cp[i]
-            e = offs_cp[i + 1]
-            L = e - s
-            dst = offs_hash[i]
-            if L <= 0:
-                continue
-            if L <= ngram:
-                out_hashes[dst] = _fnv1a_u32_slice(flat_cp, s, L)
-            else:
-                m = L - ngram + 1
-                for p in range(m):
-                    out_hashes[dst + p] = _fnv1a_u32_slice(flat_cp, s + p, ngram)
+@njit(parallel=True)
+def _hash_windows_for_docs(flat_cp, offs_cp, ngram, out_hashes, offs_hash):
+    n_docs = offs_cp.shape[0] - 1
+    for i in prange(n_docs):
+        s = offs_cp[i]
+        e = offs_cp[i + 1]
+        L = e - s
+        dst = offs_hash[i]
+        if L <= 0:
+            continue
+        if L <= ngram:
+            out_hashes[dst] = _fnv1a_u32_slice(flat_cp, s, L)
+        else:
+            m = L - ngram + 1
+            for p in range(m):
+                out_hashes[dst + p] = _fnv1a_u32_slice(flat_cp, s + p, ngram)
 
 
-    def _to_codepoints_flat(docs: List[str]) -> Tuple[np.ndarray, np.ndarray]:
-        n = len(docs)
-        offs = np.empty(n + 1, dtype=np.int64)
-        offs[0] = 0
-        cps = []
-        total = 0
-        for i, s in enumerate(docs):
-            a = np.fromiter((ord(ch) for ch in s), dtype=np.uint32, count=len(s))
-            cps.append(a)
-            total += a.size
-            offs[i + 1] = total
-        if total == 0:
-            return np.empty(0, dtype=np.uint32), offs
-        flat = np.empty(total, dtype=np.uint32)
-        pos = 0
-        for a in cps:
-            m = a.size
-            if m:
-                flat[pos:pos + m] = a
-                pos += m
-        return flat, offs
+def _to_codepoints_flat(docs: List[str]) -> Tuple[np.ndarray, np.ndarray]:
+    n = len(docs)
+    offs = np.empty(n + 1, dtype=np.int64)
+    offs[0] = 0
+    cps = []
+    total = 0
+    for i, s in enumerate(docs):
+        a = np.fromiter((ord(ch) for ch in s), dtype=np.uint32, count=len(s))
+        cps.append(a)
+        total += a.size
+        offs[i + 1] = total
+    if total == 0:
+        return np.empty(0, dtype=np.uint32), offs
+    flat = np.empty(total, dtype=np.uint32)
+    pos = 0
+    for a in cps:
+        m = a.size
+        if m:
+            flat[pos:pos + m] = a
+            pos += m
+    return flat, offs
 
 
-    def build_shingle_sets_numba(docs: List[str], ngram: int = 5) -> List[np.ndarray]:
-        n = len(docs)
-        flat_cp, offs_cp = _to_codepoints_flat(docs)
-        lens = (offs_cp[1:] - offs_cp[:-1]).astype(np.int64)
-        counts = np.where(lens <= 0, 0,
-                          np.where(lens <= ngram, 1, lens - ngram + 1)).astype(np.int64)
-        offs_hash = np.empty(n + 1, dtype=np.int64)
-        offs_hash[0] = 0
-        np.cumsum(counts, out=offs_hash[1:])
-        total = int(offs_hash[-1])
-        out_hashes = np.empty(total, dtype=np.uint64)
-        if total:
-            _hash_windows_for_docs(flat_cp, offs_cp, ngram, out_hashes, offs_hash)
-        sets: List[np.ndarray] = []
-        for i in range(n):
-            a = out_hashes[offs_hash[i]:offs_hash[i + 1]]
-            if a.size == 0:
-                sets.append(np.empty(0, dtype=np.uint64))
-            else:
-                sets.append(np.unique(a))
-        return sets
-else:
-    def build_shingle_sets_numba(docs: List[str], ngram: int = 5) -> List[np.ndarray]:
-        return [shingle_set_py(t, n=ngram) for t in docs]
+def build_shingle_sets_numba(docs: List[str], ngram: int = 5) -> List[np.ndarray]:
+    n = len(docs)
+    flat_cp, offs_cp = _to_codepoints_flat(docs)
+    lens = (offs_cp[1:] - offs_cp[:-1]).astype(np.int64)
+    counts = np.where(lens <= 0, 0,
+                      np.where(lens <= ngram, 1, lens - ngram + 1)).astype(np.int64)
+    offs_hash = np.empty(n + 1, dtype=np.int64)
+    offs_hash[0] = 0
+    np.cumsum(counts, out=offs_hash[1:])
+    total = int(offs_hash[-1])
+    out_hashes = np.empty(total, dtype=np.uint64)
+    if total:
+        _hash_windows_for_docs(flat_cp, offs_cp, ngram, out_hashes, offs_hash)
+    sets: List[np.ndarray] = []
+    for i in range(n):
+        a = out_hashes[offs_hash[i]:offs_hash[i + 1]]
+        if a.size == 0:
+            sets.append(np.empty(0, dtype=np.uint64))
+        else:
+            sets.append(np.unique(a))
+    return sets
 
 
 def _make_hash_params(num_perm: int, seed: int = 1):
@@ -658,43 +484,26 @@ def _make_hash_params(num_perm: int, seed: int = 1):
     return A, B
 
 
-if HAS_NUMBA:
-
-    @njit(parallel=True)
-    def _minhash_from_sets_numba(S_flat, S_offs, A, B):
-        n = S_offs.shape[0] - 1
-        num_perm = A.shape[0]
-        sigs = np.empty((n, num_perm), dtype=np.uint64)
-        MAXU = np.uint64(0xFFFFFFFFFFFFFFFF)
-        for i in prange(n):
+@njit(parallel=True)
+def _minhash_from_sets_numba(S_flat, S_offs, A, B):
+    n = S_offs.shape[0] - 1
+    num_perm = A.shape[0]
+    sigs = np.empty((n, num_perm), dtype=np.uint64)
+    MAXU = np.uint64(0xFFFFFFFFFFFFFFFF)
+    for i in prange(n):
+        for p in range(num_perm):
+            sigs[i, p] = MAXU
+        s = S_offs[i];
+        e = S_offs[i + 1]
+        if e <= s:
+            continue
+        for t in range(s, e):
+            x = S_flat[t]
             for p in range(num_perm):
-                sigs[i, p] = MAXU
-            s = S_offs[i];
-            e = S_offs[i + 1]
-            if e <= s:
-                continue
-            for t in range(s, e):
-                x = S_flat[t]
-                for p in range(num_perm):
-                    hv = A[p] * x + B[p]
-                    if hv < sigs[i, p]:
-                        sigs[i, p] = hv
-        return sigs
-else:
-    def _minhash_from_sets_numba(S_flat, S_offs, A, B):
-        n = S_offs.shape[0] - 1
-        num_perm = A.shape[0]
-        MAXU = np.uint64(0xFFFFFFFFFFFFFFFF)
-        sigs = np.full((n, num_perm), MAXU, dtype=np.uint64)
-        for i in range(n):
-            s, e = S_offs[i], S_offs[i + 1]
-            for t in range(s, e):
-                x = S_flat[t]
-                for p in range(num_perm):
-                    hv = A[p] * x + B[p]
-                    if hv < sigs[i, p]:
-                        sigs[i, p] = hv
-        return sigs
+                hv = A[p] * x + B[p]
+                if hv < sigs[i, p]:
+                    sigs[i, p] = hv
+    return sigs
 
 
 def build_minhash_signatures_numba(texts: List[str], ngram: int = 4, num_perm: int = 128, seed: int = 1) -> List[
@@ -797,19 +606,6 @@ def lexical_char_scores(docs: List[str],
 
 
 # ------------------------- Lexical: TF-IDF / BM25 -------------------------
-
-def _cosine_top1_sparse(X: sparse.csr_matrix, n_neighbors: int = 2) -> Tuple[np.ndarray, np.ndarray]:
-    """返回 top1 余弦与对应索引（排除自身）"""
-    # X 已经 L2 归一化
-    nn = NearestNeighbors(metric='cosine', algorithm='brute', n_neighbors=n_neighbors, n_jobs=-1)
-    nn.fit(X)
-    dists, inds = nn.kneighbors(X, return_distance=True)
-    # 第一个是自己，取第二个
-    top1 = 1.0 - dists[:, 1]
-    idx1 = inds[:, 1]
-    return top1.astype(np.float32), idx1.astype(np.int32)
-
-
 def _pair_cosine_sparse(X: sparse.csr_matrix, i_idx: np.ndarray, j_idx: np.ndarray) -> np.ndarray:
     """给定若干行对 (i,j)，计算余弦（X 已 L2 归一化）。"""
     # 稀疏行点乘
@@ -935,89 +731,6 @@ def lexical_bm25_scores(docs: List[str],
     else:
         neg = np.zeros(0, dtype=np.float32)
 
-    return top1, neg
-
-
-# ------------------------- Lexical: SimHash -------------------------
-
-def _tokenize(text: str, level: str = 'char') -> List[str]:
-    if level == 'word':
-        if HAS_JIEBA:
-            return [w for w in jieba.lcut(text) if w.strip()]
-        # fallback: 空格分
-        return [w for w in text.split() if w.strip()]
-    # char
-    return list(text)
-
-
-def _simhash64(tokens: List[str]) -> np.uint64:
-    if not tokens:
-        return np.uint64(0)
-    acc = np.zeros(64, dtype=np.int64)
-    for t in tokens:
-        h = int.from_bytes(hashlib.blake2b(t.encode('utf-8'), digest_size=8).digest(), 'little', signed=False)
-        for b in range(64):
-            if (h >> b) & 1:
-                acc[b] += 1
-            else:
-                acc[b] -= 1
-    sig = 0
-    for b in range(64):
-        if acc[b] >= 0:
-            sig |= (1 << b)
-    return np.uint64(sig)
-
-
-def _hamming64(a: np.uint64, b: np.uint64) -> int:
-    return int((a ^ b).bit_count())
-
-
-def lexical_simhash_scores(docs: List[str], level: str = 'char',
-                           bands: int = 8, band_bits: int = 8,
-                           neg_pairs=200_000):
-    """简易 LSH：8*8 分段，召回候选再算 Hamming。"""
-    print(f"{current_time_str()} [INFO] (lex-simhash) 计算 64bit SimHash ({level}) ...")
-    toks = [_tokenize(t, level=level) for t in docs]
-    sigs = np.array([_simhash64(ts) for ts in toks], dtype=np.uint64)
-    n = len(sigs)
-    # 建桶
-    print(f"{current_time_str()} [INFO] (lex-simhash) 构建桶 ...")
-    buckets: List[Dict[int, List[int]]] = [dict() for _ in range(bands)]
-    mask = (1 << band_bits) - 1
-    for i, h in enumerate(sigs):
-        for b in range(bands):
-            key = int((h >> (b * band_bits)) & mask)
-            L = buckets[b].setdefault(key, [])
-            L.append(i)
-    # 每篇取候选
-    print(f"{current_time_str()} [INFO] (lex-simhash) 召回并计算 top1 ...")
-    top1 = np.zeros(n, dtype=np.float32)
-    for i, hi in enumerate(sigs):
-        cand = set()
-        for b in range(bands):
-            key = int((hi >> (b * band_bits)) & mask)
-            for j in buckets[b].get(key, []):
-                if j != i:
-                    cand.add(j)
-        best = 0.0
-        for j in cand:
-            ham = _hamming64(hi, sigs[j])
-            sim = 1.0 - ham / 64.0
-            if sim > best:
-                best = sim
-        top1[i] = best
-    # 负对
-    rng = np.random.default_rng(777)
-    m_neg = min(int(neg_pairs), max(10_000, 20 * n))
-    i_idx = rng.integers(0, n, size=m_neg, endpoint=False)
-    j_idx = rng.integers(0, n, size=m_neg, endpoint=False)
-    maskp = (i_idx != j_idx)
-    i_idx = i_idx[maskp];
-    j_idx = j_idx[maskp]
-    neg = np.empty(i_idx.size, dtype=np.float32)
-    for k in range(i_idx.size):
-        ham = _hamming64(sigs[int(i_idx[k])], sigs[int(j_idx[k])])
-        neg[k] = 1.0 - ham / 64.0
     return top1, neg
 
 
@@ -1180,8 +893,6 @@ def main(input_parquet='test_news_clean.parquet',
             "Otsu": T_otsu,
         }
         print(f"{current_time_str()} [INFO] (lex-char) 字符 n-gram 阈值 T_char = {T_char:.6f}")
-        # plot_hist(lex_char, {'left+fpr': T_char}, "Lexical(char-ngrams) Top-1", "score",
-        #           os.path.join(out_dir, 'hist_lex_char.png'))
         plot_hist_with_smooth(lex_char, thresholds, "Lexical(char-ngrams) Top-1",
                               "score", os.path.join(out_dir, 'hist_lex_char.png'))
         meta_rows.append({'route': 'lex_char', 'T_indep': T_char, 'mean': float(np.mean(lex_char)),
@@ -1207,8 +918,6 @@ def main(input_parquet='test_news_clean.parquet',
             "Otsu": T_otsu,
         }
         print(f"{current_time_str()} [INFO] (lex-tfidf) 阈值 T_tfidf = {T_tfidf:.6f}")
-        # plot_hist(tfidf1, {'left+fpr': T_tfidf}, "Lexical(TF-IDF) Top-1", "cosine",
-        #           os.path.join(out_dir, 'hist_lex_tfidf.png'))
         plot_hist_with_smooth(tfidf1, thresholds, "Lexical(TF-IDF) Top-1", "cosine",
                               os.path.join(out_dir, 'hist_lex_tfidf.png'))
         meta_rows.append({'route': 'lex_tfidf', 'T_indep': T_tfidf, 'mean': float(np.mean(tfidf1)),
@@ -1233,8 +942,6 @@ def main(input_parquet='test_news_clean.parquet',
             "Otsu": T_otsu,
         }
         print(f"{current_time_str()} [INFO] (lex-bm25) 阈值 T_bm25 = {T_bm25:.6f}")
-        # plot_hist(bm251, {'left+fpr': T_bm25}, "Lexical(BM25) Top-1", "cosine",
-        #           os.path.join(out_dir, 'hist_lex_bm25.png'))
         plot_hist_with_smooth(bm251, thresholds, "Lexical(BM25) Top-1", "cosine",
                               os.path.join(out_dir, 'hist_lex_bm25.png'))
         meta_rows.append({'route': 'lex_bm25', 'T_indep': T_bm25, 'mean': float(np.mean(bm251)),
@@ -1245,44 +952,20 @@ def main(input_parquet='test_news_clean.parquet',
         bm251 = np.zeros(n, dtype=np.float32)
         T_bm25 = 0.0
 
-    # 4) SimHash
-    # try:
-    #     sim1, sim_neg = lexical_simhash_scores(docs, level=simhash_level, bands=simhash_bands,
-    #                                            band_bits=simhash_band_bits, neg_pairs=lex_neg_pairs)
-    #     print(f"{current_time_str()} [INFO] (lex-simhash) SimHash 完成")
-    #     T_sim = estimate_indep_threshold(sim1, sim_neg, k_neighbors=k_neighbors, fp_per_node=0.2)
-    #     print(f"{current_time_str()} [INFO] (lex-simhash) 阈值 T_sim = {T_sim:.6f}")
-    #     plot_hist(sim1, {'left+fpr': T_sim}, f"Lexical(SimHash-{simhash_level}) Top-1", "1 - Hamming/64",
-    #               os.path.join(out_dir, 'hist_lex_simhash.png'))
-    #     meta_rows.append({'route': f'lex_simhash_{simhash_level}', 'T_indep': T_sim, 'mean': float(np.mean(sim1)),
-    #                       'median': float(np.median(sim1))})
-    # except Exception as e:
-    #     warnings.warn(f"(lex-simhash) 失败")
-    #     print(traceback.format_exc())
-    #     sim1 = np.zeros(n, dtype=np.float32)
-    #     T_sim = 0.0
-
     # 预选规则（任一通道判独立）
     indep_stage1_mask = ((lex_char < T_char - lex_delta) |
                          (tfidf1 < T_tfidf - lex_delta) |
                          (bm251 < T_bm25 - lex_delta))
-    # (sim1 < T_sim - lex_delta))
 
     df_stage1 = df[indep_stage1_mask].copy()
     df_rest_for_sem = df[~indep_stage1_mask].copy()
     print(f"{current_time_str()} [INFO] 阶段1预选：独立候选 {len(df_stage1)} / {n}，其余 {len(df_rest_for_sem)}")
-
-    # df_stage1.to_parquet(os.path.join(out_dir, 'independent_stage1.parquet'), index=False)
-    # df_stage1.to_excel(os.path.join(out_dir, 'independent_stage1.xlsx'), index=False)
-    # df_rest_for_sem.to_parquet(os.path.join(out_dir, 'rest_for_semantic.parquet'), index=False)
-    # df_rest_for_sem.to_excel(os.path.join(out_dir, 'rest_for_semantic.xlsx'), index=False)
 
     # ===================== Stage-2 Semantic =====================
     print(f"{current_time_str()} [INFO] ===== 阶段2：语义通道（在预选池上精筛） =====")
     if df_stage1.empty or not sem_model_names:
         print(f"{current_time_str()} [INFO] 预选池为空或未配置语义模型，直接输出 Stage-1 结果为最终独立。")
         df_indep_final = df_stage1
-        df_for_dedup = df_rest_for_sem
     else:
         sem_scores: Dict[str, np.ndarray] = {}
         sem_indep_T: Dict[str, float] = {}
@@ -1314,7 +997,6 @@ def main(input_parquet='test_news_clean.parquet',
         if not sem_scores:
             warnings.warn("所有语义模型均不可用或失败；将 Stage-1 结果作为最终独立。")
             df_indep_final = df_stage1
-            df_for_dedup = df_rest_for_sem
         else:
             # 否决护栏：任一模型超过 dup_guard -> 非独立
             veto = np.zeros(m, dtype=bool)
@@ -1337,12 +1019,10 @@ def main(input_parquet='test_news_clean.parquet',
             final_mask = ok & (~veto)
 
             df_indep_final = df_stage1.loc[final_mask].copy()
-            # 未通过语义精筛的 + 阶段1未入池的 -> 下一阶段去做去重
-            df_for_dedup = pd.concat([df_rest_for_sem, df_stage1.loc[~final_mask]], ignore_index=True)
 
     # ===== 只输出一个 Excel/Parquet，带 group 字段 =====
-    # group 规则：独立新闻 = -1，其他 = NaN（后续“相同/相似新闻”再填充具体组号）
     mask_indep = pd.Series(False, index=df.index)
+    # group 规则：独立新闻 = -1，其他 = NaN（后续“相同/相似新闻”再填充具体组号）
     if not df_indep_final.empty:
         mask_indep.loc[df_indep_final.index] = True
 
@@ -1353,9 +1033,6 @@ def main(input_parquet='test_news_clean.parquet',
     # 仅输出一个 Excel（你需要的话，也可以顺带保存一个同构的 parquet）
     out_xlsx = os.path.join(out_dir, 'news_with_groups.xlsx')
     df_out.to_excel(out_xlsx, index=False)
-
-    # （可选）若你仍想有同名的单表 parquet，取消下一行注释
-    # df_out.to_parquet(os.path.join(out_dir, 'news_with_groups.parquet'), index=False)
 
     # 阈值元数据仍然保留，便于追溯
     meta_df = pd.DataFrame(meta_rows)
@@ -1381,5 +1058,5 @@ if __name__ == '__main__':
         sem_use_hnsw=True, sem_neg_pairs=200_000, sem_delta=0.02,
         sem_vote='majority', sem_vote_ratio=0.67, sem_veto_fpr=0.001,
         # ----- misc -----
-        quick_test=20_000  # 例如 50000 做快速实验
+        quick_test=1_000  # 例如 50000 做快速实验
     )
