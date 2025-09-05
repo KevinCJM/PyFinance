@@ -114,8 +114,8 @@ def compress_image_to_target_size(input_path, output_path, target_size, target_u
 # --- 使用示例 ---
 if __name__ == "__main__":
     # --- 1. 设置参数 ---
-    input_image_path = "/Users/chenjunming/Desktop/我的/招商银行卡反面.png"  # <-- 修改为你的图片路径
-    output_image_path = "compressed_image.jpg"  # <-- 输出文件名，格式将是JPEG
+    input_image_path = "/Users/chenjunming/Desktop/商智离职证明.png"  # <-- 修改为你的图片路径
+    output_image_path = "/Users/chenjunming/Desktop/compressed_商智离职证明.jpg"  # <-- 输出文件名，格式将是JPEG
 
     # --- 2. 从用户获取目标大小 ---
     try:
