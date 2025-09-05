@@ -347,7 +347,7 @@ if __name__ == "__main__":
     # print(stock_info)
 
     fund_code_list = ['006502', '019457', '016303', '003092', '021298', '470888']  # 可扩展多个基金
-    index_code = '000985'   # 中证指数代码
+    index_code = '000985'  # 中证指数代码
 
     # 获取基金持仓
     fund_hold = fetch_fund_holdings_multi(fund_code_list, '2025', get_last_data=True)
@@ -375,7 +375,9 @@ if __name__ == "__main__":
     print(f"完成指数成分及权重数据获取, 共 {len(index_hold)} 条记录")
 
     # 获取股票信息（含行业等）
-    stock_codes = fund_hold['stock_code'].unique().tolist()
+    fund_stock_codes = fund_hold['stock_code'].unique().tolist()  # 基金股票代码
+    index_stock_codes = index_hold['stock_code'].unique().tolist()  # 指数股票代码
+    stock_codes = list(set(fund_stock_codes + index_stock_codes))  # 合并去重
     stock_info = fetch_stock_info(stock_codes, max_workers=20, max_retries=5, retry_delay=1.0)
     stock_info.to_parquet('data/stock_info.parquet', index=False)
     # stock_info 的字段以及含义为:
