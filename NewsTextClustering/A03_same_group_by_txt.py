@@ -900,9 +900,9 @@ def main(input_parquet='test_news_clean.parquet',
 
 if __name__ == '__main__':
     main(
-        input_parquet='test_news_clean.parquet',
-        out_parquet='news_same_groups_containment.parquet',
-        out_excel='news_same_groups_containment.xlsx',
+        input_parquet='A01_test_news_clean.parquet',
+        out_parquet='A02_news_same_groups_containment.parquet',
+        out_excel='A02_news_same_groups_containment.xlsx',
         hist_png_cont='top1_containment_hist.png',
         hist_png_jacc='top1_jaccard_hist.png',
         ngram_lsh=4,  # LSH 检索 n-gram

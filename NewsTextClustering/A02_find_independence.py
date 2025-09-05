@@ -764,6 +764,135 @@ def semantic_model_scores(texts: List[str], model_name: str,
     return top1, neg
 
 
+# ========= 三明治策略：工具函数 =========
+
+def build_topk(emb: np.ndarray, k=40, use_hnsw=True):
+    """
+    返回：
+      - idx: [n,k] 近邻 id（去掉自身）
+      - sim: [n,k] 对应的余弦相似度（emb 已 normalize）
+    """
+    n, d = emb.shape
+    if use_hnsw and HAS_HNSW:
+        idx = hnswlib.Index(space='cosine', dim=d)
+        idx.init_index(max_elements=n, ef_construction=200, M=48)
+        idx.add_items(emb, np.arange(n))
+        idx.set_ef(200)
+        labs, dists = idx.knn_query(emb, k=k + 1)
+        labs = labs[:, 1:]
+        sim = (1.0 - dists[:, 1:]).astype(np.float32)
+        return labs.astype(np.int32), sim
+    # brute 备用
+    nn = NearestNeighbors(metric='cosine', algorithm='brute', n_neighbors=k + 1, n_jobs=-1)
+    nn.fit(emb)
+    dists, labs = nn.kneighbors(emb, return_distance=True)
+    labs = labs[:, 1:]
+    sim = (1.0 - dists[:, 1:]).astype(np.float32)
+    return labs.astype(np.int32), sim
+
+
+def csls_calibrate(idx: np.ndarray, sim: np.ndarray) -> np.ndarray:
+    """
+    CSLS 校准：s' = 2*s - r_i - r_j，其中 r_i 为第 i 行均值，r_j 用 r_i[idx] 取邻居的均值。
+    """
+    r_i = sim.mean(axis=1).astype(np.float32)  # [n]
+    r_j = r_i[idx]  # [n,k]
+    s_prime = 2.0 * sim - r_i[:, None] - r_j
+    return s_prime.astype(np.float32)
+
+
+def mutual_edge_mask(idx: np.ndarray) -> np.ndarray:
+    """返回 [n,k] 布尔矩阵，标记 (i->j) 是否互惠（j 的近邻里也含 i）。"""
+    n, k = idx.shape
+    rev = [[] for _ in range(n)]
+    for i in range(n):
+        for j in idx[i]:
+            rev[j].append(i)
+    rev = [set(x) for x in rev]
+    mask = np.zeros_like(idx, dtype=bool)
+    for i in range(n):
+        js = idx[i]
+        mask[i] = np.array([i in rev[j] for j in js], dtype=bool)
+    return mask
+
+
+def sample_semantic_neg(emb: np.ndarray, m_neg=200_000, seed=42) -> np.ndarray:
+    """从同一集合随机采样 (i,j) 负对，返回余弦分数分布，用于 FPR 夹紧。"""
+    n = emb.shape[0]
+    if n < 3:
+        return np.zeros(0, dtype=np.float32)
+    rng = np.random.default_rng(seed)
+    i = rng.integers(0, n, size=m_neg)
+    j = rng.integers(0, n, size=m_neg)
+    mask = (i != j)
+    i = i[mask];
+    j = j[mask]
+    neg = np.sum(emb[i] * emb[j], axis=1).astype(np.float32)
+    return neg
+
+
+def choose_epsilon(mutual_scores: np.ndarray,
+                   neg_scores: Optional[np.ndarray],
+                   fpr_clip=0.01) -> float:
+    """
+    在互惠边 s' 分布上取阈值 ε：GMM-valley 与 Otsu 各取一次，取更保守（较小）者；
+    如有 neg_scores，再用 FPR 轻夹紧：ε = max(ε, T_fpr)。
+    """
+    ms = np.asarray(mutual_scores, float)
+    if ms.size == 0:
+        return 0.0  # 没互惠边：让后续图判定全部为“孤立”
+    T1 = thr_gmm_valley(ms, Kmax=4)
+    T2 = thr_otsu(ms, bins=256)
+    cands = [t for t in [T1, T2] if t is not None and np.isfinite(t)]
+    if not cands:
+        T = float(np.quantile(ms, 0.90))
+    else:
+        T = float(min(cands))  # 偏保守
+    if neg_scores is not None and neg_scores.size > 0:
+        T_fpr = threshold_by_fpr(np.clip(neg_scores, 0.0, 1.0), k_neighbors=40, fp_per_node=fpr_clip)
+        T = max(T, float(T_fpr))
+    return T
+
+
+def topk_stats(s_prime: np.ndarray):
+    """从校准后的 Top-k 分数取统计特征。"""
+    s1 = s_prime[:, 0]
+    s2 = s_prime[:, 1] if s_prime.shape[1] >= 2 else np.zeros_like(s1)
+    s_max = s1
+    s_mean = s_prime.mean(axis=1)
+    s_p95 = np.quantile(s_prime, 0.95, axis=1)
+    gap = (s1 - s2).clip(min=0.0)
+    return s_max.astype(np.float32), s_mean.astype(np.float32), s_p95.astype(np.float32), gap.astype(np.float32)
+
+
+def choose_stat_thresholds(s_max, s_mean, s_p95, gap):
+    """
+    s_max/s_mean/s_p95：越大越像“有搭子”；gap：越小越像“独立”（top1 不突出）。
+    """
+    T_max = thr_gmm_valley(s_max, Kmax=4) or thr_otsu(s_max, bins=256) or float(np.quantile(s_max, 0.80))
+    T_mean = thr_gmm_valley(s_mean, Kmax=4) or thr_otsu(s_mean, bins=256) or float(np.quantile(s_mean, 0.80))
+    T_p95 = thr_gmm_valley(s_p95, Kmax=4) or thr_otsu(s_p95, bins=256) or float(np.quantile(s_p95, 0.85))
+    # gap 归一到[0,1] 再取“左侧谷”
+    g = gap.copy()
+    denom = (np.quantile(g, 0.99) + 1e-6)
+    g = (g / denom).clip(0, 1)
+    T_gap = thr_leftmost_valley_smooth(g) or thr_otsu(g, bins=256) or 0.15
+    return float(T_max), float(T_mean), float(T_p95), float(T_gap)
+
+
+def decide_by_graph(idx, s_prime, eps) -> np.ndarray:
+    """互惠 + s'≥ε 连边；度数==0 判独立。"""
+    mut = mutual_edge_mask(idx)
+    keep = mut & (s_prime >= eps)
+    deg = keep.sum(axis=1)
+    return (deg == 0)
+
+
+def decide_by_stats(s_max, s_mean, s_p95, gap, T_max, T_mean, T_p95, T_gap) -> bool:
+    """高精度规则（推荐）：s_max < T_max 且 s_p95 < T_p95 且 gap <= T_gap"""
+    return (s_max < T_max) & (s_p95 < T_p95) & (gap <= T_gap)
+
+
 # ------------------------- Threshold Fusion -------------------------
 
 def estimate_indep_threshold(scores: np.ndarray, neg_scores: Optional[np.ndarray],
@@ -820,7 +949,6 @@ def main(input_parquet='test_news_clean.parquet',
          # stage-1 params
          ngram_lsh=4, ngram_cont=5, num_perm=128, k_neighbors=40,
          tfidf_min_df=3, bm25_min_df=3, ngram_range=(1, 2),
-         simhash_level='char', simhash_bands=8, simhash_band_bits=8,
          lex_neg_pairs=200_000, lex_delta=0.02,
          # stage-2 params
          sem_model_names=("moka-ai/m3e-base", "BAAI/bge-large-zh-v1.5"),
@@ -939,62 +1067,90 @@ def main(input_parquet='test_news_clean.parquet',
     print(f"{current_time_str()} [INFO] 阶段1预选：独立候选 {len(df_stage1)} / {n}，其余 {len(df_rest_for_sem)}")
 
     # ===================== Stage-2 Semantic =====================
+    # ===================== Stage-2 Semantic =====================
     print(f"{current_time_str()} [INFO] ===== 阶段2：语义通道（在预选池上精筛） =====")
     if df_stage1.empty or not sem_model_names:
         print(f"{current_time_str()} [INFO] 预选池为空或未配置语义模型，直接输出 Stage-1 结果为最终独立。")
         df_indep_final = df_stage1
     else:
-        sem_scores: Dict[str, np.ndarray] = {}
-        sem_indep_T: Dict[str, float] = {}
-        sem_dup_guard_T: Dict[str, float] = {}
         texts_pre = df_stage1[text_col].astype(str).tolist()
         m = len(texts_pre)
-
+        indep_votes = []  # 每个模型的“高精度独立”布尔票
+        veto_votes = []  # 否决护栏（极高相似）布尔票
         for name in sem_model_names:
             print(f"{current_time_str()} [INFO] (sem) 模型 {name} ...")
-            s_top1, s_neg = semantic_model_scores(texts_pre, model_name=name,
-                                                  neg_pairs=sem_neg_pairs, use_hnsw=sem_use_hnsw)
-            if s_top1 is None:
+            emb = _encode_sentences(texts_pre, model_name=name)
+            if emb is None:
+                warnings.warn(f"(sem) {name} 编码失败，跳过。")
                 continue
-            T_indep = estimate_indep_threshold(s_top1, s_neg, k_neighbors=k_neighbors, fp_per_node=0.1)
-            # 右侧否决护栏（更严格）：fp_per_node 更小
-            T_dup = threshold_by_fpr(s_neg, k_neighbors=k_neighbors,
-                                     fp_per_node=sem_veto_fpr) if s_neg is not None else None
-            plot_hist(s_top1, {'left+fpr': T_indep, 'dup_guard': T_dup},
-                      f"Semantic({name}) Top-1", "cosine",
-                      os.path.join(out_dir, f'hist_sem_{name.replace("/", "_")}.png'))
 
-            sem_scores[name] = s_top1
-            sem_indep_T[name] = float(T_indep)
-            sem_dup_guard_T[name] = float(T_dup) if T_dup is not None else None
-            meta_rows.append({'route': f'sem_{name}', 'T_indep': float(T_indep),
-                              'T_dup_guard': float(T_dup) if T_dup is not None else np.nan,
-                              'mean': float(np.mean(s_top1)), 'median': float(np.median(s_top1))})
+            # 1) Top-k 与 CSLS 校准
+            k = k_neighbors
+            idx_k, sim_k = build_topk(emb, k=k, use_hnsw=sem_use_hnsw)
+            s_prime = csls_calibrate(idx_k, sim_k)
 
-        if not sem_scores:
+            # 2) 互惠图：阈值 ε（互惠边分布上取 GMM/Otsu，FPR 轻夹紧）
+            mut_mask = mutual_edge_mask(idx_k)
+            mutual_scores = s_prime[mut_mask]
+            # 采样负对（同一集合随机）用于 FPR 夹紧
+            neg_sem = sample_semantic_neg(emb, m_neg=sem_neg_pairs, seed=2468)
+            eps = choose_epsilon(mutual_scores, neg_sem, fpr_clip=0.01)
+
+            # 3) 结构性独立
+            is_graph = decide_by_graph(idx_k, s_prime, eps)
+
+            # 4) Top-k 统计性独立
+            s_max, s_mean, s_p95, gap = topk_stats(s_prime)
+            T_max, T_mean, T_p95, T_gap = choose_stat_thresholds(s_max, s_mean, s_p95, gap)
+            is_stats = decide_by_stats(s_max, s_mean, s_p95, gap, T_max, T_mean, T_p95, T_gap)
+
+            # 5) 高精度票（推荐 AND）
+            vote = (is_graph & is_stats)
+            indep_votes.append(vote)
+
+            # 6) 否决护栏：若 s_max 极高（用负对 FPR=sem_veto_fpr 右侧夹紧），则认为“非独立”
+            t_dup = threshold_by_fpr(neg_sem, k_neighbors=k_neighbors,
+                                     fp_per_node=sem_veto_fpr) if neg_sem.size > 0 else None
+            if t_dup is None or not np.isfinite(t_dup):
+                veto = np.zeros(m, dtype=bool)
+            else:
+                veto = (s_max >= float(t_dup))
+            veto_votes.append(veto)
+
+            # —— 可视化：互惠边分布 + 统计特征分布 —— #
+            plot_hist(mutual_scores, {'epsilon': eps},
+                      f"Semantic({name}) Mutual-Edges s'", "s'",
+                      os.path.join(out_dir, f'hist_sem_{name.replace("/", "_")}_mutual.png'))
+            plot_hist(s_max, {'T_max': T_max}, f"Semantic({name}) s'_max", "s'_max",
+                      os.path.join(out_dir, f'hist_sem_{name.replace('/', '_')}_smax.png'))
+            plot_hist(gap, {'T_gap': T_gap}, f"Semantic({name}) gap=top1-top2", "gap",
+                      os.path.join(out_dir, f'hist_sem_{name.replace('/', '_')}_gap.png'))
+
+            # 元数据记录
+            meta_rows.append({'route': f'sem_{name}',
+                              'eps': float(eps),
+                              'T_max': float(T_max), 'T_mean': float(T_mean),
+                              'T_p95': float(T_p95), 'T_gap': float(T_gap),
+                              'dup_guard': float(t_dup) if t_dup is not None else np.nan,
+                              'mean_smax': float(np.mean(s_max)),
+                              'median_smax': float(np.median(s_max))})
+
+        if not indep_votes:
             warnings.warn("所有语义模型均不可用或失败；将 Stage-1 结果作为最终独立。")
             df_indep_final = df_stage1
         else:
-            # 否决护栏：任一模型超过 dup_guard -> 非独立
-            veto = np.zeros(m, dtype=bool)
-            for name, s in sem_scores.items():
-                t_dup = sem_dup_guard_T.get(name, None)
-                if t_dup is not None:
-                    veto |= (s >= t_dup)
-
-            # 判定：AND 或 多数投票
-            votes = np.zeros((m, len(sem_scores)), dtype=np.uint8)
-            for j, (name, s) in enumerate(sem_scores.items()):
-                t_indep = sem_indep_T[name]
-                votes[:, j] = (s < t_indep - sem_delta).astype(np.uint8)
+            votes = np.stack(indep_votes, axis=1)  # [m, n_models]
+            veto = np.any(np.stack(veto_votes, axis=1), axis=1) if veto_votes else np.zeros(m, dtype=bool)
 
             if sem_vote == 'and':
-                ok = (votes.sum(axis=1) == votes.shape[1])
-            else:  # majority
+                ok = np.all(votes, axis=1)
+            elif sem_vote == 'or':
+                ok = np.any(votes, axis=1)
+            else:  # 'majority'
                 need = max(1, int(math.ceil(votes.shape[1] * float(sem_vote_ratio))))
                 ok = (votes.sum(axis=1) >= need)
-            final_mask = ok & (~veto)
 
+            final_mask = ok & (~veto)
             df_indep_final = df_stage1.loc[final_mask].copy()
 
     # ===== 只输出一个 Excel/Parquet，带 group 字段 =====
@@ -1028,12 +1184,11 @@ if __name__ == '__main__':
         # ----- Stage-1 (lexical) -----
         ngram_lsh=4, ngram_cont=5, num_perm=128, k_neighbors=40,
         tfidf_min_df=3, bm25_min_df=3, ngram_range=(1, 2),
-        simhash_level='char', simhash_bands=8, simhash_band_bits=8,
         lex_neg_pairs=200_000, lex_delta=0.02,
         # ----- Stage-2 (semantic) -----
         sem_model_names=("moka-ai/m3e-base", "BAAI/bge-large-zh-v1.5"),
         sem_use_hnsw=True, sem_neg_pairs=200_000, sem_delta=0.02,
         sem_vote='majority', sem_vote_ratio=0.67, sem_veto_fpr=0.001,
         # ----- misc -----
-        quick_test=1_000  # 例如 50000 做快速实验
+        quick_test=50_000  # 例如 50000 做快速实验
     )
