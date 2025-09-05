@@ -102,8 +102,19 @@ def _calculate_attribution_inputs(
     r = _period_stock_return_from_close(stock_daily, pd.to_datetime(start_date), pd.to_datetime(end_date))
 
     # 4. 数据合并与聚合
-    pf = fh.merge(si, on="stock_code", how="left").merge(r, on="stock_code", how="left").dropna(subset=["R_i"])
-    bm = ih.merge(si, on="stock_code", how="left").merge(r, on="stock_code", how="left").dropna(subset=["R_i"])
+    pf = fh.merge(si, on="stock_code", how="left").merge(r, on="stock_code", how="left")
+    bm = ih.merge(si, on="stock_code", how="left").merge(r, on="stock_code", how="left")
+
+    # 计算可归因部分的覆盖度并重新归一化权重
+    w_sum_p_before = pf["w_p_i"].sum()
+    w_sum_b_before = bm["w_b_i"].sum()
+    pf = pf.dropna(subset=["R_i"]).copy()
+    bm = bm.dropna(subset=["R_i"]).copy()
+    coverage_p = pf["w_p_i"].sum() / max(w_sum_p_before, 1e-12)
+    coverage_b = bm["w_b_i"].sum() / max(w_sum_b_before, 1e-12)
+    pf["w_p_i"] /= max(pf["w_p_i"].sum(), 1e-12)
+    bm["w_b_i"] /= max(bm["w_b_i"].sum(), 1e-12)
+
     pf["industry"] = pf["industry"].fillna("未知")
     bm["industry"] = bm["industry"].fillna("未知")
     print(f"{_get_time()} [通用数据准备] 将 持仓数据+行业映射+个股收益 数据进行合并")
@@ -136,7 +147,9 @@ def _calculate_attribution_inputs(
         "stock_price_end_date": pd.to_datetime(end_date),
         "fund_report_date": fund_rep_date,
         "index_report_date": index_rep_date,
-        "index_code_val": index_code_val
+        "index_code_val": index_code_val,
+        "coverage_p": float(coverage_p),
+        "coverage_b": float(coverage_b)
     }
     print(f"{_get_time()} [通用数据准备] 通用数据准备完成")
     return ind[["industry", "w_p_k", "w_b_k", "R_p_k", "R_b_k"]], Rp_eq, Rb_eq, meta
@@ -257,6 +270,10 @@ def run_all_funds(start_date: str, end_date: str, method: Literal["BHB", "BF"] =
             for metric in total_metrics:
                 row = {**base_info, "index_code": metric, "index_value": results[metric]}
                 final_rows.append(row)
+
+            # 添加覆盖度指标
+            final_rows.append({**base_info, "index_code": "coverage_p", "index_value": meta["coverage_p"]})
+            final_rows.append({**base_info, "index_code": "coverage_b", "index_value": meta["coverage_b"]})
 
             # 添加分行业指标 (根据方法过滤IR)
             industry_df = results["industry_table"]
