@@ -298,7 +298,8 @@ def fetch_stock_daily_returns_parallel(codes: list[str], start: str, end: str,
 
 
 # 6) 指数日行情（CSIndex 中证指数）
-def fetch_index_daily_return(symbol: str, start: str, end: str) -> pd.DataFrame:
+def fetch_index_daily_return(symbol: str, start: str, end: str, max_retries: int = 5,
+                             retry_delay: float = 0.5) -> pd.DataFrame:
     """
     获取指定指数在指定时间范围内的日线行情数据
 
@@ -321,25 +322,34 @@ def fetch_index_daily_return(symbol: str, start: str, end: str) -> pd.DataFrame:
             - change_amount: 涨跌金额
             - pe_ratio: 滚动市盈率
     """
-    # 获取指数历史行情数据
-    index_df = ak.stock_zh_index_hist_csindex(symbol=symbol, start_date=start, end_date=end)
+    for attempt in range(1, max_retries + 1):
+        try:
+            # 获取指数历史行情数据
+            index_df = ak.stock_zh_index_hist_csindex(symbol=symbol, start_date=start, end_date=end)
 
-    # 重命名列名为英文
-    index_df.rename(columns={"日期": "date", "指数代码": "index_code", "指数中文全称": "index_name",
-                             "开盘": "open", "收盘": "close", "最高": "high", "最低": "low",
-                             "成交量": "volume", "成交金额": "amount", "涨跌幅": "change", "涨跌": "change_amount",
-                             "滚动市盈率": "pe_ratio"}, inplace=True)
+            # 重命名列名为英文
+            index_df.rename(columns={"日期": "date", "指数代码": "index_code", "指数中文全称": "index_name",
+                                     "开盘": "open", "收盘": "close", "最高": "high", "最低": "low",
+                                     "成交量": "volume", "成交金额": "amount", "涨跌幅": "change",
+                                     "涨跌": "change_amount", "滚动市盈率": "pe_ratio"}, inplace=True)
 
-    # 数据类型转换
-    index_df['date'] = pd.to_datetime(index_df['date'], format='%Y%m%d')
-    index_df['index_code'] = index_df['index_code'].astype(str)
-    index_df[['open', 'close', 'high', 'low', 'volume', 'amount', 'change', 'change_amount', 'pe_ratio']] = index_df[
-        ['open', 'close', 'high', 'low', 'volume', 'amount', 'change', 'change_amount', 'pe_ratio']].astype(
-        float)
+            # 数据类型转换
+            index_df['date'] = pd.to_datetime(index_df['date'], format='%Y%m%d')
+            index_df['index_code'] = index_df['index_code'].astype(str)
+            index_df[['open', 'close', 'high', 'low', 'volume', 'amount', 'change', 'change_amount', 'pe_ratio']] = \
+                index_df[
+                    ['open', 'close', 'high', 'low', 'volume', 'amount', 'change', 'change_amount', 'pe_ratio']].astype(
+                    float)
 
-    # 返回所需的列数据
-    return index_df[['date', 'index_code', 'open', 'close', 'high', 'low', 'volume', 'amount',
-                     'change', 'change_amount', 'pe_ratio']]
+            # 返回所需的列数据
+            return index_df[['date', 'index_code', 'index_name', 'open', 'close', 'high', 'low', 'volume', 'amount',
+                             'change', 'change_amount', 'pe_ratio']]
+        except Exception as e:
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+            else:
+                # 超过重试次数，返回一个空 DataFrame，避免中断
+                return pd.DataFrame()
 
 
 if __name__ == "__main__":
