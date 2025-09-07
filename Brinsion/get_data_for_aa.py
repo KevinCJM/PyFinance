@@ -8,9 +8,13 @@
 import time
 import pandas as pd
 import akshare as ak
+import tushare as ts
 from tqdm import tqdm
 from get_data_for_brinsion import fetch_index_daily_return
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+ts.set_token('cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9')
+pro = ts.pro_api()
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -28,15 +32,9 @@ csi_index_codes = {"930898": "中证可转债债券型基金指数",  # 债券�
                    "H30009": "中证商品期货成份指数",  # 商品
                    "H30072": "中证贵金属期货成份指数",  # 商品
                    }
-index_weight = {
-    "权益类": {"H11021": 0.3, "H11026": 0.3, "000300": 0.4},
-    "债券类": {"930898": 0.3, "H11023": 0.3, "H11001": 0.4},
-    "混合类": {"931153": 0.2, "H11023": 0.2, "H11022": 0.2, "H11021": 0.2, "932047": 0.2},
-    "商品类": {"H30009": 0.5, "H30072": 0.5},
-    "货币类": {"H11025": 1.0},
-}
 
 
+# 多线程获取指数日行情数据
 def main_fetch_index_daily_return(codes: list[str], start: str = "20230101", end: str = "20230905",
                                   max_workers: int = 10, max_retries: int = 5,
                                   retry_delay: float = 1.0) -> pd.DataFrame:
@@ -53,6 +51,7 @@ def main_fetch_index_daily_return(codes: list[str], start: str = "20230101", end
     return pd.concat(results, ignore_index=True)
 
 
+# 获取公募基金基本信息
 def sub_fetch_fund_info(symbol: str, max_retries=5, retry_delay=1.0):
     for attempt in range(1, max_retries + 1):
         try:
@@ -71,7 +70,8 @@ def sub_fetch_fund_info(symbol: str, max_retries=5, retry_delay=1.0):
                 return pd.DataFrame()
 
 
-def fetch_fund_basic_info(max_workers=10, max_retries=5, retry_delay=1.0):
+# 多线程获取公募基金基本信息
+def fetch_fund_basic_info(max_workers=50, max_retries=5, retry_delay=1.0):
     codes = ak.fund_name_em()['基金代码'].tolist()
     results = []
 
@@ -87,6 +87,7 @@ def fetch_fund_basic_info(max_workers=10, max_retries=5, retry_delay=1.0):
 
 
 if __name__ == '__main__':
+    ''' 获取指数日行情数据 '''
     # index_daily = main_fetch_index_daily_return(list(csi_index_codes.keys()),
     #                                             start="20010101", end=pd.to_datetime('today').strftime('%Y%m%d'),
     #                                             max_workers=10, max_retries=5, retry_delay=1.0)
@@ -106,7 +107,16 @@ if __name__ == '__main__':
     #      'pe_ratio': '滚动市盈率'}
     # print(f"完成指数日行情数据获取, 共 {len(index_daily)} 条记录")
 
-    fund_basic_info = fetch_fund_basic_info()
-    fund_basic_info.to_parquet('data/fund_basic_info.parquet', index=False)
-    print(fund_basic_info.head())
-    print(f"完成基金基本信息数据获取, 共 {len(fund_basic_info)} 条记录")
+    ''' 获取公募基金基本信息 (AKshare) '''
+    # fund_basic_info = fetch_fund_basic_info()
+    # fund_basic_info.to_parquet('data/fund_basic_info.parquet', index=False)
+    # print(fund_basic_info.head())
+    # print(f"完成基金基本信息数据获取, 共 {len(fund_basic_info)} 条记录")
+
+    ''' 获取公募基金基本信息 (Tushare) '''
+    # df = pro.fund_basic(market='E')   # E场内 O场外
+    # df.to_excel('data/fund_basic_info_E.xlsx')
+
+    ''' 获取公募基金净值数据 '''
+    df = pro.fund_nav(ts_code='000001.OF')
+    print(df)
