@@ -12,7 +12,6 @@ from typing import Dict, Literal, Optional, Tuple
 
 
 # ============ 1) 工具：把“长表 df”还原为 {fund_code: results_dict} ============
-
 def _pivot_single_fund_from_summary(df_one: pd.DataFrame, method: str) -> Dict[str, object]:
     """
     将某只基金的长表记录（含总体&行业行）还原成 results(dict)：
