@@ -3,7 +3,7 @@
 @File: cal_fund_attribution.py
 @Modify Time: 2025/9/5 11:00
 @Author: Kevin-Chen
-@Descriptions: 支持BHB和BF两种归因模型的基金业绩归因分析
+@Descriptions: 权益类Brinsion归因, 计算FOF组合的因子, 支持BHB和BF两种归因模型的基金业绩归因分析
 """
 import re
 import numpy as np
@@ -164,7 +164,7 @@ def aggregate_fof_from_summary_df(
 
 
 if __name__ == '__main__':
-    # FOF持有基金的权重
+    # FOF持有基金的权重 (示例数据)
     fof_hold = {
         '000082': 0.18,
         '000309': 0.22,
@@ -172,7 +172,7 @@ if __name__ == '__main__':
         '000729': 0.12,
     }
 
-    # 1) BHB 聚合 ——（TR≈0，除非你传真实 ER）
+    # 1) BHB 聚合
     summary_df = pd.read_parquet("output/bhb_summary.parquet")  # BHB 口径
     result_bhb = aggregate_fof_from_summary_df(
         fof_hold=fof_hold,

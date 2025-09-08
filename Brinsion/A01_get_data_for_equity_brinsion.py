@@ -3,7 +3,7 @@
 @File: A01_get_data_for_equity_brinsion.py
 @Modify Time: 2025/9/4 15:26       
 @Author: Kevin-Chen
-@Descriptions: 取数
+@Descriptions: 权益类Brinsion归因, 取数
 """
 import re
 import time

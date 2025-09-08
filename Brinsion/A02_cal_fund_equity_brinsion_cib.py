@@ -3,7 +3,7 @@
 @File: cal_fund_attribution.py
 @Modify Time: 2025/9/5 11:00
 @Author: Kevin-Chen
-@Descriptions: 支持BHB和BF两种归因模型的基金业绩归因分析
+@Descriptions: 权益类Brinsion归因, 计算基金的因子, 支持BHB和BF两种归因模型的基金业绩归因分析
 """
 
 import os

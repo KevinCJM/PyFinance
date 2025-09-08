@@ -9,9 +9,10 @@ import time
 import pandas as pd
 import akshare as ak
 from tqdm import tqdm
-from get_data_for_brinsion import fetch_index_daily_return
-from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from tushare_config import pro
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from A01_get_data_for_equity_brinsion import fetch_index_daily_return
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -111,17 +112,19 @@ if __name__ == '__main__':
     # print(f"完成基金基本信息数据获取, 共 {len(fund_basic_info)} 条记录")
 
     ''' 获取公募基金基本信息 (Tushare) '''
-    # df = pro.fund_basic(market='E')   # E场内 O场外
-    # df.to_excel('data/fund_basic_info_E.xlsx')
+    df = pro.fund_basic(market='E')   # E场内 O场外
+    df.to_excel('data/fund_basic_info_E.xlsx')
+    df.to_parquet('data/fund_basic_info_E.parquet', index=False)
+    print(df.head())
 
-    ''' 获取公募基金净值数据 '''
-    fund_codes = pd.read_excel('fund_basic_info.xlsx')[['基金代码', '基金类型']].astype(str)
-    # 将基金代码补充至6位
-    fund_codes['基金代码'] = fund_codes['基金代码'].apply(lambda x: x.zfill(6))
-    # 将基金类型根据'-'分为一级分类和二级分类
-    fund_codes[['一级分类', '二级分类']] = fund_codes['基金类型'].str.split('-', expand=True)
-    fund_codes.rename(columns={'基金代码': 'fund_code', '基金类型': 'fund_type',
-                               '一级分类': 'fund_type_1', '二级分类': 'fund_type_2'}, inplace=True)
-    # df = pro.fund_nav(ts_code='000001.OF')
-    # print(df)
-    print(fund_codes)
+    # ''' 获取公募基金净值数据 '''
+    # fund_codes = pd.read_excel('fund_basic_info.xlsx')[['基金代码', '基金类型']].astype(str)
+    # # 将基金代码补充至6位
+    # fund_codes['基金代码'] = fund_codes['基金代码'].apply(lambda x: x.zfill(6))
+    # # 将基金类型根据'-'分为一级分类和二级分类
+    # fund_codes[['一级分类', '二级分类']] = fund_codes['基金类型'].str.split('-', expand=True)
+    # fund_codes.rename(columns={'基金代码': 'fund_code', '基金类型': 'fund_type',
+    #                            '一级分类': 'fund_type_1', '二级分类': 'fund_type_2'}, inplace=True)
+    # # df = pro.fund_nav(ts_code='000001.OF')
+    # # print(df)
+    # print(fund_codes)
