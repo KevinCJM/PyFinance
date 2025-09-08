@@ -100,9 +100,9 @@ if __name__ == '__main__':
     # ===== 读取 FOF 权重 & 基金信息 =====
     fof_holding_df = pd.read_parquet("./data/fof_holding_campisi.parquet")
     fund_info_df = pd.read_parquet("./data/fund_info.parquet")
-    single_df = pd.read_parquet("./data/campisi_result_for_fund.parquet")
+    single_df = pd.read_parquet("./output/C_campisi_result_for_fund.parquet")
 
     # ======== 调用 ========
     fof_result = aggregate_fof_campisi(single_df, fof_holding_df, fund_info_df, end)
     print(fof_result)
-    fof_result.to_parquet("./data/campisi_for_fof.parquet", index=False)
+    fof_result.to_parquet("./output/C_campisi_result_for_fof.parquet", index=False)

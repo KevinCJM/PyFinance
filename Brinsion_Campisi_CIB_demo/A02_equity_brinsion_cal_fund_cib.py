@@ -322,7 +322,7 @@ def run_all_funds(start_date: str, end_date: str, method: Literal["BHB", "BF"] =
                   'fund_report_date', 'index_report_date', 'index_code', 'index_value']
     summary_df = summary_df[final_cols]
 
-    summary_path = os.path.join(OUTPUT_DIR, f"{method.lower()}_summary.parquet")
+    summary_path = os.path.join(OUTPUT_DIR, f"A_{method.lower()}_summary.parquet")
     summary_df.to_parquet(summary_path, index=False)
     print(f"[完成] 使用 {method} 模型分析了 {len(fund_list)} 只基金。汇总已保存：{summary_path}")
     return summary_df

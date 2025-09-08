@@ -8,5 +8,5 @@
 
 import tushare as ts
 
-ts.set_token('xxxxx')
+ts.set_token('cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9')
 pro = ts.pro_api()

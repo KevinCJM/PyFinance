@@ -173,21 +173,23 @@ if __name__ == '__main__':
     }
 
     # 1) BHB 聚合
-    summary_df = pd.read_parquet("output/bhb_summary.parquet")  # BHB 口径
+    summary_df = pd.read_parquet("./output/A_bhb_summary.parquet")  # BHB 口径
     result_bhb = aggregate_fof_from_summary_df(
         fof_hold=fof_hold,
         summary_df=summary_df,
         method="BHB",
         er_actual=None  # 若有 FOF 实际超额收益，可传入一个浮点数
     )
+    result_bhb.to_parquet("./output/A_bhb_fof_agg.parquet")
     print(result_bhb)
 
     # 2) BF 聚合
-    summary_df = pd.read_parquet("output/bf_summary.parquet")  # BHB 口径
-    result_bhb = aggregate_fof_from_summary_df(
+    summary_df = pd.read_parquet("./output/A_bf_summary.parquet")  # BF 口径
+    result_bf = aggregate_fof_from_summary_df(
         fof_hold=fof_hold,
         summary_df=summary_df,
         method="BF",
         er_actual=None  # 若有 FOF 实际超额收益，可传入一个浮点数
     )
-    print(result_bhb)
+    result_bf.to_parquet("./output/A_bf_fof_agg.parquet")
+    print(result_bf)
