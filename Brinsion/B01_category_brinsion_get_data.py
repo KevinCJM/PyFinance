@@ -11,6 +11,7 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tushare_config import pro
+from A01_equity_brinsion_get_data import fetch_index_daily_return
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 pd.set_option('display.width', 1000)  # 表格不分段显示
@@ -50,6 +51,23 @@ def fetch_fund_daily_return_parallel(codes: list[str], max_workers: int = 10, ma
     return pd.concat(results, ignore_index=True).reset_index(drop=True) if results else pd.DataFrame()
 
 
+# 多线程获取指数日行情数据
+def main_fetch_index_daily_return(codes: list[str], start: str = "20230101", end: str = "20230905",
+                                  max_workers: int = 10, max_retries: int = 5,
+                                  retry_delay: float = 1.0) -> pd.DataFrame:
+    results = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(fetch_index_daily_return, code, start, end, max_retries, retry_delay): code
+            for code in codes
+        }
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="fetch_index_daily_return"):
+            results.append(fut.result())
+
+    return pd.concat(results, ignore_index=True)
+
+
 if __name__ == '__main__':
     ''' 获取各个基金所属于大类 '''
     fund_info_df = pro.fund_basic(market='O')  # E场内 O场外
@@ -64,8 +82,10 @@ if __name__ == '__main__':
     fund_info_df.to_parquet('./data/fund_info.parquet', index=False)
     fund_info_df = pd.read_parquet('./data/fund_info.parquet')
     print(fund_info_df)
+    print(set(fund_info_df['fund_type']))
 
-    ''' FOF基金的持仓数据 '''  # 示例数据, 权重和小于等于1
+    ''' FOF基金的持仓数据 '''
+    # 示例数据, 权重和小于等于1
     fof_holding = {
         '217025': 0.12,  # 招商理财7天A (债券型)
         '018594': 0.07,  # 格林泓盈利率债 (债券型)
@@ -82,27 +102,9 @@ if __name__ == '__main__':
     fof_holding_df.to_parquet('./data/fof_holding.parquet', index=False)
     print(fof_holding_df)
 
-    ''' 基准的持仓数据 '''  # 示例数据, 权重和小于等于1
-    benchmark_holding = {
-        '000322': 0.11,  # 农银汇理金汇A (债券)
-        '000674': 0.12,  # 中海中短债A (债券)
-        '013166': 0.12,  # 东兴宸祥量化A (混合)
-        '014600': 0.21,  # 博时回报严选A (混合)
-        '019941': 0.11,  # 富国洞见价值A (股票)
-        '020142': 0.22,  # 路博迈中国医疗健康A (股票)
-        '018850': 0.05,  # 博时合晶货币A (货币)
-        '970196': 0.06,  # 诚通天天利 (货币)
-    }
-    benchmark_holding_df = pd.DataFrame(benchmark_holding.items(), columns=['fund_code', 'weight'])
-    _ = {'fund_code': '基金代码',
-         'weight': '权重'
-         }
-    benchmark_holding_df.to_parquet('./data/benchmark_holding.parquet', index=False)
-    print(benchmark_holding_df)
-
     ''' 获取基金的收益率数据 '''
     # 取FOF基金与基准的持仓并集
-    fund_codes = list(set(fof_holding.keys()).union(set(benchmark_holding.keys())))
+    fund_codes = list(set(fof_holding.keys()))
     print(f"FOF基金与基准的持仓并集共{len(fund_codes)}只基金")
     # 获取基金每日净值数据
     fund_return_df = fetch_fund_daily_return_parallel(fund_codes)
@@ -115,3 +117,55 @@ if __name__ == '__main__':
     fund_return_df.to_parquet('./data/fund_daily_return.parquet', index=False)
     fund_return_df = pd.read_parquet('./data/fund_daily_return.parquet')
     print(fund_return_df)
+
+    ''' 基准的指数比例数据 '''
+    # 示例数据, 权重和等于1, 基准使用指数构成
+    benchmark_holding = {
+        "H11021": 0.1,  # 中证股票型基金指数 -  权益
+        "H11022": 0.2,  # 中证混合型基金指数 - 混合
+        "H11023": 0.3,  # 中证债券型基金指数 - 债券
+        "H11025": 0.2,  # 中证货币基金指数 - 货币
+        "H30009": 0.2,  # 中证商品期货成份指数 - 商品
+    }
+    benchmark_holding_df = pd.DataFrame(benchmark_holding.items(), columns=['index_code', 'weight'])
+    _ = {'index_code': '指数代码',
+         'weight': '权重'
+         }
+    benchmark_holding_df.to_parquet('./data/benchmark_holding.parquet', index=False)
+    print(benchmark_holding_df)
+
+    ''' 指数对应大类 '''
+    csi_index_codes = {
+        "H11021": "股票型",
+        "H11022": "混合型",
+        "H11023": "债券型",
+        "H11025": "货币市场型",
+        "H30009": "商品型",
+    }
+    csi_index_df = pd.DataFrame(csi_index_codes.items(), columns=['index_code', 'index_type'])
+    _ = {'index_code': '指数代码',
+         'fund_type': '指数大类'
+         }
+    csi_index_df.to_parquet('./data/csi_index_type.parquet', index=False)
+    print(csi_index_df)
+
+    ''' 获取指数的收益率数据 '''
+    index_daily = main_fetch_index_daily_return(list(csi_index_codes.keys()),
+                                                start="20010101", end=pd.to_datetime('today').strftime('%Y%m%d'),
+                                                max_workers=10, max_retries=5, retry_delay=1.0)
+    # index_daily 的字段以及含义为:
+    _ = {'date': '交易日期',
+         'index_code': '指数代码',
+         'open': '开盘价',
+         'close': '收盘价',
+         'high': '最高价',
+         'low': '最低价',
+         'volume': '成交量',
+         'amount': '成交金额',
+         'change': '涨跌幅',
+         'change_amount': '涨跌金额',
+         'pe_ratio': '滚动市盈率'}
+    index_daily.to_parquet('data/index_daily_all.parquet', index=False)
+    index_daily = pd.read_parquet('data/index_daily_all.parquet')
+    print(index_daily.head())
+    print(f"完成指数日行情数据获取, 共 {len(index_daily)} 条记录")
