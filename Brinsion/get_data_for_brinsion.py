@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import akshare as ak
 from tqdm import tqdm
+from tushare_config import pro
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
@@ -353,9 +354,6 @@ def fetch_index_daily_return(symbol: str, start: str, end: str, max_retries: int
 
 
 if __name__ == "__main__":
-    # stock_info = fetch_stock_info(['000001'], max_workers=20, max_retries=5, retry_delay=1.0)
-    # print(stock_info)
-
     fund_code_list = ['000082',  # 嘉实研究阿尔法股票A
                       '000309',  # 大摩品质生活精选股票A
                       '000628',  # 大成高鑫股票A
@@ -365,7 +363,7 @@ if __name__ == "__main__":
                       ]  # 可扩展多个基金
     index_code = '000985'  # 中证指数代码
 
-    # 获取基金持仓
+    ''' 获取基金持仓 '''
     fund_hold = fetch_fund_holdings_multi(fund_code_list, '2025', get_last_data=True)
     fund_hold.to_parquet('data/fund_hold.parquet', index=False)
     # fund_hold 的字段以及含义为:
@@ -378,7 +376,7 @@ if __name__ == "__main__":
          'market_value': '持仓市值'}
     print(f"完成基金持仓数据获取, 共 {len(fund_hold)} 条记录")
 
-    # 获取指数成分及权重
+    ''' 获取指数成分及权重 '''
     index_hold = fetch_index_stock_cons_weight_index(index_code)
     index_hold.to_parquet('data/index_hold.parquet', index=False)
     # index_hold 的字段以及含义为:
@@ -390,11 +388,19 @@ if __name__ == "__main__":
          'weight': '权重'}
     print(f"完成指数成分及权重数据获取, 共 {len(index_hold)} 条记录")
 
-    # 获取股票信息（含行业等）
+    ''' 获取股票信息 (含行业等) '''
     fund_stock_codes = fund_hold['stock_code'].unique().tolist()  # 基金股票代码
     index_stock_codes = index_hold['stock_code'].unique().tolist()  # 指数股票代码
+    # fund_stock_codes = pd.read_parquet('data/fund_hold.parquet')['stock_code'].unique().tolist()  # 基金股票代码
+    # index_stock_codes = pd.read_parquet('data/index_hold.parquet')['stock_code'].unique().tolist()  # 指数股票代码
     stock_codes = list(set(fund_stock_codes + index_stock_codes))  # 合并去重
-    stock_info = fetch_stock_info(stock_codes, max_workers=20, max_retries=5, retry_delay=1.0)
+    print(f"基金与指数下, 共 {len(stock_codes)} 只股票")
+    # TUshare 接口
+    stock_info = pro.stock_basic(exchange='', list_status='L', fields='ts_code,symbol,name,area,industry,list_date')
+    stock_info = stock_info[stock_info['symbol'].isin(stock_codes)][['symbol', 'name', 'industry', 'list_date']]
+    stock_info.rename(columns={'symbol': 'stock_code', 'name': 'stock_name', 'list_date': 'listing_date'}, inplace=True)
+    # # AKshare 接口
+    # stock_info = fetch_stock_info(stock_codes, max_workers=20, max_retries=5, retry_delay=1.0)
     stock_info.to_parquet('data/stock_info.parquet', index=False)
     # stock_info 的字段以及含义为:
     _ = {'stock_code': '股票代码',

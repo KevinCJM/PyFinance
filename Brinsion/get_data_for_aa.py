@@ -8,13 +8,10 @@
 import time
 import pandas as pd
 import akshare as ak
-import tushare as ts
 from tqdm import tqdm
 from get_data_for_brinsion import fetch_index_daily_return
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-ts.set_token('cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9')
-pro = ts.pro_api()
+from tushare_config import pro
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 pd.set_option('display.width', 1000)  # 表格不分段显示

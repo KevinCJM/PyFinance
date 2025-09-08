@@ -164,3 +164,5 @@ if __name__ == '__main__':
                 '000780': 0.11,  # 鹏华医疗保健股票
                 '470888': 0.16,  # 华宝制造股票
                 }
+    # results_map = {fund_code: results_dict}
+
