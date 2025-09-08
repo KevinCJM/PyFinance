@@ -118,5 +118,13 @@ if __name__ == '__main__':
     # df.to_excel('data/fund_basic_info_E.xlsx')
 
     ''' 获取公募基金净值数据 '''
-    df = pro.fund_nav(ts_code='000001.OF')
-    print(df)
+    fund_codes = pd.read_excel('fund_basic_info.xlsx')[['基金代码', '基金类型']].astype(str)
+    # 将基金代码补充至6位
+    fund_codes['基金代码'] = fund_codes['基金代码'].apply(lambda x: x.zfill(6))
+    # 将基金类型根据'-'分为一级分类和二级分类
+    fund_codes[['一级分类', '二级分类']] = fund_codes['基金类型'].str.split('-', expand=True)
+    fund_codes.rename(columns={'基金代码': 'fund_code', '基金类型': 'fund_type',
+                               '一级分类': 'fund_type_1', '二级分类': 'fund_type_2'}, inplace=True)
+    # df = pro.fund_nav(ts_code='000001.OF')
+    # print(df)
+    print(fund_codes)
