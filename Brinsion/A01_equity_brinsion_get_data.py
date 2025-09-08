@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-@File: A01_get_data_for_equity_brinsion.py
+@File: A01_equity_brinsion_get_data.py
 @Modify Time: 2025/9/4 15:26       
 @Author: Kevin-Chen
 @Descriptions: 权益类Brinsion归因, 取数
