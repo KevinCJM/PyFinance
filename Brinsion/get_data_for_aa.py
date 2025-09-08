@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 from tushare_config import pro
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from A01_get_data_for_equity_brinsion import fetch_index_daily_return
+from A01_equity_brinsion_get_data import fetch_index_daily_return
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 pd.set_option('display.width', 1000)  # 表格不分段显示
