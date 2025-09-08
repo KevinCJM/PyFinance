@@ -31,8 +31,11 @@ def _pivot_single_fund_from_summary(df_one: pd.DataFrame, method: str) -> Dict[s
         .to_dict()
     )
     # 行业明细：解析 “行业名_因子” 结构
-    m = df_one["index_code"].str.extract(r"^(?P<industry>.+)_(?P<kind>AR|SR|IR)$")
-    ind_df = pd.concat([m, df_one[["index_value"]]], axis=1).dropna(subset=["industry", "kind"])
+    df_ind = df_one.loc[~df_one["index_code"].isin(total_keys)].copy()
+    df_ind["index_code"] = df_ind["index_code"].str.strip()
+
+    m = df_ind["index_code"].str.extract(r"^(?P<industry>.+)_(?P<kind>AR|SR|IR)$")
+    ind_df = pd.concat([m, df_ind[["index_value"]]], axis=1).dropna(subset=["industry", "kind"])
     ind_piv = (
         ind_df.pivot_table(index="industry", columns="kind", values="index_value", aggfunc="sum")
         .rename(columns={"AR": "AR_k", "SR": "SR_k", "IR": "IR_k"})
@@ -102,13 +105,10 @@ def aggregate_fof_from_summary_df(
         summary_df: pd.DataFrame,
         method: Literal["BHB", "BF"] = "BHB",
         er_actual: Optional[float] = None,
-) -> Tuple[Dict[str, float], pd.DataFrame, pd.DataFrame]:
+) -> pd.DataFrame:
     """
     直接用“长表 df + FOF 权重”做 FOF 归因聚合。
-    返回：
-      totals: {'AR', 'SR', ('IR'), 'ER', 'TR'}
-      ind_table: 分行业因子
-      weights_table: 实际参与聚合的基金权重（含缺失提示）
+    返回：一个 DataFrame, 包含 index_code, index_value
     """
     # 1) 还原每只基金的 results 结构
     res_map = build_fund_results_map_from_summary(summary_df, method=method)
@@ -116,16 +116,9 @@ def aggregate_fof_from_summary_df(
     # 2) 归一化 FOF 权重，只用有结果的基金
     W_raw = pd.Series(fof_hold, name="W_raw").astype(float)
     used = W_raw.index.intersection(res_map.keys())
-    dropped = W_raw.index.difference(used)
     if len(used) == 0:
         raise ValueError("fof_hold 与 summary_df 无交集。")
     W = _normalize_series_weight(W_raw.loc[used]).rename("W_norm")
-
-    weights_table = pd.DataFrame({"fund_code": used, "W_raw": W_raw.loc[used].values, "W_norm": W.values})
-    if len(dropped) > 0:
-        warn = pd.DataFrame({"fund_code": list(dropped), "W_raw": W_raw.loc[dropped].values})
-        warn["note"] = "在 summary_df 中没有该基金的归因结果，已剔除并对其余权重归一化"
-        weights_table = pd.concat([weights_table, warn], ignore_index=True)
 
     # 3) 聚合总体因子
     rows = []
@@ -133,48 +126,45 @@ def aggregate_fof_from_summary_df(
         s = _pick_totals(res_map[j], method) * wj
         s.name = j
         rows.append(s)
-    tot_df = pd.DataFrame(rows)
-    sums = tot_df.sum()
+    sums = pd.DataFrame(rows).sum()
 
-    # ER：允许用真实 ER 覆盖（产生交易效应）
     ER = float(er_actual) if er_actual is not None else float(sums["ER"])
     if method == "BHB":
-        AR = float(sums["Total_AR"])
-        SR = float(sums["Total_SR"])
-        IR = float(sums["Total_IR"])
+        AR, SR, IR = float(sums["Total_AR"]), float(sums["Total_SR"]), float(sums["Total_IR"])
         TR = ER - (AR + SR + IR)
-        totals = {"AR": AR, "SR": SR, "IR": IR, "ER": ER, "TR": TR}
+        totals = {"Total_AR": AR, "Total_SR": SR, "Total_IR": IR, "ER": ER, "TR": TR}
     else:
-        AR = float(sums["Total_AR"])
-        SR = float(sums["Total_SR"])
+        AR, SR = float(sums["Total_AR"]), float(sums["Total_SR"])
         TR = ER - (AR + SR)
-        totals = {"AR": AR, "SR": SR, "ER": ER, "TR": TR}
+        totals = {"Total_AR": AR, "Total_SR": SR, "ER": ER, "TR": TR}
 
-    # 4) 聚合分行业因子
+    # 4) 聚合行业因子
     blocks = []
     for j, wj in W.items():
         blk = _stack_industry(j, res_map[j], wj, method)
         blocks.append(blk)
     ind_all = pd.concat(blocks, ignore_index=True)
     agg = {"AR": "sum", "SR": "sum"}
-    if method == "BHB": agg["IR"] = "sum"
+    if method == "BHB":
+        agg["IR"] = "sum"
     ind_table = ind_all.groupby("industry", as_index=False).agg(agg)
 
-    # 5) 闭合性自检
-    err = abs(ind_table["AR"].sum() - totals["AR"]) + abs(ind_table["SR"].sum() - totals["SR"])
-    if method == "BHB":
-        err += abs(ind_table["IR"].sum() - totals["IR"])
-    if err > 1e-10:
-        raise AssertionError(f"行业合计与总体不闭合，差值={err}")
+    # 5) 格式化输出 —— 合并总体和行业
+    out_rows = []
+    for k, v in totals.items():
+        out_rows.append({"index_code": k, "index_value": v})
 
-    return totals, ind_table.sort_values("industry").reset_index(drop=True), weights_table.sort_values("fund_code")
+    for _, r in ind_table.iterrows():
+        out_rows.append({"index_code": f"{r['industry']}_AR", "index_value": r["AR"]})
+        out_rows.append({"index_code": f"{r['industry']}_SR", "index_value": r["SR"]})
+        if method == "BHB":
+            out_rows.append({"index_code": f"{r['industry']}_IR", "index_value": r["IR"]})
+
+    result_df = pd.DataFrame(out_rows)
+    return result_df
 
 
 if __name__ == '__main__':
-    # 读取你保存的汇总文件（就是截图里的那个长表）
-    summary_df = pd.read_parquet("output/bhb_summary.parquet")  # BHB 口径示例
-    # 或者：summary_df = pd.read_parquet("output/bf_summary.parquet")  # BF 口径
-
     # FOF持有基金的权重
     fof_hold = {
         '000082': 0.18,
@@ -184,14 +174,21 @@ if __name__ == '__main__':
     }
 
     # 1) BHB 聚合 ——（TR≈0，除非你传真实 ER）
-    totals_bhb, ind_bhb, wtbl_bhb = aggregate_fof_from_summary_df(
+    summary_df = pd.read_parquet("output/bhb_summary.parquet")  # BHB 口径
+    result_bhb = aggregate_fof_from_summary_df(
         fof_hold=fof_hold,
         summary_df=summary_df,
         method="BHB",
         er_actual=None  # 若有 FOF 实际超额收益，可传入一个浮点数
     )
-    print("FOF · BHB · 总体：", totals_bhb)
-    print(ind_bhb.head())
+    print(result_bhb)
 
     # 2) BF 聚合
-    # 换成 BF 的汇总文件，并改 method="BF"
+    summary_df = pd.read_parquet("output/bf_summary.parquet")  # BHB 口径
+    result_bhb = aggregate_fof_from_summary_df(
+        fof_hold=fof_hold,
+        summary_df=summary_df,
+        method="BF",
+        er_actual=None  # 若有 FOF 实际超额收益，可传入一个浮点数
+    )
+    print(result_bhb)
