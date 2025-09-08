@@ -95,7 +95,7 @@ if __name__ == '__main__':
     _ = {'date': '报告日期',
          'fund_code': '基金代码',
          'start_bond_mv': '期初债券市值',
-         'start_fund_duration': '基金期初久期'
+         'start_fund_duration': '基金期初久期(年)'
          }
     start_p_data_df.to_parquet('./data/start_p_data_campisi.parquet', index=False)
     print(start_p_data_df)
