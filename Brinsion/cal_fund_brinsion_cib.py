@@ -40,17 +40,25 @@ def _period_stock_return_from_close(stock_daily: pd.DataFrame, start: pd.Timesta
     if sd.empty:
         raise ValueError(f"股票无{start}~{end}的区间数据")
 
-    idx_first = sd.groupby("stock_code")["date"].idxmin()
-    idx_last = sd.groupby("stock_code")["date"].idxmax()
-    start_px = sd.loc[idx_first, ["stock_code", "close"]].rename(columns={"close": "px_start"})
-    end_px = sd.loc[idx_last, ["stock_code", "close"]].rename(columns={"close": "px_end"})
-    px = start_px.merge(end_px, on="stock_code", how="inner")
+    # 转pivot, 索引为日期, 每列是一个股票, 值为收盘价
+    close_pivot = sd.pivot(index="date", columns="stock_code", values="close")
+
+    # 找到各个股票的第一条非空收盘价和最后一条非空收盘价
+    start_px = close_pivot.apply(lambda s: s.dropna().iloc[0] if not s.dropna().empty else None)
+    end_px = close_pivot.apply(lambda s: s.dropna().iloc[-1] if not s.dropna().empty else None)
+
+    # 合并为DataFrame
+    px = pd.DataFrame({"px_start": start_px, "px_end": end_px})
+    px.index.name = "stock_code"  # 确保索引名为 stock_code
+    px.dropna(inplace=True)  # 丢弃没有开始或结束价的股票
+
     px = px[(px["px_start"] > 0) & (px["px_end"] > 0)]
     if px.empty:
-        raise ValueError(f"股票无{start}~{end}的区间数据")
+        raise ValueError(f"股票无{start}~{end}的有效区间数据")
 
+    # 计算各个股票的区间收益率
     px["R_i"] = px["px_end"] / px["px_start"] - 1.0
-    return px[["stock_code", "R_i"]]
+    return px.reset_index()[["stock_code", "R_i"]]
 
 
 def _normalize_weights(df: pd.DataFrame, code_col: str, weight_col: str) -> pd.DataFrame:
@@ -73,14 +81,13 @@ def _calculate_attribution_inputs(
 ):
     """为所有归因模型准备通用的输入数据"""
     # 1. 基金持仓处理
-    fh = fund_hold.loc[fund_hold["fund_code"] == fund_code].copy()
-    if fh.empty:
+    if fund_hold.empty:
         raise ValueError(f"[{fund_code}] 无基金持仓数据")
-    fh["stock_code"] = _norm_code_series(fh["stock_code"])
-    fh = fh.dropna(subset=["stock_code", "weight"]).copy()
+    fund_hold["stock_code"] = _norm_code_series(fund_hold["stock_code"])
+    fh = fund_hold.dropna(subset=["stock_code", "weight"]).copy()
     fund_rep_date = pd.to_datetime(fh["report_date"]).max()
     fh = fh.loc[pd.to_datetime(fh["report_date"]) == fund_rep_date].copy()
-    fh = _normalize_weights(fh, code_col="fund_code", weight_col="weight")
+    fh = _normalize_weights(fh, code_col="fund_code", weight_col="weight")  # 归一化
     fh.rename(columns={"weight": "w_p_i"}, inplace=True)
     print(f"{_get_time()} [通用数据准备] {fund_code}基金持仓数据处理完成, 持有股票数: {len(fh)}")
 
@@ -90,16 +97,17 @@ def _calculate_attribution_inputs(
     index_rep_date = pd.to_datetime(ih["report_date"]).max()
     ih["stock_code"] = _norm_code_series(ih["stock_code"])
     ih = ih.loc[pd.to_datetime(ih["report_date"]) == index_rep_date].copy()
-    ih = _normalize_weights(ih, code_col="index_code", weight_col="weight")
+    ih = _normalize_weights(ih, code_col="index_code", weight_col="weight")  # 归一化
     ih.rename(columns={"weight": "w_b_i"}, inplace=True)
     print(f"{_get_time()} [通用数据准备] {fund_code}基准指数({index_code_val})成分数据处理完成, 成分股数: {len(ih)}")
 
     # 3. 行业映射与个股收益
-    industry_col = _pick_industry_column(stock_info)
-    si = stock_info[["stock_code", industry_col]].rename(columns={industry_col: "industry"})
-    si["stock_code"] = _norm_code_series(si["stock_code"])
-    print(f"{_get_time()} [通用数据准备] {fund_code}行业映射与个股收益数据处理完成, 行业数: {len(si)}")
+    si = stock_info[["stock_code", "industry"]]
+    si.loc[:, "stock_code"] = _norm_code_series(si["stock_code"])
+    print(f"{_get_time()} [通用数据准备] 行业映射与个股收益数据处理完成, 行业数: {len(set(si["industry"]))}")
+    # 计算个股收益
     r = _period_stock_return_from_close(stock_daily, pd.to_datetime(start_date), pd.to_datetime(end_date))
+    print(f"{_get_time()} [通用数据准备] 区间个股收益计算完成, 涉及股票数: {len(r)}")
 
     # 4. 数据合并与聚合
     pf = fh.merge(si, on="stock_code", how="left").merge(r, on="stock_code", how="left")
@@ -108,12 +116,16 @@ def _calculate_attribution_inputs(
     # 计算可归因部分的覆盖度并重新归一化权重
     w_sum_p_before = pf["w_p_i"].sum()
     w_sum_b_before = bm["w_b_i"].sum()
+    print(f"{_get_time()} [通用数据准备] 基金持原始股数量为{len(pf)}, 基准指数原始持有数量为{len(bm)}")
+    # 剔除缺失收益率数据的股票
     pf = pf.dropna(subset=["R_i"]).copy()
     bm = bm.dropna(subset=["R_i"]).copy()
-    coverage_p = pf["w_p_i"].sum() / max(w_sum_p_before, 1e-12)
-    coverage_b = bm["w_b_i"].sum() / max(w_sum_b_before, 1e-12)
-    pf["w_p_i"] /= max(pf["w_p_i"].sum(), 1e-12)
-    bm["w_b_i"] /= max(bm["w_b_i"].sum(), 1e-12)
+    print(f"{_get_time()} [通用数据准备] 有行情数据的基金持股数量为{len(pf)}, 有行情数据的基准指数数量为{len(bm)}")
+    coverage_p = pf["w_p_i"].sum() / w_sum_p_before
+    coverage_b = bm["w_b_i"].sum() / w_sum_b_before
+    print(f"{_get_time()} [通用数据准备] 基于权重计算; 基金覆盖度为{coverage_p:.2%}, 基准覆盖度为{coverage_b:.2%}")
+    pf["w_p_i"] /= max(pf["w_p_i"].sum(), 1e-12)  # 代表基金中第 i 只股票的权重
+    bm["w_b_i"] /= max(bm["w_b_i"].sum(), 1e-12)  # 代表基准中第 i 只股票的权重
 
     pf["industry"] = pf["industry"].fillna("未知")
     bm["industry"] = bm["industry"].fillna("未知")
@@ -204,8 +216,18 @@ def perform_attribution(
     """
     执行业绩归因分析的调度函数
     """
-    # 准备通用的输入数据
+    # 提取出基金持仓
+    fund_hold = fund_hold.loc[fund_hold["fund_code"] == fund_code].copy()
 
+    # 准备通用的输入数据
+    print(f"{_get_time()} [通用数据准备] 开始准备通用数据")
+    print(f"\t- 基金代码: {fund_code}")
+    print(f"\t- 基金持股数量: {len(fund_hold)}, 基准持股数量: {len(index_hold)}, "
+          f"两者的并集数量为{len(set(fund_hold['stock_code']) | set(index_hold['stock_code']))}")
+    print(f"\t- 有行业映射关系的股票数量: {len(stock_info)}")
+    print(f"\t- 有净值数据的股票数量: {len(set(stock_daily["stock_code"]))}, "
+          f"与基金持仓的重合数量为{len(set(stock_daily["stock_code"]) & set(fund_hold["stock_code"]))}, "
+          f"与基准持仓的重合数量为{len(set(stock_daily["stock_code"]) & set(index_hold["stock_code"]))}")
     ind_df, Rp_eq, Rb_eq, meta = _calculate_attribution_inputs(
         fund_code,  # 基金代码，用于标识当前需要分析的基金产品
         fund_hold,  # 基金持仓数据，包含基金持有的所有股票及其权重信息
