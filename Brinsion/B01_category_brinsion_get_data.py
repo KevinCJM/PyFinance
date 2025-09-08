@@ -3,7 +3,7 @@
 @File: B01_category_brinsion_get_data.py
 @Modify Time: 2025/9/8 10:51       
 @Author: Kevin-Chen
-@Descriptions: 
+@Descriptions: 大类Brinsion归因, 取数
 """
 import time
 import pandas as pd
@@ -52,16 +52,16 @@ def fetch_fund_daily_return_parallel(codes: list[str], max_workers: int = 10, ma
 
 if __name__ == '__main__':
     ''' 获取各个基金所属于大类 '''
-    # fund_info_df = pro.fund_basic(market='O')  # E场内 O场外
-    # fund_info_df['fund_code'] = fund_info_df['ts_code'].str[:6]
-    # fund_info_df.rename(columns={'name': 'fund_name', 'management': 'fund_company'}, inplace=True)
-    # fund_info_df = fund_info_df[['fund_code', 'fund_name', 'fund_type', 'fund_company']]
-    # _ = {'fund_code': '基金代码',
-    #      'fund_name': '基金名称',
-    #      'fund_type': '基金类型',  # '债券型', '商品型', '混合型', '股票型', '货币市场型'
-    #      'fund_company': '基金公司'
-    #      }
-    # fund_info_df.to_parquet('./data/fund_info.parquet', index=False)
+    fund_info_df = pro.fund_basic(market='O')  # E场内 O场外
+    fund_info_df['fund_code'] = fund_info_df['ts_code'].str[:6]
+    fund_info_df.rename(columns={'name': 'fund_name', 'management': 'fund_company'}, inplace=True)
+    fund_info_df = fund_info_df[['fund_code', 'fund_name', 'fund_type', 'fund_company']]
+    _ = {'fund_code': '基金代码',
+         'fund_name': '基金名称',
+         'fund_type': '基金类型',  # '债券型', '商品型', '混合型', '股票型', '货币市场型'
+         'fund_company': '基金公司'
+         }
+    fund_info_df.to_parquet('./data/fund_info.parquet', index=False)
     fund_info_df = pd.read_parquet('./data/fund_info.parquet')
     print(fund_info_df)
 
@@ -101,17 +101,17 @@ if __name__ == '__main__':
     print(benchmark_holding_df)
 
     ''' 获取基金的收益率数据 '''
-    # # 取FOF基金与基准的持仓并集
-    # fund_codes = list(set(fof_holding.keys()).union(set(benchmark_holding.keys())))
-    # print(f"FOF基金与基准的持仓并集共{len(fund_codes)}只基金")
-    # # 获取基金每日净值数据
-    # fund_return_df = fetch_fund_daily_return_parallel(fund_codes)
-    # _ = {'fund_code': '基金代码',
-    #      'date': '净值日期',
-    #      'unit_nav': '单位净值',
-    #      'accum_nav': '累计净值',
-    #      'adj_nav': '复权净值'
-    #      }
-    # fund_return_df.to_parquet('./data/fund_daily_return.parquet', index=False)
+    # 取FOF基金与基准的持仓并集
+    fund_codes = list(set(fof_holding.keys()).union(set(benchmark_holding.keys())))
+    print(f"FOF基金与基准的持仓并集共{len(fund_codes)}只基金")
+    # 获取基金每日净值数据
+    fund_return_df = fetch_fund_daily_return_parallel(fund_codes)
+    _ = {'fund_code': '基金代码',
+         'date': '净值日期',
+         'unit_nav': '单位净值',
+         'accum_nav': '累计净值',
+         'adj_nav': '复权净值'
+         }
+    fund_return_df.to_parquet('./data/fund_daily_return.parquet', index=False)
     fund_return_df = pd.read_parquet('./data/fund_daily_return.parquet')
     print(fund_return_df)
