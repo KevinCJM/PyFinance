@@ -43,9 +43,33 @@ pip install pyarrow
 - `data/`: 存放从网络获取的原始数据和预处理数据。
 - `output/`: 存放归因计算的最终结果。
 
-## 3. 计算流程
+## 4. 查看结果
 
-请严格按照以下顺序执行脚本，以确保数据流的正确性。
+本项目包含一个前端页面，可以动态加载并可视化展示归因结果。
+
+**前提**: 请确保您已经至少完整地运行过一次或多次计算流程，以便在 `output` 文件夹中生成了对应的 `.json` 结果文件。
+
+**步骤**:
+
+1.  **启动本地服务器**
+
+    在项目根目录 (`Brinsion_Campisi_CIB_demo/`) 下打开终端，运行以下命令来启动一个简单的Python本地HTTP服务器：
+
+    ```bash
+    python -m http.server
+    ```
+
+    如果您安装了Python 2, 请使用 `python -m SimpleHTTPServer`。
+
+2.  **访问页面**
+
+    服务器启动后，打开您的浏览器，访问以下地址：
+
+    [http://localhost:8000/frontend/](http://localhost:8000/frontend/)
+
+    页面将会加载 `output` 文件夹中的数据并以图表形式展示。您可以通过页面上的“BHB方法”/“BF方法”按钮来切换和查看不同模型下的归因结果。
+
+
 
 ### 流程一：FOF权益类Brinsion归因
 

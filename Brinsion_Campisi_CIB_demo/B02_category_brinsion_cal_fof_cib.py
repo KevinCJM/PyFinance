@@ -242,6 +242,7 @@ if __name__ == '__main__':
     print("BF 结果：")
     print(res_bf.head(20))
     res_bf.to_parquet('./output/B_category_brinsion_bf.parquet', index=False)
+    res_bf.to_json('./output/B_category_brinsion_bf.json', orient="records", force_ascii=False)
 
     # 如需 BHB：
     res_bhb = calc_asset_class_brinson_fof(
@@ -257,4 +258,5 @@ if __name__ == '__main__':
     )
     print("BHB 结果：")
     print(res_bhb.head(20))
-    res_bf.to_parquet('./output/B_category_brinsion_bhb.parquet', index=False)
+    res_bhb.to_parquet('./output/B_category_brinsion_bhb.parquet', index=False)
+    res_bhb.to_json('./output/B_category_brinsion_bhb.json', orient="records", force_ascii=False)

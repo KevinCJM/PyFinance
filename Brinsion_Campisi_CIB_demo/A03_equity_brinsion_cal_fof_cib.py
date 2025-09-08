@@ -181,6 +181,7 @@ if __name__ == '__main__':
         er_actual=None  # 若有 FOF 实际超额收益，可传入一个浮点数
     )
     result_bhb.to_parquet("./output/A_bhb_fof_agg.parquet")
+    result_bhb.to_json("./output/A_bhb_fof_agg.json", orient="records", force_ascii=False)
     print(result_bhb)
 
     # 2) BF 聚合
@@ -192,4 +193,5 @@ if __name__ == '__main__':
         er_actual=None  # 若有 FOF 实际超额收益，可传入一个浮点数
     )
     result_bf.to_parquet("./output/A_bf_fof_agg.parquet")
+    result_bf.to_json("./output/A_bf_fof_agg.json", orient="records", force_ascii=False)
     print(result_bf)

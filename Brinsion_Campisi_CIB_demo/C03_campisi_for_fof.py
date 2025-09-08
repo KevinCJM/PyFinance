@@ -106,3 +106,4 @@ if __name__ == '__main__':
     fof_result = aggregate_fof_campisi(single_df, fof_holding_df, fund_info_df, end)
     print(fof_result)
     fof_result.to_parquet("./output/C_campisi_result_for_fof.parquet", index=False)
+    fof_result.to_json("./output/C_campisi_result_for_fof.json", orient="records", force_ascii=False)
