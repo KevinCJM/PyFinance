@@ -117,3 +117,4 @@ if __name__ == '__main__':
     result = campisi_for_fund(fund_info, start_p_data, in_p_data,
                               t_bound_yield, start_date, end_date, target_fund_list)
     print(result)
+    result.to_parquet("./data/campisi_result_for_fund.parquet")
