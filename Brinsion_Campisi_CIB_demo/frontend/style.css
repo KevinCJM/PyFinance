@@ -46,6 +46,7 @@ h1 {
     display: flex;
     gap: 20px;
     overflow-x: auto;
+    align-items: flex-start;
 }
 
 .card-footer {
