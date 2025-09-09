@@ -106,10 +106,14 @@ def generate_simplex_grid(n_assets: int, resolution: int):
 if __name__ == '__main__':
     ''' njit版本 '''
     s_t = time.time()
-    print(generate_simplex_grid_numba(5, 100))
-    print('Elapsed:', time.time() - s_t)
+    res = generate_simplex_grid_numba(5, 100)
+    print(res)
+    print('网格规模: ', res.shape)
+    print('======== Elapsed:', time.time() - s_t, '\n')
 
     ''' 原始版本 '''
     s_t = time.time()
-    print(generate_simplex_grid(5, 100))
-    print('Elapsed:', time.time() - s_t)
+    res = generate_simplex_grid(5, 100)
+    print(res)
+    print('网格规模: ', res.shape)
+    print('======== Elapsed::', time.time() - s_t)
