@@ -545,18 +545,18 @@ def do_one(clazzMap, product_df, amt, obj_alloc, target_asset_alloc, asset_alloc
             if 'asset_alloc_bias_detail' not in other_args:
                 other_args['asset_alloc_bias_detail'] = dict(
                     zip(target_asset_alloc.keys(),
-                        [{'_asset_alloc_bias': None, 'u_asset_alloc_bias': None}] * len(target_asset_alloc)
+                        [{'l_asset_alloc_bias': None, 'u_asset_alloc_bias': None}] * len(target_asset_alloc)
                         ))
 
             if bias_judge[iAsset]:  # 如果该类资产的持仓是“在轨”的, 计算权重的上下限约束
                 other_args['asset_alloc_bias_detail'][iAsset] = {
                     'l_asset_alloc_bias':
                         target_asset_alloc[iAsset]
-                        * (1.0 if 0 == nums_dict[iAsset] else (1.0 - asset_alloc_bias[iAsset]))
+                        * (1.0 if 0 == nums_dict[iAsset] else (1.0 * asset_alloc_bias[iAsset]))
                         + 1e-6,
                     'u_asset_alloc_bias':
                         target_asset_alloc[iAsset]
-                        * (1.0 + asset_alloc_bias[iAsset])
+                        * (1.0 * asset_alloc_bias[iAsset])
                         + 1e-6
                 }
             else:  # 如果该类资产的持仓是“偏离”的, 计算权重的上下限约束
@@ -567,7 +567,7 @@ def do_one(clazzMap, product_df, amt, obj_alloc, target_asset_alloc, asset_alloc
                         + 1e-6,
                     'u_asset_alloc_bias':
                         target_asset_alloc[iAsset]
-                        * (target_asset_alloc[iAsset] + asset_alloc_bias[iAsset])
+                        * (target_asset_alloc[iAsset] * asset_alloc_bias[iAsset])
                         + 1e-6
                 }
         print(f"本次优化的大类资产配置约束细节: {other_args['asset_alloc_bias_detail']}")

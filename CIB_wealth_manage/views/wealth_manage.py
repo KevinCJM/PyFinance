@@ -5,15 +5,16 @@
 @Author: Kevin-Chen
 @Descriptions: 
 """
+import os
+import traceback
+import numpy as np
+import pandas as pd
 from datetime import datetime
+
 from server.base import app, route_dic
 from views.base import JsonResBaseView
 from config_py import DEBUG
 from service import s
-import pandas as pd
-import numpy as np
-import traceback
-import os
 
 
 class WealthManage(JsonResBaseView):
@@ -168,7 +169,7 @@ class WealthManage(JsonResBaseView):
 
         # 若开启调试模式且日志路径存在，则记录详细日志和输入输出数据
         if x.get('debug', DEBUG) and False == os.path.exists(x.get('logPath', '')):
-            x['logPath'] = r"/Users/chenjunming/Desktop/CIB_wealth_manage/测试文件夹"
+            x['logPath'] = r"/Users/chenjunming/Desktop/KevinGit/PyFinance/CIB_wealth_manage/测试文件夹"
         if x.get('debug', DEBUG) and os.path.exists(x.get('logPath', '')):
             import json, pickle, time
             log_path = x.get('logPath', '')
@@ -204,7 +205,7 @@ class WealthManage(JsonResBaseView):
                         log_path, 'detail', f"{x['index']}_{dt_str}-输入参数.json"), 'w'
                 ) as fp:
                     json.dump(x, fp)
-            except:
+            except Exception as e:
                 print(traceback.format_exc())
                 with open(os.path.join(
                         log_path, 'detail', f"{x['index']}_{dt_str}-输入参数.pkl"), 'wb'
