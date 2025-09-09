@@ -329,6 +329,9 @@ def fetch_index_daily_return(symbol: str, start: str, end: str, max_retries: int
         try:
             # 获取指数历史行情数据
             index_df = ak.stock_zh_index_hist_csindex(symbol=symbol, start_date=start, end_date=end)
+            if index_df.empty:
+                print(f"AKshare获取{symbol}指数的日行情数据获取失败, 数据为空, 尝试使用tushare接口")
+                return fetch_index_daily_return_ts(symbol, start, end, max_retries)
 
             # 重命名列名为英文
             index_df.rename(columns={"日期": "date", "指数代码": "index_code", "指数中文全称": "index_name",
@@ -360,6 +363,9 @@ def fetch_index_daily_return_ts(symbol: str, start: str, end: str, max_retries: 
         try:
             # 获取指数历史行情数据
             index_df = pro.index_daily(ts_code=f'{symbol}.CSI', start_date=start, end_date=end)
+            if index_df.empty:
+                print(f"tushare获取{symbol}指数的日行情数据获取失败, 数据为空")
+                return pd.DataFrame()
 
             # 重命名列名为英文
             index_df.rename(columns={"trade_date": "date", "ts_code": "index_code",
