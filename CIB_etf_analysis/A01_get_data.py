@@ -17,3 +17,8 @@ pro = ts.pro_api()
 etf_info_df = pro.fund_basic(market='E')
 etf_info_df.to_excel('etf_info_df.xlsx', index=False)
 print(etf_info_df)
+
+# 获取ETF日行情数据
+etf_daily_df = pro.fund_nav(ts_code='159235.SZ')
+etf_daily_df = etf_daily_df[['ts_code  ann_date  nav_date  unit_nav  accum_nav', 'adj_nav']]
+print(etf_daily_df)
