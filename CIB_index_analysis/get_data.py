@@ -1,0 +1,33 @@
+# -*- encoding: utf-8 -*-
+"""
+@File: get_data.py
+@Modify Time: 2025/9/9 10:34       
+@Author: Kevin-Chen
+@Descriptions: 
+"""
+import pandas as pd
+import tushare as ts
+import akshare as ak
+from CIB_Brinsion_Campisi_demo.B01_category_brinsion_get_data import main_fetch_index_daily_return
+
+# API 设置
+ts.set_token('cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9')
+pro = ts.pro_api()
+
+# # 获取中证指数基本信息
+# CSI_index_info = pro.index_basic(market='CSI')
+# CSI_index_info.to_excel('CSI_index_info.xlsx', index=False)
+# print(CSI_index_info)
+
+# 获取中证指数日行情
+start_date, end_date = '20050101', '20250909'
+CSI_index_list = pd.read_excel('中证系列指数.xlsx')['指数代码'].tolist()
+print(CSI_index_list)
+CSI_index_return = main_fetch_index_daily_return(codes=CSI_index_list, start=start_date, end=end_date, max_workers=25)
+print(CSI_index_return)
+
+# print(main_fetch_index_daily_return(codes=['000965'], start=start_date, end=end_date, max_workers=25))
+# print(pro.index_daily(ts_code='000965.CSI', start_date=start_date, end_date=end_date))
+
+# from CIB_Brinsion_Campisi_demo.A01_equity_brinsion_get_data import fetch_index_daily_return_ts
+# print(fetch_index_daily_return_ts('000965', start_date, end_date))

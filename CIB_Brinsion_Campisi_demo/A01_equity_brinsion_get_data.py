@@ -7,6 +7,7 @@
 """
 import re
 import time
+import traceback
 import numpy as np
 import pandas as pd
 import akshare as ak
@@ -350,7 +351,39 @@ def fetch_index_daily_return(symbol: str, start: str, end: str, max_retries: int
             if attempt < max_retries:
                 time.sleep(retry_delay)
             else:
+                print(f"{symbol}指数的日行情数据获取失败, 尝试使用tushare接口: {e}")
+                return fetch_index_daily_return_ts(symbol, start, end, max_retries)
+
+
+def fetch_index_daily_return_ts(symbol: str, start: str, end: str, max_retries: int = 5, retry_delay: float = 1.5):
+    for attempt in range(1, max_retries + 1):
+        try:
+            # 获取指数历史行情数据
+            index_df = pro.index_daily(ts_code=f'{symbol}.CSI', start_date=start, end_date=end)
+
+            # 重命名列名为英文
+            index_df.rename(columns={"trade_date": "date", "ts_code": "index_code",
+                                     "vol": "volume", "pct_chg": "change",
+                                     "change": "change_amount"}, inplace=True)
+
+            # 数据类型转换
+            index_df['date'] = pd.to_datetime(index_df['date'], format='%Y%m%d')
+            index_df['index_code'] = symbol
+            index_df[['open', 'close', 'high', 'low', 'volume', 'amount', 'change', 'change_amount']] = \
+                index_df[
+                    ['open', 'close', 'high', 'low', 'volume', 'amount', 'change', 'change_amount']].astype(
+                    float)
+
+            # 返回所需的列数据
+            return index_df[['date', 'index_code', 'open', 'close', 'high', 'low', 'volume', 'amount',
+                             'change', 'change_amount']]
+        except Exception as e:
+            if attempt < max_retries:
+                time.sleep(retry_delay)
+            else:
                 # 超过重试次数，返回一个空 DataFrame，避免中断
+                print(f"{symbol}指数的日行情数据获取失败: {e}")
+                print(traceback.format_exc())
                 return pd.DataFrame()
 
 
