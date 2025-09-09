@@ -29,7 +29,6 @@ index_nv = index_nv[index_nv['date'] >= pd.to_datetime('2010-01-01')]
 
 # 取有行情的指数信息
 index_info = index_info[index_info['指数代码'].isin(index_nv['index_code'].unique())]
-print(len(index_info))
 
 # 指数收盘价宽表：行=日期，列=指数代码
 index_nv_wide = index_nv.pivot_table(index='date', columns='index_code', values='close')

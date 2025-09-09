@@ -5,3 +5,15 @@
 @Author: Kevin-Chen
 @Descriptions: 
 """
+import pandas as pd
+import tushare as ts
+from CIB_Brinsion_Campisi_demo.B01_category_brinsion_get_data import main_fetch_index_daily_return
+
+# API 设置
+ts.set_token('cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9')
+pro = ts.pro_api()
+
+# 获取ETF列表
+etf_info_df = pro.fund_basic(market='E')
+etf_info_df.to_excel('etf_info_df.xlsx', index=False)
+print(etf_info_df)

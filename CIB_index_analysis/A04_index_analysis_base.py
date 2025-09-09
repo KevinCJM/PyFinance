@@ -39,15 +39,18 @@ index_nv = index_nv[index_nv['index_code'].isin([
     'H11023',  # 债券基金, 中证债券型基金指数
     'H11025',  # 货币基金, 中证货币基金指数
     'H11026',  # QDII基金	中证QDII基金指数
-    '932047',  # 中证REITs全收益	中证REITs全收益指数
-    'H30457',  # 沪港深通综合, 中证沪港深互联互通综合指数
+    # '932047',  # 中证REITs全收益	中证REITs全收益指数
+    # 'H30457',  # 沪港深通综合, 中证沪港深互联互通综合指数
     # 'H11061',  # 商品CFCI, 中证商品期货综合指数
     # 'H30228',  # 商品OCFI, 中证优化展期商品期货成份指数
     'H30009',  # 商品CFI, 中证商品期货成份指数
     # 'H30072',  # 贵金CFI, 中证贵金属期货成份指数
     # 'H30224',  # 粮油CFI, 中证粮油期货成份指数
     # 'H11180',  # 合成期权, 中证股债动态合成期权策略指数
-    '930957',  # 港股通中国100, 中证港股通中国100指数
+    # '930957',  # 港股通中国100, 中证港股通中国100指数
+    # 'H30322',  # 股债RP, 中证股债风险平价指数
+    'H30345',  # 300波控1, 沪深300波动率控制20%指数
+    # 'H30347',  # 500波控1, 中证500波动率控制25%指数
 ])]
 
 # 指数收盘价宽表：行=日期，列=指数代码
@@ -92,7 +95,7 @@ for col in normalized_nv_reindexed.columns:
 
 # 设置图表全局选项
 line_chart.set_global_opts(
-    title_opts=opts.TitleOpts(title="代表指数归一化净值走势", subtitle="起始净值=1"),
+    title_opts=opts.TitleOpts(title="指数净值走势", subtitle="起始净值=1"),
     tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="cross"),
     legend_opts=opts.LegendOpts(pos_left="center", pos_top="1%", orient="horizontal"),
     datazoom_opts=[
