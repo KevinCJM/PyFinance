@@ -10,7 +10,7 @@ import tushare as ts
 from CIB_Brinsion_Campisi_demo.B01_category_brinsion_get_data import main_fetch_index_daily_return
 
 # API 设置
-ts.set_token('cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9')
+ts.set_token('YOUR_TUSHARE_TOKEN')
 pro = ts.pro_api()
 
 # 获取中证指数基本信息
