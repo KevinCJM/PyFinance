@@ -244,7 +244,8 @@ def project_to_constraints_pocs(v: np.ndarray,
         # 上界：a^T x ≤ up；若超出则投影：x ← x - ((a^T x - up)/||a||^2) a
         # 下界：a^T x ≥ low；若低于则投影：x ← x + ((low - a^T x)/||a||^2) a
         for idx, low, up, a_norm2 in groups:
-            if a_norm2 == 0: continue
+            if a_norm2 == 0:
+                continue
             t = x[idx].sum()
             if t > up + 1e-12:
                 delta = (t - up) / a_norm2
