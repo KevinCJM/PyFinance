@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 
 
 # =====================================================================================
-# 性能计算函数 (源自 local_test_1.py)
+# 性能计算函数
 # =====================================================================================
 
 def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarray, p95=1.65) -> pd.DataFrame:
@@ -68,7 +68,7 @@ def cal_ef2_v4_ultra_fast(data: pd.DataFrame) -> pd.DataFrame:
 
 
 # =====================================================================================
-# 约束满足函数 (源自 B01_random_weights.py)
+# 约束满足函数
 # =====================================================================================
 
 def primal_dual_interior_point(proposal, the_single_limits, the_multi_limits, max_iter=100):
@@ -150,7 +150,7 @@ if __name__ == '__main__':
     current_weights = np.array([1 / num_of_asset] * num_of_asset)
     step_size = 0.02
     single_limits = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]  # 示例：每个资产的权重限制在0%到100%
-    multi_limits = {(0, 1, 2, 3, 4): (1.0, 1.0), (0, 1, 2): (0.3, 1.0)}
+    multi_limits = {(0, 1, 2): (0.3, 1.0)}
 
     final_weights = []
     for i in range(100000):
@@ -165,29 +165,31 @@ if __name__ == '__main__':
 
     # --- 3. 显式校验和过滤权重 (新功能) ---
     print("正在对所有生成的权重进行最终校验...")
-    
+
     validated_weights = []
     for w in final_weights:
         # 校验1: 权重和为1
         if not np.isclose(np.sum(w), 1.0, atol=1e-6):
             continue
-        
+
         # 校验2: 单资产上下限
-        single_valid = all(single_limits[i][0] - 1e-6 <= w[i] <= single_limits[i][1] + 1e-6 for i in range(num_of_asset))
+        single_valid = all(
+            single_limits[i][0] - 1e-6 <= w[i] <= single_limits[i][1] + 1e-6 for i in range(num_of_asset))
         if not single_valid:
             continue
-            
+
         # 校验3: 多资产组合上下限
-        multi_valid = all(lower - 1e-6 <= np.sum(w[list(indices)]) <= upper + 1e-6 for indices, (lower, upper) in multi_limits.items())
+        multi_valid = all(lower - 1e-6 <= np.sum(w[list(indices)]) <= upper + 1e-6 for indices, (lower, upper) in
+                          multi_limits.items())
         if not multi_valid:
             continue
-            
+
         validated_weights.append(w)
-        
+
     print(f"校验完成。有效权重数量: {len(validated_weights)} / {len(final_weights)}")
-    
+
     # 后续计算使用校验过的权重
-    final_weights = validated_weights 
+    final_weights = validated_weights
 
     # --- 4. 批量计算收益和风险 ---
     if final_weights:
