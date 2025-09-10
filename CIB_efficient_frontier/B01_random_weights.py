@@ -46,6 +46,46 @@ def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.n
     return pd.concat([weight_df, ret_df], axis=1).dropna()
 
 
+def generate_alloc_perf_batch(port_daily: np.ndarray,
+                              portfolio_allocs: np.ndarray,
+                              chunk_size: int = 20000) -> pd.DataFrame:
+    """
+    分块计算，避免 T×N 爆内存；并且对 log 计算做 clip，清理 ±inf。
+    """
+    assert port_daily.shape[1] == portfolio_allocs.shape[1]
+    T, n = port_daily.shape
+    N = portfolio_allocs.shape[0]
+
+    res_list = []
+    for s in range(0, N, chunk_size):
+        e = min(N, s + chunk_size)
+        W = portfolio_allocs[s:e]  # [m, n]
+        R = port_daily @ W.T  # [T, m]
+
+        # 安全 log：避免 <= -1 的极端值
+        one_plus_R = np.clip(1.0 + R, 1e-12, None)
+        port_cum = np.cumprod(one_plus_R, axis=0)  # [T, m]
+        final_ret = port_cum[-1, :]
+
+        log_total = np.log(np.clip(final_ret, 1e-12, None))
+        ret_annual = (log_total / T) * 252.0
+
+        log_daily = np.log(one_plus_R)
+        vol_annual = np.std(log_daily, axis=0, ddof=1) * np.sqrt(252.0)
+
+        df = pd.DataFrame({
+            "ret_annual": ret_annual,
+            "vol_annual": vol_annual,
+        })
+        wdf = pd.DataFrame(W, columns=[f"w_{i}" for i in range(n)])
+        res_list.append(pd.concat([wdf, df], axis=1))
+
+    out = pd.concat(res_list, axis=0, ignore_index=True)
+    # 清理 ±inf
+    out = out.replace([np.inf, -np.inf], np.nan).dropna()
+    return out
+
+
 def cal_ef2_v4_ultra_fast(data: pd.DataFrame) -> pd.DataFrame:
     """
     从给定的投资组合点中，高效识别出位于有效前沿上的点。
