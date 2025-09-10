@@ -165,7 +165,6 @@ def project_to_constraints_pocs(v: np.ndarray,
                                 multi_limits: dict,  # {(tuple_idx): (low, high)}
                                 max_iter=200, tol=1e-9, damping=1.0):
     """
-    (同事建议的更优算法)
     用 POCS 交替投影到：盒约束 ∩ 总和=1 ∩ 各组半空间 之交集。
     支持多资产联合约束。damping∈(0,1] 可缓解过冲。
     """
