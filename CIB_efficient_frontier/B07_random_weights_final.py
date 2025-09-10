@@ -1,7 +1,7 @@
 # -*- encoding: utf-8 -*-
 """
 @File: B01_frontier_then_fill.py
-@Author: Kevin-Chen (+ChatGPT)
+@Author: Kevin-Chen
 @Descriptions:
   1) 用 QCQP 逐风险扫描，刻准有效前沿（带线性约束与多资产联合约束）
   2) 以前沿锚点为种子，小步随机游走 + POCS 投影，填充前沿之下的可行空间
