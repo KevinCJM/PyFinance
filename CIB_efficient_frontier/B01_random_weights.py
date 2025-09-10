@@ -83,6 +83,7 @@ def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarr
     return out
 
 
+# 识别出位于有效前沿上的点
 def cal_ef2_v4_ultra_fast(data: pd.DataFrame) -> pd.DataFrame:
     """
     从给定的投资组合点中，高效识别出位于有效前沿上的点。
@@ -104,7 +105,7 @@ def cal_ef2_v4_ultra_fast(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-# 约束满足函数
+# 约束满足函数 (老)
 def primal_dual_interior_point(proposal, the_single_limits, the_multi_limits, max_iter=100):
     """
     使用迭代投影法将一个可能无效的权重修正为满足所有约束的有效权重。
@@ -158,6 +159,7 @@ def primal_dual_interior_point(proposal, the_single_limits, the_multi_limits, ma
     return None
 
 
+# 约束满足函数 (POCS/Dykstra 投影)
 def project_to_constraints_pocs(v: np.ndarray,
                                 single_limits,  # list[(low, high)]
                                 multi_limits: dict,  # {(tuple_idx): (low, high)}
