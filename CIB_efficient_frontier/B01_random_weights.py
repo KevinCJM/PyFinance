@@ -9,7 +9,71 @@ import numpy as np
 import pandas as pd
 import datetime
 import plotly.graph_objects as go
+from typing import List, Dict, Any
 
+
+# ==============================================================================
+# 绘图函数 (模块化)
+# ==============================================================================
+def plot_efficient_frontier(
+        scatter_points_data: List[Dict[str, Any]],
+        title: str = '投资组合与有效前沿',
+        x_axis_title: str = '年化波动率 (Annual Volatility)',
+        y_axis_title: str = '年化收益率 (Annual Return)',
+        x_col: str = 'vol_annual',
+        y_col: str = 'ret_annual',
+        hover_text_col: str = 'hover_text'
+):
+    """
+    使用 Plotly 绘制可定制的有效前沿和投资组合散点图。
+
+    :param scatter_points_data: 一个列表，其中每个字典代表一组要绘制的点。
+                                每个字典应包含:
+                                - 'data': pd.DataFrame, 包含 x, y 和悬停文本列。
+                                - 'name': str, 在图例中显示的名称。
+                                - 'color': str, 点的颜色。
+                                - 'size': int, 点的大小。
+                                - 'opacity': float, 点的透明度 (0到1之间)。
+                                - 'marker_line' (可选): dict, 点的边界线样式, e.g., dict(width=1, color='black')。
+    :param title: 图表主标题。
+    :param x_axis_title: X轴标题。
+    :param y_axis_title: Y轴标题。
+    :param x_col: 'data' DataFrame 中用作X轴的列名。
+    :param y_col: 'data' DataFrame 中用作Y轴的列名。
+    :param hover_text_col: 'data' DataFrame 中用作悬停文本的列名。
+    """
+    fig = go.Figure()
+
+    for point_set in scatter_points_data:
+        df = point_set["data"]
+        fig.add_trace(go.Scatter(
+            x=df[x_col],
+            y=df[y_col],
+            hovertext=df[hover_text_col],
+            hoverinfo='text',
+            mode='markers',
+            marker=dict(
+                color=point_set["color"],
+                size=point_set["size"],
+                opacity=point_set["opacity"],
+                line=point_set.get("marker_line")  # 安全地获取可选的边界线样式
+            ),
+            name=point_set["name"]
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title=x_axis_title,
+        yaxis_title=y_axis_title,
+        legend_title="图例",
+        hovermode='closest'
+    )
+    fig.show()
+
+
+# ==============================================================================
+# 核心计算函数
+# ==============================================================================
 
 # 指标计算函数 (老)
 def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.ndarray) -> pd.DataFrame:
@@ -222,7 +286,8 @@ def project_to_constraints_pocs(v: np.ndarray,
     if np.any(x < lows - 1e-6) or np.any(x > highs + 1e-6):
         return None
     for idx, low, up, _ in groups:
-        if len(idx) == 0: continue
+        if len(idx) == 0:
+            continue
         t = x[idx].sum()
         if t < low - 1e-6 or t > up + 1e-6:
             return None
@@ -309,10 +374,10 @@ if __name__ == '__main__':
         results_df = cal_ef2_v4_ultra_fast(results_df)
         print("计算完成。")
 
-        # --- 4. 使用 Plotly 进行交互式可视化 (新功能) ---
+        # --- 5. 使用模块化函数进行交互式可视化 ---
         print("正在生成交互式图表...")
 
-        # 为权重列重命名
+        # 为权重列重命名以用于悬停文本
         weight_cols = {f'w_{i}': assets_list[i] for i in range(len(assets_list))}
         results_df = results_df.rename(columns=weight_cols)
 
@@ -327,31 +392,34 @@ if __name__ == '__main__':
 
         results_df['hover_text'] = results_df.apply(create_hover_text, axis=1)
 
-        fig = go.Figure()
+        # 准备绘图数据
+        ef_df = results_df[results_df['on_ef'] == True].copy()
+        random_df = results_df.copy()
 
-        # 添加所有随机生成的点
-        fig.add_trace(go.Scatter(
-            x=results_df['vol_annual'], y=results_df['ret_annual'],
-            hovertext=results_df['hover_text'], hoverinfo='text',
-            mode='markers', marker=dict(color='lightblue', size=2, opacity=0.7),
-            name='随机有效组合'
-        ))
+        # 定义要绘制的数据点集合
+        scatter_data_to_plot = [
+            {
+                "data": random_df,
+                "name": "随机权重数据点",
+                "color": "grey",
+                "size": 2,
+                "opacity": 0.5
+            },
+            {
+                "data": ef_df,
+                "name": "有效前沿数据点",
+                "color": "blue",
+                "size": 3,
+                "opacity": 0.8,
+                # "marker_line": dict(width=1, color='darkslategrey')
+            }
+        ]
 
-        # 添加有效前沿上的点
-        ef_df = results_df[results_df['on_ef'] == True]
-        fig.add_trace(go.Scatter(
-            x=ef_df['vol_annual'], y=ef_df['ret_annual'],
-            hovertext=ef_df['hover_text'], hoverinfo='text',
-            mode='markers', marker=dict(color='gold', size=2, line=dict(width=1, color='darkslategrey')),
-            name='有效前沿'
-        ))
-
-        fig.update_layout(
-            title='约束随机游走生成的投资组合与有效前沿',
-            xaxis_title='年化波动率 (Annual Volatility)',
-            yaxis_title='年化收益率 (Annual Return)',
-            legend_title="图例", hovermode='closest'
+        # 调用新的绘图函数
+        plot_efficient_frontier(
+            scatter_points_data=scatter_data_to_plot,
+            title='约束随机游走生成的投资组合与有效前沿'
         )
-        fig.show()
+
     else:
         print("未能生成任何有效的投资组合，无法进行后续计算和绘图。")
