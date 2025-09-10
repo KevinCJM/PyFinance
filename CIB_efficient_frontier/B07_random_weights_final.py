@@ -25,7 +25,8 @@ def plot_efficient_frontier(
         y_axis_title: str = '年化收益率 (Annual Return)',
         x_col: str = 'vol_annual',
         y_col: str = 'ret_annual',
-        hover_text_col: str = 'hover_text'
+        hover_text_col: str = 'hover_text',
+        output_filename: str = None
 ):
     """
     绘制投资组合有效前沿图
@@ -47,9 +48,10 @@ def plot_efficient_frontier(
         x_col (str): DataFrame中用作x轴数据的列名，默认为'vol_annual'
         y_col (str): DataFrame中用作y轴数据的列名，默认为'ret_annual'
         hover_text_col (str): DataFrame中用作悬停文本的列名，默认为'hover_text'
+        output_filename (str, optional): 输出文件名。如果提供，图表将保存为HTML文件。默认为None，直接显示图表。
 
     返回值:
-        无返回值，直接显示图表
+        无返回值，直接显示或保存图表
     """
     # 创建图表对象
     fig = go.Figure()
@@ -82,8 +84,12 @@ def plot_efficient_frontier(
         hovermode='closest'
     )
 
-    # 显示图表
-    fig.show()
+    # 显示或保存图表
+    if output_filename:
+        fig.write_html(output_filename)
+        print(f"图表已保存到: {output_filename}")
+    else:
+        fig.show()
 
 
 # 分块计算年化收益和年化波动率
@@ -945,5 +951,6 @@ if __name__ == '__main__':
     ''' --- 8) 图像画点 --- '''
     plot_efficient_frontier(
         scatter_points_data=scatter_data,
-        title=f"QCQP 刻准有效前沿 + 小步随机游走填充（precision={precision_choice}）"
+        title=f"QCQP 标准有效前沿 + 小步随机游走填充（precision={precision_choice}）",
+        output_filename="efficient_frontier.html"
     )
