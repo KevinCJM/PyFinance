@@ -11,11 +11,8 @@ import datetime
 import plotly.graph_objects as go
 
 
-# =====================================================================================
-# 性能计算函数
-# =====================================================================================
-
-def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.ndarray, p95=1.65) -> pd.DataFrame:
+# 指标计算函数 (老)
+def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.ndarray) -> pd.DataFrame:
     """
     批量计算多个资产组合的性能指标，使用向量化操作以提高效率。
     """
@@ -46,8 +43,8 @@ def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.n
     return pd.concat([weight_df, ret_df], axis=1).dropna()
 
 
-def generate_alloc_perf_batch(port_daily: np.ndarray,
-                              portfolio_allocs: np.ndarray,
+# 指标计算函数 (内存友好)
+def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarray,
                               chunk_size: int = 20000) -> pd.DataFrame:
     """
     分块计算，避免 T×N 爆内存；并且对 log 计算做 clip，清理 ±inf。
@@ -107,10 +104,7 @@ def cal_ef2_v4_ultra_fast(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-# =====================================================================================
 # 约束满足函数
-# =====================================================================================
-
 def primal_dual_interior_point(proposal, the_single_limits, the_multi_limits, max_iter=100):
     """
     使用迭代投影法将一个可能无效的权重修正为满足所有约束的有效权重。
@@ -236,10 +230,6 @@ def project_to_constraints_pocs(v: np.ndarray,
         return None
     return x
 
-
-# =====================================================================================
-# 主程序
-# =====================================================================================
 
 if __name__ == '__main__':
     # --- 1. 数据加载和预处理 ---
