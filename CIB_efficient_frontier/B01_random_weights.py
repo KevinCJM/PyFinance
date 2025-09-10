@@ -330,7 +330,7 @@ if __name__ == '__main__':
     multi_limits = {}  # 多资产联合约束, 写法: {(tuple_idx): (low, high)}
 
     final_weights = []
-    for i in range(100000):
+    for i in range(10000):
         new_proposal = current_weights + np.random.normal(0, step_size, len(current_weights))
         # adjusted_weights = primal_dual_interior_point(new_proposal, single_limits, multi_limits, max_iter=100)
         adjusted_weights = project_to_constraints_pocs(new_proposal, single_limits, multi_limits)
