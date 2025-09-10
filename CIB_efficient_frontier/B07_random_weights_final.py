@@ -799,7 +799,7 @@ def generate_constrained_portfolios(num_points: int, single_limits, multi_limits
 
 
 if __name__ == '__main__':
-    # --- 1) 数据加载与预处理 ---
+    ''' --- 1) 数据加载与预处理 --- '''
     hist_value = pd.read_excel('历史净值数据.xlsx', sheet_name='历史净值数据')
     hist_value = hist_value.set_index('date')
     hist_value.index = pd.to_datetime(hist_value.index)
@@ -819,7 +819,7 @@ if __name__ == '__main__':
     log_r = np.log1p(port_daily_returns)
     mu, Sigma = ann_mu_sigma(log_r)
 
-    # --- 2) 约束定义（可按需修改/添加组约束） ---
+    ''' --- 2) 约束定义 (可按需修改/添加组约束) --- '''
     n_assets = len(assets_list)
     single_limits = [(0.0, 1.0)] * n_assets
     multi_limits = {
@@ -827,7 +827,7 @@ if __name__ == '__main__':
         # (3,4):   (0.0, 0.7),   # 示例：权益+另类合计不超过 70%
     }
 
-    # --- 3) 扫描风险网格，刻准有效前沿（锚点） ---
+    ''' --- 3) 扫描风险网格，刻准有效前沿 (锚点) --- '''
     print("开始刻画有效前沿（QCQP 逐风险扫描）...")
     risk_grid, W_frontier, R_frontier, S_frontier, w_minv, w_maxr = sweep_frontier_by_risk(
         mu, Sigma, single_limits, multi_limits, n_grid=500
@@ -841,7 +841,7 @@ if __name__ == '__main__':
     R_anchors, S_anchors = R_sorted[keep], S_sorted[keep]
     print(f"有效前沿锚点数量: {len(W_anchors)}")
 
-    # --- 4) 以前沿锚点为种子：小步随机游走 + POCS（可选精度）填厚前沿之下 ---
+    ''' --- 4) 以前沿锚点为种子：小步随机游走 + POCS (可选精度) 填厚前沿之下区域 --- '''
     # 选择精度：'0.1%' / '0.2%' / '0.5%' / None
     precision_choice = '0.5%'  # <- 你可以改成 '0.2%'、'0.5%' 或 None（表示不量化）
     print(f"开始填充前沿之下的可行空间（precision={precision_choice}) ...")
@@ -857,7 +857,7 @@ if __name__ == '__main__':
     # 合并（把锚点也纳入样本，便于一起评估和可视化）
     W_all = np.vstack([W_anchors, W_below]) if len(W_below) else W_anchors
 
-    # --- 5) 批量计算收益与风险（用于画图与再次识别前沿） ---
+    ''' --- 5) 批量计算收益与风险 (用于画图与再次识别前沿) --- '''
     print("批量计算绩效指标...")
     perf_df = generate_alloc_perf_batch(port_daily_returns, W_all)
 
@@ -872,7 +872,7 @@ if __name__ == '__main__':
     # 标记有效前沿（可选：对全样本做一次快速识别）
     full_df = cal_ef2_v4_ultra_fast(full_df)
 
-    # --- 6) 准备悬停文本并作图 ---
+    ''' --- 6) 准备悬停文本并作图 --- '''
     weight_cols = {f"w_{i}": assets_list[i] for i in range(n_assets)}
     full_df = full_df.rename(columns=weight_cols)
 
@@ -900,7 +900,7 @@ if __name__ == '__main__':
          "marker_line": dict(width=1, color='black')},
     ]
 
-    ''' C1~C6 刻画 '''
+    ''' --- 7)  C1~C6 刻画 --- '''
     proposed_alloc = {
         'C1': {'货币现金类': 1.0, '固定收益类': 0.0, '混合策略类': 0.0, '权益投资类': 0.0, '另类投资类': 0.0},
         'C2': {'货币现金类': 0.2, '固定收益类': 0.8, '混合策略类': 0.0, '权益投资类': 0.0, '另类投资类': 0.0},
@@ -942,7 +942,7 @@ if __name__ == '__main__':
             "size": 3, "opacity": 1.0, "symbol": "star", "marker_line": dict(width=1.5, color='black')
         })
 
-    ''' 图像画点 '''
+    ''' --- 8) 图像画点 --- '''
     plot_efficient_frontier(
         scatter_points_data=scatter_data,
         title=f"QCQP 刻准有效前沿 + 小步随机游走填充（precision={precision_choice}）"
