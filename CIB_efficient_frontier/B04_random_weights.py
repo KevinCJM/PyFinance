@@ -1,7 +1,7 @@
 # -*- encoding: utf-8 -*-
 """
 @File: B01_random_weights.py
-@Modify Time: 2025/9/9 20:23       
+@Modify Time: 2025/9/10 10:30
 @Author: Kevin-Chen
 @Descriptions: 结合了（1）通用随机组合与有效前沿 和（2）基于建议配置生成各风险等级可配置空间的功能
 """
@@ -11,7 +11,9 @@ import plotly.graph_objects as go
 from typing import List, Dict, Any
 
 
-# 绘图函数 (模块化)
+# ==============================================================================
+# 绘图与辅助函数
+# ==============================================================================
 def plot_efficient_frontier(
         scatter_points_data: List[Dict[str, Any]],
         title: str = '投资组合与有效前沿',
@@ -28,18 +30,21 @@ def plot_efficient_frontier(
 
     for point_set in scatter_points_data:
         df = point_set["data"]
+        marker_config = dict(
+            color=point_set["color"],
+            size=point_set["size"],
+            opacity=point_set["opacity"],
+            line=point_set.get("marker_line"),
+            symbol=point_set.get("symbol", "circle")
+        )
+
         fig.add_trace(go.Scatter(
             x=df[x_col],
             y=df[y_col],
             hovertext=df[hover_text_col],
             hoverinfo='text',
             mode='markers',
-            marker=dict(
-                color=point_set["color"],
-                size=point_set["size"],
-                opacity=point_set["opacity"],
-                line=point_set.get("marker_line")  # 安全地获取可选的边界线样式
-            ),
+            marker=marker_config,
             name=point_set["name"]
         ))
 
@@ -53,39 +58,18 @@ def plot_efficient_frontier(
     fig.show()
 
 
-# 指标计算函数 (老)
-def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.ndarray) -> pd.DataFrame:
-    """
-    批量计算多个资产组合的性能指标，使用向量化操作以提高效率。
-    """
-    assert port_daily.shape[1] == portfolio_allocs.shape[1]
-    # 步骤1: 所有组合的日收益率 (矩阵乘法)
-    port_return_daily = port_daily @ portfolio_allocs.T
-
-    # 步骤2: 年化收益率 (基于对数总收益)
-    # 添加一个极小值防止log(0)
-    port_cum_returns = np.cumprod(1 + port_return_daily, axis=0)
-    final_returns = port_cum_returns[-1, :]
-    log_total_ret = np.log(final_returns, where=(final_returns > 0), out=np.full_like(final_returns, -np.inf))
-    port_ret_annual = log_total_ret / (port_return_daily.shape[0]) * 252
-
-    # 步骤3: 年化波动率 (基于对数日收益率)
-    log_returns = np.log(1 + port_return_daily)
-    port_vol_annual = np.std(log_returns, axis=0, ddof=1) * np.sqrt(252)
-
-    # 步骤4: 打包成DataFrame
-    ret_df = pd.DataFrame({
-        "ret_annual": port_ret_annual,
-        "vol_annual": port_vol_annual,
-    })
-
-    # 步骤5: 合并权重数据
-    weight_df = pd.DataFrame(portfolio_allocs, columns=[f'w_{i}' for i in range(portfolio_allocs.shape[1])])
-
-    return pd.concat([weight_df, ret_df], axis=1).dropna()
+def create_hover_text(df_row, assets_list):
+    text = f"年化收益率: {df_row['ret_annual']:.2%}<br>年化波动率: {df_row['vol_annual']:.2%}<br><br><b>资产权重</b>:<br>"
+    for asset in assets_list:
+        if asset in df_row and pd.notna(df_row[asset]) and df_row[asset] > 1e-4:
+            text += f"  {asset}: {df_row[asset]:.1%}<br>"
+    return text
 
 
-# 指标计算函数 (内存友好)
+# ==============================================================================
+# 核心计算函数
+# ==============================================================================
+
 def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarray,
                               chunk_size: int = 20000) -> pd.DataFrame:
     """
@@ -276,6 +260,23 @@ def project_to_constraints_pocs(v: np.ndarray,
     return x
 
 
+def generate_constrained_portfolios(num_points: int, single_limits, multi_limits):
+    """
+    在给定约束下，高效生成指定数量的投资组合权重。
+    """
+    generated_weights = []
+    lows = np.array([l for l, h in single_limits])
+    highs = np.array([h for l, h in single_limits])
+
+    while len(generated_weights) < num_points:
+        proposal = np.random.uniform(lows, highs)
+        adjusted_weights = project_to_constraints_pocs(proposal, single_limits, multi_limits)
+        if adjusted_weights is not None:
+            generated_weights.append(adjusted_weights)
+
+    return np.array(generated_weights)
+
+
 if __name__ == '__main__':
     # --- 1. 数据加载和预处理 ---
     hist_value = pd.read_excel('历史净值数据.xlsx', sheet_name='历史净值数据')
@@ -291,122 +292,86 @@ if __name__ == '__main__':
 
     assets_list = ['货币现金类', '固定收益类', '混合策略类', '权益投资类', '另类投资类']
     hist_value_r = hist_value[assets_list].pct_change().dropna()
+    port_daily_returns = hist_value_r[assets_list].values
+
     proposed_alloc = {
-        'C1': {'货币现金类': 1.0},
-        'C2': {'货币现金类': 0.2, '固定收益类': 0.8},
-        'C3': {'货币现金类': 0.1, '固定收益类': 0.55, '混合策略类': 0.35},
+        'C1': {'货币现金类': 1.0, '固定收益类': 0.0, '混合策略类': 0.0, '权益投资类': 0.0, '另类投资类': 0.0},
+        'C2': {'货币现金类': 0.2, '固定收益类': 0.8, '混合策略类': 0.0, '权益投资类': 0.0, '另类投资类': 0.0},
+        'C3': {'货币现金类': 0.1, '固定收益类': 0.55, '混合策略类': 0.35, '权益投资类': 0.0, '另类投资类': 0.0},
         'C4': {'货币现金类': 0.05, '固定收益类': 0.4, '混合策略类': 0.3, '权益投资类': 0.2, '另类投资类': 0.05},
         'C5': {'货币现金类': 0.05, '固定收益类': 0.2, '混合策略类': 0.25, '权益投资类': 0.4, '另类投资类': 0.1},
         'C6': {'货币现金类': 0.05, '固定收益类': 0.1, '混合策略类': 0.15, '权益投资类': 0.6, '另类投资类': 0.1}
     }
 
-    # --- 2. 约束随机游走 ---
-    print("开始通过约束随机游走生成投资组合...")
-    num_of_asset = len(assets_list)
-    current_weights = np.array([1 / num_of_asset] * num_of_asset)
-    step_size = 0.02
-    single_limits = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]  # 示例：每个资产的权重限制在0%到100%
-    multi_limits = {}  # 多资产联合约束, 写法: {(tuple_idx): (low, high)}
+    scatter_data_to_plot = []
+    weight_cols_map = {f'w_{j}': assets_list[j] for j in range(len(assets_list))}
 
-    final_weights = []
-    for i in range(10000):
-        new_proposal = current_weights + np.random.normal(0, step_size, len(current_weights))
-        # adjusted_weights = primal_dual_interior_point(new_proposal, single_limits, multi_limits, max_iter=100)
-        adjusted_weights = project_to_constraints_pocs(new_proposal, single_limits, multi_limits)
+    # --- 2. 生成通用随机组合与有效前沿 (背景) ---
+    print("--- 正在生成通用随机组合与有效前沿 (背景) ---")
+    general_single_limits = [(0.0, 1.0)] * len(assets_list)
+    general_multi_limits = {}  # 保持原始脚本的示例多资产约束
+    num_general_points = 50000
 
-        if adjusted_weights is not None:
-            final_weights.append(adjusted_weights)
-            current_weights = adjusted_weights
+    general_weights = generate_constrained_portfolios(num_general_points,
+                                                      general_single_limits, general_multi_limits)
+    if len(general_weights) > 0:
+        all_results_df = generate_alloc_perf_batch(port_daily_returns, general_weights)
+        all_results_df = cal_ef2_v4_ultra_fast(all_results_df)
 
-    print(f"成功生成 {len(final_weights)} 个候选投资组合。")
+        all_results_df = all_results_df.rename(columns=weight_cols_map)
+        all_results_df['hover_text'] = all_results_df.apply(lambda row: create_hover_text(row, assets_list), axis=1)
 
-    # --- 3. 显式校验和过滤权重 (新功能) ---
-    print("正在对所有生成的权重进行最终校验...")
+        scatter_data_to_plot.append({
+            "data": all_results_df,
+            "name": "随机生成组合", "color": "lightgrey", "size": 2, "opacity": 0.5
+        })
+        ef_df = all_results_df[all_results_df['on_ef']].copy()
+        scatter_data_to_plot.append({
+            "data": ef_df,
+            "name": "有效前沿", "color": "#0000FF", "size": 2, "opacity": 0.5
+        })
 
-    validated_weights = []
-    for w in final_weights:
-        # 校验1: 权重和为1
-        if not np.isclose(np.sum(w), 1.0, atol=1e-6):
-            continue
+    # --- 3. 为每个风险等级生成可配置空间 (前景) ---
+    print("\n--- 正在为每个风险等级生成可配置空间 ---")
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    deviation = 0.20
+    num_points_per_level = 10000
+    base_points_to_plot = []
 
-        # 校验2: 单资产上下限
-        single_valid = all(
-            single_limits[i][0] - 1e-6 <= w[i] <= single_limits[i][1] + 1e-6 for i in range(num_of_asset))
-        if not single_valid:
-            continue
+    for i, (risk_level, base_alloc_map) in enumerate(proposed_alloc.items()):
+        print(f"--- 正在处理: {risk_level} ---")
+        base_weights = np.array([base_alloc_map.get(asset, 0.0) for asset in assets_list])
+        specific_single_limits = [(max(0.0, w * (1 - deviation)), min(1.0, w * (1 + deviation))) for w in base_weights]
 
-        # 校验3: 多资产组合上下限
-        multi_valid = all(lower - 1e-6 <= np.sum(w[list(indices)]) <= upper + 1e-6 for indices, (lower, upper) in
-                          multi_limits.items())
-        if not multi_valid:
-            continue
+        risk_level_weights = generate_constrained_portfolios(num_points_per_level, specific_single_limits, {})
 
-        validated_weights.append(w)
+        if len(risk_level_weights) > 0:
+            perf_df = generate_alloc_perf_batch(port_daily_returns, risk_level_weights)
+            perf_df = perf_df.rename(columns=weight_cols_map)
+            perf_df['hover_text'] = perf_df.apply(lambda row: create_hover_text(row, assets_list), axis=1)
+            scatter_data_to_plot.append({
+                "data": perf_df, "name": f"{risk_level} 可配置空间", "color": colors[i % len(colors)],
+                "size": 2, "opacity": 0.5
+            })
 
-    print(f"校验完成。有效权重数量: {len(validated_weights)} / {len(final_weights)}")
+        # 准备中心基准点
+        base_perf_df = generate_alloc_perf_batch(port_daily_returns, base_weights.reshape(1, -1))
+        base_perf_df = base_perf_df.rename(columns=weight_cols_map)
+        base_perf_df['hover_text'] = base_perf_df.apply(lambda row: create_hover_text(row, assets_list), axis=1)
+        base_points_to_plot.append({
+            "data": base_perf_df, "name": f"{risk_level} 基准点", "color": colors[i % len(colors)],
+            "size": 5, "opacity": 1.0, "symbol": "star", "marker_line": dict(width=1.5, color='black')
+        })
 
-    # 后续计算使用校验过的权重
-    final_weights = validated_weights
+    # 将基准点添加到绘图列表的顶层
+    scatter_data_to_plot.extend(base_points_to_plot)
 
-    # --- 4. 批量计算收益和风险 ---
-    if final_weights:
-        print("正在批量计算所有组合的收益与风险...")
-        weights_array = np.array(final_weights)
-        port_daily_returns = hist_value_r[assets_list].values
-
-        # 批量计算
-        results_df = generate_alloc_perf_batch(port_daily_returns, weights_array)
-
-        # 找出有效前沿
-        results_df = cal_ef2_v4_ultra_fast(results_df)
-        print("计算完成。")
-
-        # --- 5. 使用模块化函数进行交互式可视化 ---
-        print("正在生成交互式图表...")
-
-        # 为权重列重命名以用于悬停文本
-        weight_cols = {f'w_{i}': assets_list[i] for i in range(len(assets_list))}
-        results_df = results_df.rename(columns=weight_cols)
-
-
-        def create_hover_text(df_row):
-            text = f"年化收益率: {df_row['ret_annual']:.2%}<br>年化波动率: {df_row['vol_annual']:.2%}<br><br><b>资产权重</b>:<br>"
-            for asset in assets_list:
-                if asset in df_row and df_row[asset] > 1e-4:
-                    text += f"  {asset}: {df_row[asset]:.1%}<br>"
-            return text
-
-
-        results_df['hover_text'] = results_df.apply(create_hover_text, axis=1)
-
-        # 准备绘图数据
-        ef_df = results_df[results_df['on_ef'] == True].copy()
-        random_df = results_df.copy()
-
-        # 定义要绘制的数据点集合
-        scatter_data_to_plot = [
-            {
-                "data": random_df,
-                "name": "随机权重数据点",
-                "color": "grey",
-                "size": 2,
-                "opacity": 0.5
-            },
-            {
-                "data": ef_df,
-                "name": "有效前沿数据点",
-                "color": "blue",
-                "size": 3,
-                "opacity": 0.8,
-                # "marker_line": dict(width=1, color='darkslategrey')
-            }
-        ]
-
-        # 调用新的绘图函数
+    # --- 4. 统一可视化 ---
+    if scatter_data_to_plot:
+        print("\n--- 正在生成最终的组合图表 ---")
         plot_efficient_frontier(
             scatter_points_data=scatter_data_to_plot,
-            title='约束随机游走生成的投资组合与有效前沿'
+            title='各风险等级配置空间、有效前沿与随机组合'
         )
-
     else:
-        print("未能生成任何有效的投资组合，无法进行后续计算和绘图。")
+        print("未能生成任何有效的投资组合，无法进行绘图。")
