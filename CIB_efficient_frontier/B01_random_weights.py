@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 # 性能计算函数
 # =====================================================================================
 
-def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarray, p95=1.65) -> pd.DataFrame:
+def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.ndarray, p95=1.65) -> pd.DataFrame:
     """
     批量计算多个资产组合的性能指标，使用向量化操作以提高效率。
     """
@@ -124,6 +124,79 @@ def primal_dual_interior_point(proposal, the_single_limits, the_multi_limits, ma
     return None
 
 
+def project_to_constraints_pocs(v: np.ndarray,
+                                single_limits,  # list[(low, high)]
+                                multi_limits: dict,  # {(tuple_idx): (low, high)}
+                                max_iter=200, tol=1e-9, damping=1.0):
+    """
+    (同事建议的更优算法)
+    用 POCS 交替投影到：盒约束 ∩ 总和=1 ∩ 各组半空间 之交集。
+    支持多资产联合约束。damping∈(0,1] 可缓解过冲。
+    """
+    x = v.copy()
+    n = x.size
+
+    # 预取单资产上下界向量
+    lows = np.array([a for a, _ in single_limits], dtype=np.float64)
+    highs = np.array([b for _, b in single_limits], dtype=np.float64)
+
+    # 预编译组约束（a 向量的稀疏结构：组里为 1，其他为 0）
+    groups = []
+    for idx_tuple, (low, up) in multi_limits.items():
+        idx = np.array(idx_tuple, dtype=np.int64)
+        a_norm2 = float(len(idx))  # ||a||^2 = 组大小
+        groups.append((idx, float(low), float(up), a_norm2))
+
+    # 初始：投影到盒约束+总和=1，减少后续振荡
+    x = np.clip(x, lows, highs)
+    s = x.sum()
+    x = x + (1.0 - s) / n
+
+    for _ in range(max_iter):
+        x_prev = x
+
+        # 1) 盒约束
+        x = np.clip(x, lows, highs)
+
+        # 2) 总和=1 的超平面投影
+        s = x.sum()
+        x = x + (1.0 - s) / n
+
+        # 3) 每个组的上下半空间投影
+        # 上界：a^T x ≤ up；若超出则投影：x ← x - ((a^T x - up)/||a||^2) a
+        # 下界：a^T x ≥ low；若低于则投影：x ← x + ((low - a^T x)/||a||^2) a
+        for idx, low, up, a_norm2 in groups:
+            if a_norm2 == 0: continue
+            t = x[idx].sum()
+            if t > up + 1e-12:
+                delta = (t - up) / a_norm2
+                x[idx] -= damping * delta  # 等价于沿 -a 方向走
+            elif t < low - 1e-12:
+                delta = (low - t) / a_norm2
+                x[idx] += damping * delta  # 等价于沿 +a 方向走
+
+        # 再次总和=1（组投影会打破总和），保证可行
+        s = x.sum()
+        x = x + (1.0 - s) / n
+
+        # 收敛判据 + 约束校验（可选更严格）
+        if np.linalg.norm(x - x_prev, ord=np.inf) < tol:
+            break
+
+    # 最终一次严格校验（允许极小容差）
+    if np.any(x < lows - 1e-6) or np.any(x > highs + 1e-6):
+        return None
+    for idx, low, up, _ in groups:
+        if len(idx) == 0: continue
+        t = x[idx].sum()
+        if t < low - 1e-6 or t > up + 1e-6:
+            return None
+    # 总和
+    if not np.isclose(x.sum(), 1.0, atol=1e-6):
+        return None
+    return x
+
+
 # =====================================================================================
 # 主程序
 # =====================================================================================
@@ -155,7 +228,8 @@ if __name__ == '__main__':
     final_weights = []
     for i in range(100000):
         new_proposal = current_weights + np.random.normal(0, step_size, len(current_weights))
-        adjusted_weights = primal_dual_interior_point(new_proposal, single_limits, multi_limits, max_iter=100)
+        # adjusted_weights = primal_dual_interior_point(new_proposal, single_limits, multi_limits, max_iter=100)
+        adjusted_weights = project_to_constraints_pocs(new_proposal, single_limits, multi_limits)
 
         if adjusted_weights is not None:
             final_weights.append(adjusted_weights)
