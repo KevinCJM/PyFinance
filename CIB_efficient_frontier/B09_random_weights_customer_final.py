@@ -61,13 +61,34 @@ def load_returns_from_excel(
     return df, daily_returns, miu, cov
 
 
+# 计算年化的期望收益率和协方差矩阵
 def ann_mu_sigma(log_returns: np.ndarray):
+    """
+    计算年化的期望收益率和协方差矩阵
+
+    参数:
+        log_returns (np.ndarray): 对数收益率数组，每一行代表一个时间点，每一列代表一个资产
+
+    返回:
+        tuple: 包含两个元素的元组
+            - miu (np.ndarray): 年化的期望收益率向量
+            - cov (np.ndarray): 年化的协方差矩阵
+    """
+    # 计算年化的期望收益率，假设252个交易日
     miu = log_returns.mean(axis=0) * 252.0
+    # 计算年化的协方差矩阵，使用样本协方差(ddof=1)，假设252个交易日
     cov = np.cov(log_returns, rowvar=False, ddof=1) * 252.0
     return miu, cov
 
 
+# 获取当前本地时间的字符串表示
 def str_time():
+    """
+    获取当前本地时间的字符串表示
+
+    Returns:
+        str: 格式为 "YYYY-MM-DD HH:MM:SS" 的时间字符串
+    """
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 
 
@@ -98,12 +119,31 @@ def bounds_dict_to_limits(assets: List[str],
     return out
 
 
+# 计算全局包络边界限制
 def global_envelope_limits(per_level_limits: Dict[str, List[Tuple[float, float]]]) -> List[Tuple[float, float]]:
+    """
+    计算全局包络边界限制
+
+    该函数接收按层级分类的边界限制字典，计算每个位置上所有层级的最小下界和最大上界，
+    从而得到全局的包络边界。
+
+    参数:
+        per_level_limits: 字典类型，键为层级标识符，值为该层级的边界限制列表。
+                         每个边界限制是一个包含两个浮点数的元组(下界, 上界)。
+
+    返回值:
+        List[Tuple[float, float]]: 全局包络边界限制列表，每个元素是一个包含下界和上界的元组。
+    """
     print(f"{str_time()} [构造边界] 处理全局边界")
     levels = list(per_level_limits.keys())
     n = len(per_level_limits[levels[0]])
+
+    # 计算每个位置上所有层级的最小下界
     lows = np.min(np.array([[per_level_limits[L][j][0] for L in levels] for j in range(n)]), axis=1)
+
+    # 计算每个位置上所有层级的最大上界
     highs = np.max(np.array([[per_level_limits[L][j][1] for L in levels] for j in range(n)]), axis=1)
+
     return [(float(l), float(h)) for l, h in zip(lows, highs)]
 
 
@@ -247,7 +287,9 @@ def project_baseline_to_level(w_base: np.ndarray, level_limits: List[Tuple[float
     return w_proj
 
 
-# ========= 前沿刻画（QCQP） =========
+''' ========= 前沿刻画（QCQP） =========
+'''
+
 
 def port_stats(W: np.ndarray, mu: np.ndarray, Sigma: np.ndarray):
     if W.ndim == 1:
@@ -340,7 +382,9 @@ def compute_frontier_anchors(mu: np.ndarray, Sigma: np.ndarray,
     return W_anchors, R_anchors, S_anchors
 
 
-# ========= 网格量化 & 去重 =========
+''' ========= 网格量化 & 去重 =========
+'''
+
 
 def _parse_precision(choice: str | float) -> float:
     choice = str(choice).strip()
@@ -531,7 +575,9 @@ def quantize_df_for_export(df_in: pd.DataFrame,
     return out
 
 
-# ========= 绩效批量、前沿识别、作图 =========
+''' ========= 绩效批量、前沿识别、作图 =========
+'''
+
 
 def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarray,
                               chunk_size: int = 20000) -> pd.DataFrame:
