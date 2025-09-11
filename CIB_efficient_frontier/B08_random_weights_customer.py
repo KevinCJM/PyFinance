@@ -148,6 +148,35 @@ def cal_ef2_v4_ultra_fast(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
+def build_export_view(df_named: pd.DataFrame, assets: List[str]) -> pd.DataFrame:
+    """
+    从含有中文资产列、ret_annual、vol_annual、on_ef 的 DataFrame 生成导出视图
+    """
+    need_cols = assets + ['ret_annual', 'vol_annual', 'on_ef']
+    miss = [c for c in need_cols if c not in df_named.columns]
+    if miss:
+        raise ValueError(f"导出缺少必要列: {miss}")
+
+    out = df_named[need_cols].copy()
+    # 列名映射：资产 → 比例
+    rename_assets = {
+        '货币现金类': '货币现金类比例',
+        '固定收益类': '固定收益类比例',
+        '混合策略类': '混合策略类比例',
+        '权益投资类': '权益投资类比例',
+        '另类投资类': '另类投资类比例',
+    }
+    out = out.rename(columns=rename_assets | {
+        'ret_annual': '年化收益率',
+        'vol_annual': '年化波动率',
+        'on_ef': '是否有效前沿点',
+    })
+    # 可选：排序（先风险后收益，或任意你喜欢的规则）
+    out = out.sort_values(by=['年化波动率', '年化收益率'], ascending=[True, False], kind='mergesort').reset_index(
+        drop=True)
+    return out
+
+
 ''' 二、POCS 投影 (盒约束 ∩ 和=1 ∩ 多资产组约束) '''
 
 
@@ -578,7 +607,7 @@ if __name__ == '__main__':
     print(f"全局有效前沿锚点数量: {len(W_anchors_glb)}")
 
     ''' --- 4) 全局：随机游走 + POCS 填厚前沿之下区域（可选精度） --- '''
-    precision_choice = None  # 可改 '0.2%'、'0.5%' 或 None
+    precision_choice = '0.5%'  # 可改 '0.2%'、'0.5%' 或 None
     print(f"全局：填充前沿之下的可行空间（precision={precision_choice}) ...")
     W_below_glb = random_walk_below_frontier(
         W_anchor=W_anchors_glb, mu=mu, Sigma=Sigma,
@@ -631,7 +660,7 @@ if __name__ == '__main__':
         'C4': '#d62728', 'C5': '#9467bd', 'C6': '#8c564b'
     }
     weight_cols_map = {f'w_{j}': assets_list[j] for j in range(len(assets_list))}
-
+    export_sheets: Dict[str, pd.DataFrame] = {}
     for level in ['C1', 'C2', 'C3', 'C4', 'C5', 'C6']:
         print(f"--- 处理等级：{level} ---")
         level_limits = per_level_limits[level]
@@ -696,9 +725,35 @@ if __name__ == '__main__':
             "symbol": "star", "marker_line": dict(width=1.5, color='black')
         })
 
+        # 7.5 === 等级导出：合并锚点与填充，识别 on_ef ===
+        frames = [perf_anchor_lv.assign(is_anchor=True)]
+        if len(W_below_lv) > 0:
+            frames.append(perf_fill_lv.assign(is_anchor=False))
+        level_full_df = pd.concat(frames, ignore_index=True)
+
+        # 计算 on_ef（等级内识别）
+        level_full_df = cal_ef2_v4_ultra_fast(level_full_df)
+
+        # 放入导出映射
+        export_sheets[level] = build_export_view(level_full_df, assets_list)
+
     ''' --- 8) 作图 --- '''
     plot_efficient_frontier(
         scatter_points_data=scatter_data,
         title=f"全局与 C1~C6 等级：有效前沿（QCQP）+ 前沿下可行空间（随机游走+POCS）",
         # output_filename="efficient_frontier_2.html"
     )
+
+    ''' --- 9) 导出 Excel --- '''
+    # 9.1 全局：full_df_glb 已包含 on_ef
+    export_sheets['全局'] = build_export_view(full_df_glb, assets_list)
+
+    # 9.3 写出到 Excel
+    excel_filename = "前沿与等级可配置空间导出.xlsx"
+    with pd.ExcelWriter(excel_filename) as writer:
+        for sheet_name, df_out in export_sheets.items():
+            # Excel sheet 名称长度/字符有限制，这里确保合法
+            safe_name = sheet_name[:31]
+            df_out.to_excel(writer, sheet_name=safe_name, index=False)
+
+    print(f"✅ 导出完成：{excel_filename}")
