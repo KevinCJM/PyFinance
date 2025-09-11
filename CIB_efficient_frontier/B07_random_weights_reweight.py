@@ -417,7 +417,7 @@ if __name__ == '__main__':
         'C6': {'货币现金类': 0.05, '固定收益类': 0.1, '混合策略类': 0.15, '权益投资类': 0.6, '另类投资类': 0.1}
     }
 
-    # --- 3) 生成“平台极限约束”（关键新增） ---
+    # --- 3) 生成“平台极限约束” ---
     band = 0.20  # ±20%
     single_limits_platform, multi_limits_platform = make_platform_limits_from_all_levels(
         proposed_alloc, assets_list, band=band, mode="relative",
@@ -433,7 +433,7 @@ if __name__ == '__main__':
     # --- 4) 基于平台极限约束刻画有效前沿（锚点） ---
     print("\n开始刻画【平台受限】有效前沿...")
     risk_grid, W_frontier, R_frontier, S_frontier, w_minv, w_maxr = sweep_frontier_by_risk(
-        mu, Sigma, single_limits_platform, multi_limits_platform, n_grid=600
+        mu, Sigma, single_limits_platform, multi_limits_platform, n_grid=500
     )
     idx = np.argsort(S_frontier)
     S_sorted, R_sorted, W_sorted = S_frontier[idx], R_frontier[idx], W_frontier[idx]
@@ -444,12 +444,12 @@ if __name__ == '__main__':
     print(f"有效前沿锚点数量: {len(W_anchors)}")
 
     # --- 5) 以前沿锚点为种子：小步随机游走 + POCS（可选精度）填厚前沿之下 ---
-    precision_choice = '0.5%'  # 可选：'0.1%'/'0.2%'/'0.5%'/None
+    precision_choice = None  # 可选：'0.1%'/'0.2%'/'0.5%'/None
     print(f"\n开始填充前沿之下的可行空间（precision={precision_choice}）...")
     W_below = random_walk_below_frontier(
         W_anchor=W_anchors, mu=mu, Sigma=Sigma,
         single_limits=single_limits_platform, multi_limits=multi_limits_platform,
-        per_anchor=120, step=0.10, sigma_tol=1e-4, seed=123,
+        per_anchor=100, step=0.10, sigma_tol=1e-4, seed=123,
         precision=precision_choice
     )
     print(f"填充样本数量（量化&去重后）: {len(W_below)}")
@@ -493,7 +493,6 @@ if __name__ == '__main__':
     # --- 8) C1~C6 档位：与平台约束取交集后生成“可配置空间” ---
     print("\n--- 为每个风险等级生成可配置空间（与平台约束求交） ---")
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-    deviation = 0.20  # 档位自身的 ±20%
     num_points_per_level = 6000
 
     # 平台约束复制一份，供交集使用
@@ -502,7 +501,7 @@ if __name__ == '__main__':
     for i, (risk_level, base_alloc_map) in enumerate(proposed_alloc.items()):
         print(f"  处理 {risk_level} ...")
         base_weights = np.array([base_alloc_map.get(asset, 0.0) for asset in assets_list])
-        level_limits = [(max(0.0, w * (1 - deviation)), min(1.0, w * (1 + deviation))) for w in base_weights]
+        level_limits = [(max(0.0, w * (1 - band)), min(1.0, w * (1 + band))) for w in base_weights]
         # 与平台约束逐维求交
         specific_single_limits = intersect_single_limits(level_limits, platform_limits)
 

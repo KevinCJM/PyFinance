@@ -919,7 +919,7 @@ if __name__ == '__main__':
 
     print("\n--- 正在为每个风险等级生成可配置空间 ---")
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-    deviation = 0.5
+    deviation = 0.2
     num_points_per_level = 10000
     base_points_to_plot = []
 
@@ -952,5 +952,5 @@ if __name__ == '__main__':
     plot_efficient_frontier(
         scatter_points_data=scatter_data,
         title=f"QCQP 标准有效前沿 + 小步随机游走填充（precision={precision_choice}）",
-        output_filename="efficient_frontier.html"
+        # output_filename="efficient_frontier.html"
     )
