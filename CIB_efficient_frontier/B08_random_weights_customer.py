@@ -19,6 +19,53 @@ from typing import List, Dict, Any, Tuple
 ''' 一、通用工具 & 画图 '''
 
 
+# 对 df_in 的资产列做：POCS→网格量化（含边界+sum=1+组约束）
+def quantize_df_for_export(df_in: pd.DataFrame,
+                           assets: List[str],
+                           step: float,
+                           single_limits,
+                           multi_limits,
+                           port_daily: np.ndarray) -> pd.DataFrame:
+    """
+    对 df_in 的资产列做：POCS→网格量化（含边界+sum=1+组约束），
+    然后重算绩效、重新识别前沿，并返回同构 DataFrame（保留原有附加列）。
+    """
+    # 1) 取出权重
+    W = df_in[assets].to_numpy(dtype=np.float64)
+
+    # 2) 逐行量化（含 POCS 以确保约束），失败则兜底用当前权重投影后再吸附
+    Wq = []
+    for w in W:
+        wq = quantize_with_projection(w, step, single_limits, multi_limits, rounds=5)
+        if wq is None:
+            w_proj = project_to_constraints_pocs(w, single_limits, multi_limits)
+            wq = _snap_to_grid_simplex(w_proj, step, single_limits) if w_proj is not None else w
+        Wq.append(wq)
+    Wq = np.vstack(Wq)
+
+    # 3) 重算绩效
+    perf_q = generate_alloc_perf_batch(port_daily, Wq)
+    # 把 w_i 列改回中文资产列
+    rename_map = {f"w_{i}": assets[i] for i in range(len(assets))}
+    perf_q = perf_q.rename(columns=rename_map)
+
+    # 4) 组装输出（保留 df_in 里的附加列，比如 is_anchor / hover_text 等）
+    keep_cols = [c for c in df_in.columns if c not in (assets + ['ret_annual', 'vol_annual', 'on_ef'])]
+    out = pd.concat([perf_q[assets + ['ret_annual', 'vol_annual']], df_in[keep_cols].reset_index(drop=True)], axis=1)
+
+    # 5) 重新识别前沿
+    out = cal_ef2_v4_ultra_fast(out)
+
+    # 6) 极小噪声清零（防止写出 -0.0 或 -1e-12）
+    eps = step * 1e-6
+    for a in assets:
+        col = out[a].to_numpy()
+        col[np.abs(col) < eps] = 0.0
+        out[a] = col
+
+    return out
+
+
 def dict_alloc_to_vector(assets: List[str], alloc_map: Dict[str, float]) -> np.ndarray:
     """
     按 assets 顺序把 {'资产名': 权重} 映射成 np.ndarray；缺省资产按 0 处理。
@@ -607,7 +654,7 @@ if __name__ == '__main__':
     print(f"全局有效前沿锚点数量: {len(W_anchors_glb)}")
 
     ''' --- 4) 全局：随机游走 + POCS 填厚前沿之下区域（可选精度） --- '''
-    precision_choice = '0.5%'  # 可改 '0.2%'、'0.5%' 或 None
+    precision_choice = '0.5%'  # 可改 '0.1%', '0.2%'、'0.5%' 或 None
     print(f"全局：填充前沿之下的可行空间（precision={precision_choice}) ...")
     W_below_glb = random_walk_below_frontier(
         W_anchor=W_anchors_glb, mu=mu, Sigma=Sigma,
@@ -677,8 +724,12 @@ if __name__ == '__main__':
             W_anchor=W_anchors_lv, mu=mu, Sigma=Sigma,
             single_limits=level_limits, multi_limits=level_multi_limits,
             per_anchor=80, step=0.08, sigma_tol=1e-4, seed=2024,
-            precision=None  # 需要整数网格时可设如 '0.2%'
+            precision=precision_choice  # 与全局一致：按精度量化 + 内部去重
         )
+
+        # （可选兜底，幂等；random_walk_below_frontier 内部已做过去重）
+        if precision_choice is not None and len(W_below_lv):
+            W_below_lv = dedup_by_grid(W_below_lv, _parse_precision(precision_choice))
 
         # 7.3 计算绩效并加入图层
         # 锚点
@@ -725,16 +776,27 @@ if __name__ == '__main__':
             "symbol": "star", "marker_line": dict(width=1.5, color='black')
         })
 
-        # 7.5 === 等级导出：合并锚点与填充，识别 on_ef ===
+        # 7.5 等级导出：先合并，再“量化→重算绩效→识别前沿”
         frames = [perf_anchor_lv.assign(is_anchor=True)]
         if len(W_below_lv) > 0:
             frames.append(perf_fill_lv.assign(is_anchor=False))
         level_full_df = pd.concat(frames, ignore_index=True)
 
-        # 计算 on_ef（等级内识别）
-        level_full_df = cal_ef2_v4_ultra_fast(level_full_df)
-
-        # 放入导出映射
+        if precision_choice is not None:
+            step_val = _parse_precision(precision_choice)
+            level_full_df = quantize_df_for_export(
+                df_in=level_full_df,
+                assets=assets_list,
+                step=step_val,
+                single_limits=level_limits,
+                multi_limits=level_multi_limits,
+                port_daily=port_daily_returns
+            )
+        else:
+            # 未设精度时也重识别一次前沿
+            level_full_df = cal_ef2_v4_ultra_fast(level_full_df)
+        # 量化后的权重按资产列再去重（保证 Excel 不会出现重复网格点）
+        level_full_df = level_full_df.drop_duplicates(subset=assets_list, keep='first').reset_index(drop=True)
         export_sheets[level] = build_export_view(level_full_df, assets_list)
 
     ''' --- 8) 作图 --- '''
@@ -746,9 +808,22 @@ if __name__ == '__main__':
 
     ''' --- 9) 导出 Excel --- '''
     # 9.1 全局：full_df_glb 已包含 on_ef
-    export_sheets['全局'] = build_export_view(full_df_glb, assets_list)
+    export_df_glb = full_df_glb
+    if precision_choice is not None:
+        step_val = _parse_precision(precision_choice)
+        export_df_glb = quantize_df_for_export(
+            df_in=full_df_glb,
+            assets=assets_list,
+            step=step_val,
+            single_limits=single_limits_global,
+            multi_limits=multi_limits_global,
+            port_daily=port_daily_returns
+        )
+    # 可选：量化后按资产列去重，避免重复行
+    export_df_glb = export_df_glb.drop_duplicates(subset=assets_list, keep='first').reset_index(drop=True)
+    export_sheets['全局'] = build_export_view(export_df_glb, assets_list)
 
-    # 9.3 写出到 Excel
+    # 9.2 写出到 Excel
     excel_filename = "前沿与等级可配置空间导出.xlsx"
     with pd.ExcelWriter(excel_filename) as writer:
         for sheet_name, df_out in export_sheets.items():
