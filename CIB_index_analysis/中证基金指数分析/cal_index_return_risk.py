@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-@File: read_all_excel.py
+@File: cal_index_return_risk.py
 @Modify Time: 2025/09/11
 @Author: Kevin-Chen
 @Descriptions:
@@ -186,7 +186,6 @@ def ewma_series_last(s_or_df: pd.Series | pd.DataFrame, lam: float) -> pd.Series
 
 # ===================== 指标计算（可选项） =====================
 def compute_return_metric(ret_df: pd.DataFrame,
-                          close_df: pd.DataFrame,
                           which: str,
                           roll_ret_win: int = 5,
                           lam_ret: float = 0.94,
@@ -245,7 +244,6 @@ def compute_return_metric(ret_df: pd.DataFrame,
 
 
 def compute_risk_metric(ret_df: pd.DataFrame,
-                        close_df: pd.DataFrame,
                         which: str,
                         roll_vol_win: int = 20,
                         lam_vol: float = 0.94) -> pd.Series:
