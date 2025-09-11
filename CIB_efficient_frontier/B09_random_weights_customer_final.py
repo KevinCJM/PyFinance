@@ -16,26 +16,46 @@ import pandas as pd
 import plotly.graph_objects as go
 from typing import List, Dict, Any, Tuple, Optional
 
+''' ========= 工具：加载 & 基础统计 =========
+'''
 
-# ========= 工具：加载 & 基础统计 =========
 
+# 从Excel文件中加载资产净值数据，计算日收益率、年化收益和协方差矩阵。
 def load_returns_from_excel(
         filepath: str,
         sheet_name: str,
         assets_list: List[str],
         rename_map: Dict[str, str],
 ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
-    """读取净值，转日收益，计算年化 μ、Σ。"""
+    """
+    从Excel文件中加载资产净值数据，计算日收益率、年化收益和协方差矩阵。
+
+    参数:
+        filepath (str): Excel文件路径
+        sheet_name (str): Excel工作表名称
+        assets_list (List[str]): 资产名称列表
+        rename_map (Dict[str, str]): 列名重映射字典
+
+    返回:
+        tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray]:
+            - 原始净值数据DataFrame
+            - 日收益率数组
+            - 年化收益率数组
+            - 年化协方差矩阵
+    """
     print(f"{str_time()} [加载数据] 读取excel文件数据...")
     df = pd.read_excel(filepath, sheet_name=sheet_name)
     df = df.set_index('date')
     df.index = pd.to_datetime(df.index)
     df = df.dropna().sort_index(ascending=True).rename(rename_map, axis=1)
+
     print(f"{str_time()} [加载数据] 计算日涨跌收益率...")
     hist_value_r = df[assets_list].pct_change().dropna()
     daily_returns = hist_value_r.values
+
     print(f"{str_time()} [加载数据] 将日收益率转换为对数收益...")
     log_r = np.log1p(daily_returns)
+
     print(f"{str_time()} [加载数据] 计算年化收益与协方差...")
     miu, cov = ann_mu_sigma(log_r)
     return df, daily_returns, miu, cov
@@ -51,14 +71,29 @@ def str_time():
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 
 
-# ========= 约束 & 投影 =========
+''' ========= 约束 & 投影 =========
+'''
 
+
+# 将边界字典转换为限制列表格式
 def bounds_dict_to_limits(assets: List[str],
                           level_bounds: Dict[str, Dict[str, Tuple[float, float]]]) -> Dict[
     str, List[Tuple[float, float]]]:
+    """
+    将边界字典转换为限制列表格式
+
+    参数:
+        assets: 资产列表，包含所有需要处理的资产名称
+        level_bounds: 等级边界字典，格式为 {等级: {资产名: (下界, 上界)}}
+
+    返回:
+        字典格式的限制范围，格式为 {等级: [(资产1下界, 资产1上界), (资产2下界, 资产2上界), ...]}
+    """
     out = {}
+    # 遍历每个等级的边界映射
     for level, bmap in level_bounds.items():
         print(f"{str_time()} [构造边界] 处理等级:", level)
+        # 为每个资产获取对应的边界值，如果不存在则使用默认值(0.0, 1.0)
         out[level] = [(bmap.get(a, (0.0, 1.0))[0], bmap.get(a, (0.0, 1.0))[1]) for a in assets]
     return out
 
@@ -72,6 +107,7 @@ def global_envelope_limits(per_level_limits: Dict[str, List[Tuple[float, float]]
     return [(float(l), float(h)) for l, h in zip(lows, highs)]
 
 
+# 使用 POCS 法将向量投影到多个约束集合的交集上
 def project_to_constraints_pocs(v: np.ndarray,
                                 single_limits,  # list[(low, high)]
                                 multi_limits: dict,  # {(tuple_idx): (low, high)}
@@ -155,6 +191,7 @@ def project_to_constraints_pocs(v: np.ndarray,
     return x
 
 
+# 计算水平中点权重，通过投影到约束集合来获得满足约束条件的权重分布
 def level_midpoint_weights(limits_1d: List[Tuple[float, float]]) -> np.ndarray:
     """
     计算水平中点权重，通过投影到约束集合来获得满足约束条件的权重分布。
@@ -178,6 +215,7 @@ def level_midpoint_weights(limits_1d: List[Tuple[float, float]]) -> np.ndarray:
     return w0
 
 
+# 将基础权重向量投影到指定级别的约束空间中
 def project_baseline_to_level(w_base: np.ndarray, level_limits: List[Tuple[float, float]]) -> np.ndarray:
     """
     将基础权重向量投影到指定级别的约束空间中
@@ -314,57 +352,114 @@ def _parse_precision(choice: str | float) -> float:
 
 
 def _snap_to_grid_simplex(w: np.ndarray, step: float, single_limits) -> Optional[np.ndarray]:
+    """
+    将权重向量 w 投影到由 step 和 single_limits 定义的网格上，并满足单纯形约束（各分量非负且和为1）。
+
+    参数:
+        w (np.ndarray): 输入的权重向量，形状为 (n,)。
+        step (float): 网格步长，用于离散化权重空间。
+        single_limits: 每个维度的上下限约束，格式为 [(low_0, high_0), ..., (low_n-1, high_n-1)]。
+
+    返回:
+        Optional[np.ndarray]: 投影后的量化权重向量，如果无法满足约束则返回 None。
+    """
+
+    # 计算单位步长的倒数并四舍五入为整数
     R = int(round(1.0 / step))
+
+    # 将权重裁剪到 [0, 1] 区间内
     w = np.clip(w, 0.0, 1.0)
+
+    # 将权重映射到以 step 为单位的坐标系中
     k_float = w / step
     k_floor = np.floor(k_float).astype(np.int64)
     frac = k_float - k_floor
 
+    # 提取每个维度的上下限，并转换为以 step 为单位的整数坐标
     lows = np.array([a for a, _ in single_limits], dtype=np.float64)
     highs = np.array([b for _, b in single_limits], dtype=np.float64)
     lo_units = np.ceil(lows / step - 1e-12).astype(np.int64)
     hi_units = np.floor(highs / step + 1e-12).astype(np.int64)
 
+    # 初始量化坐标裁剪到合法范围内
     k = np.clip(k_floor, lo_units, hi_units)
+
+    # 计算当前总和与目标总和 R 的差值
     diff = R - int(k.sum())
 
+    # 如果总和不足 R，则从剩余容量较多的位置补充
     if diff > 0:
         cap = hi_units - k
-        idx = np.argsort(-frac)
+        idx = np.argsort(-frac)  # 按照小数部分降序排序
         for i in idx:
-            if diff == 0: break
+            if diff == 0:
+                break
             add = min(cap[i], diff)
             if add > 0:
-                k[i] += add;
+                k[i] += add
                 diff -= add
-        if diff != 0: return None
+        if diff != 0:
+            return None  # 无法满足总和约束
+
+    # 如果总和超过 R，则从已有量较多的位置减少
     elif diff < 0:
         cap = k - lo_units
-        idx = np.argsort(frac)
+        idx = np.argsort(frac)  # 按照小数部分升序排序
         for i in idx:
-            if diff == 0: break
+            if diff == 0:
+                break
             sub = min(cap[i], -diff)
             if sub > 0:
-                k[i] -= sub;
+                k[i] -= sub
                 diff += sub
-        if diff != 0: return None
+        if diff != 0:
+            return None  # 无法满足总和约束
 
+    # 将整数量化坐标转换回实际权重
     wq = k.astype(np.float64) / R
-    if (wq < lows - 1e-12).any() or (wq > highs + 1e-12).any(): return None
-    if not np.isclose(wq.sum(), 1.0, atol=1e-12): return None
+
+    # 检查是否满足边界约束和总和约束
+    if (wq < lows - 1e-12).any() or (wq > highs + 1e-12).any():
+        return None
+    if not np.isclose(wq.sum(), 1.0, atol=1e-12):
+        return None
+
     return wq
 
 
+# 通过投影和量化交替迭代的方法对权重进行量化处理
 def quantize_with_projection(w: np.ndarray, step: float,
                              single_limits, multi_limits,
                              rounds: int = 5) -> Optional[np.ndarray]:
+    """
+    通过投影和量化交替迭代的方法对权重进行量化处理。
+
+    该函数通过多次迭代，交替执行约束投影和网格量化操作，直到满足收敛条件或达到最大迭代轮数。
+    在每轮迭代中，先将当前权重投影到约束空间，然后进行量化，最后检查收敛性。
+
+    参数:
+        w: 待量化的权重数组
+        step: 量化的步长，决定量化精度
+        single_limits: 单个元素的约束限制条件
+        multi_limits: 多元素间的约束限制条件
+        rounds: 最大迭代轮数，默认为5轮
+
+    返回:
+        量化后的权重数组，如果在迭代过程中出现错误则返回None
+    """
     x = w.copy()
+    # 迭代执行投影和量化操作
     for _ in range(rounds):
+        # 将当前权重投影到约束空间
         x = project_to_constraints_pocs(x, single_limits, multi_limits,
                                         max_iter=300, tol=1e-10, damping=0.9)
-        if x is None: return None
+        if x is None:
+            return None
+        # 对投影后的权重进行网格量化
         xq = _snap_to_grid_simplex(x, step, single_limits)
-        if xq is None: return None
+        if xq is None:
+            return None
+        # 检查是否满足收敛条件（量化误差小于步长的一半）
         if np.max(np.abs(xq - x)) < step * 0.5:
             return xq
         x = xq
