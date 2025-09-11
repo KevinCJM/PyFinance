@@ -76,36 +76,72 @@ def project_to_constraints_pocs(v: np.ndarray,
                                 single_limits,  # list[(low, high)]
                                 multi_limits: dict,  # {(tuple_idx): (low, high)}
                                 max_iter=200, tol=1e-9, damping=0.9):
-    """POCS 投影到：单资产盒约束 ∩ sum=1 ∩ 组约束。"""
+    """
+    使用 POCS（Projection Onto Convex Sets）方法将向量投影到多个约束集合的交集上。
+
+    该函数处理以下三类约束：
+    1. 每个变量的上下界约束（盒约束）；
+    2. 所有变量之和等于 1 的约束；
+    3. 多个子集的和的上下界约束（组约束）。
+
+    参数：
+        v : np.ndarray
+            初始向量，将被投影到满足所有约束的空间中。
+        single_limits : list of tuple (low, high)
+            每个元素表示对应位置变量的上下界限制。
+        multi_limits : dict {tuple of int : (low, high)}
+            键为索引元组，表示一个子集；值为该子集和的上下界。
+        max_iter : int, optional
+            最大迭代次数，默认为 200。
+        tol : float, optional
+            收敛判断的容忍度，当变量变化小于该值时停止迭代，默认为 1e-9。
+        damping : float, optional
+            阻尼系数，用于控制组约束投影步长的衰减，默认为 0.9。
+
+    返回：
+        np.ndarray or None
+            如果成功找到满足所有约束的解，则返回投影后的向量；
+            否则返回 None。
+    """
     x = v.astype(np.float64).copy()
     n = x.size
 
+    # 提取单变量上下界
     lows = np.array([a for a, _ in single_limits], dtype=np.float64)
     highs = np.array([b for _, b in single_limits], dtype=np.float64)
 
+    # 解析组约束信息
     groups = []
     for idx_tuple, (low, up) in multi_limits.items():
         idx = np.array(idx_tuple, dtype=np.int64)
         a2 = float(len(idx))
         groups.append((idx, float(low), float(up), a2))
 
+    # 初始投影：裁剪至单变量边界并调整总和为1
     x = np.clip(x, lows, highs)
     x += (1.0 - x.sum()) / n
 
+    # 迭代进行 POCS 投影
     for _ in range(max_iter):
         x_prev = x
+        # 投影到单变量边界
         x = np.clip(x, lows, highs)
+        # 投影到总和为1的约束
         x += (1.0 - x.sum()) / n
+        # 投影到各组约束
         for idx, low, up, a2 in groups:
             s = x[idx].sum()
             if s > up + 1e-12:
                 x[idx] -= damping * (s - up) / a2
             elif s < low - 1e-12:
                 x[idx] += damping * (low - s) / a2
+        # 再次投影到总和为1的约束
         x += (1.0 - x.sum()) / n
+        # 判断是否收敛
         if np.max(np.abs(x - x_prev)) < tol:
             break
 
+    # 验证最终结果是否满足所有约束
     if (x < lows - 1e-6).any() or (x > highs + 1e-6).any():
         return None
     for idx, low, up, _ in groups:
@@ -120,8 +156,22 @@ def project_to_constraints_pocs(v: np.ndarray,
 
 
 def level_midpoint_weights(limits_1d: List[Tuple[float, float]]) -> np.ndarray:
+    """
+    计算水平中点权重，通过投影到约束集合来获得满足约束条件的权重分布。
+
+    参数:
+        limits_1d: 一维限制范围列表，每个元素为(l, h)元组，表示下限和上限
+
+    返回:
+        np.ndarray: 满足约束条件的权重数组
+    """
+    # 计算每个限制区间的中点值
     mids = np.array([(l + h) * 0.5 for (l, h) in limits_1d], dtype=np.float64)
+
+    # 将中点值投影到约束集合中，获取满足约束的权重
     w0 = project_to_constraints_pocs(mids, limits_1d, {}, max_iter=500, tol=1e-12, damping=0.9)
+
+    # 如果投影失败，则进行归一化处理后重新投影
     if w0 is None:
         w0 = mids / np.sum(mids) if np.sum(mids) > 0 else np.full_like(mids, 1.0 / len(mids))
         w0 = project_to_constraints_pocs(w0, limits_1d, {}, max_iter=500, tol=1e-12, damping=0.9)
@@ -129,13 +179,33 @@ def level_midpoint_weights(limits_1d: List[Tuple[float, float]]) -> np.ndarray:
 
 
 def project_baseline_to_level(w_base: np.ndarray, level_limits: List[Tuple[float, float]]) -> np.ndarray:
+    """
+    将基础权重向量投影到指定级别的约束空间中
+
+    该函数首先对输入的权重进行归一化处理，确保其在[0,1]范围内且和为1，
+    然后使用POCS算法将权重投影到给定的级别约束空间中。
+
+    参数:
+        w_base: 基础权重向量，形状为(n,)的numpy数组
+        level_limits: 级别约束限制列表，每个元素为(min_limit, max_limit)元组，
+                     表示对应权重的取值范围
+
+    返回:
+        投影后的权重向量，形状为(n,)的numpy数组，满足约束条件
+    """
+    # 对基础权重进行裁剪和归一化处理
     w = np.clip(w_base, 0.0, 1.0).astype(np.float64)
     if not np.isclose(w.sum(), 1.0, atol=1e-12):
         s = w.sum()
         w = w / s if s > 0 else np.full_like(w, 1.0 / w.size)
+
+    # 使用POCS算法将权重投影到约束空间
     w_proj = project_to_constraints_pocs(w, level_limits, {}, max_iter=500, tol=1e-12, damping=0.9)
+
+    # 如果投影失败，则使用级别中点权重作为备选方案
     if w_proj is None:
         w_proj = level_midpoint_weights(level_limits)
+
     return w_proj
 
 
@@ -545,34 +615,64 @@ def random_walk_below_frontier(W_anchor: np.ndarray, mu: np.ndarray, Sigma: np.n
                                per_anchor: int = 30, step: float = 0.01,
                                sigma_tol: float = 1e-4, seed: int = 123,
                                precision: str | float | None = None):
+    """
+    通过在有效前沿下方进行随机游走采样投资组合权重。
+
+    该函数从给定的锚点集合出发，在满足约束条件下进行随机扰动，生成新的投资组合权重，
+    并保留那些位于有效前沿下方 (包括前沿上)。
+
+    参数:
+        W_anchor (np.ndarray): 形状为 (n_anchor, n_assets) 的锚点权重矩阵。
+        mu (np.ndarray): 资产预期收益向量，形状为 (n_assets,)。
+        Sigma (np.ndarray): 资产协方差矩阵，形状为 (n_assets, n_assets)。
+        single_limits: 单个资产约束条件，用于投影函数。
+        multi_limits: 多资产联合约束条件，用于投影函数。
+        per_anchor (int): 每个锚点尝试生成的样本数量，默认为 30。
+        step (float): 随机步长的标准差，默认为 0.01。
+        sigma_tol (float): 允许超出锚点风险的容忍度，默认为 1e-4。
+        seed (int): 随机数种子，默认为 123。
+        precision (str | float | None): 权重精度设置，用于量化权重网格，默认为 None。
+
+    返回:
+        np.ndarray: 符合条件的投资组合权重矩阵，形状为 (n_samples, n_assets)。
+    """
     rng = np.random.default_rng(seed)
+    # 计算锚点组合的收益和标准差，并构建上包络函数
     R_anchor, S_anchor = port_stats(W_anchor, mu, Sigma)
     f_upper = make_upper_envelope_fn(R_anchor, S_anchor)
 
     step_grid = None
     if precision is not None:
+        # 解析精度参数，生成步长网格
         step_grid = _parse_precision(precision)
 
     collected = []
+    # 对每个锚点执行随机游走采样
     for w0 in W_anchor:
-        _, s0 = port_stats(w0, mu, Sigma);
+        _, s0 = port_stats(w0, mu, Sigma)
         s0 = s0[0]
         s_bar = s0 + sigma_tol
         for _ in range(per_anchor):
+            # 生成零均值正态扰动
             eps = rng.normal(0.0, step, size=w0.size)
             eps -= eps.mean()
+            # 将扰动后的权重投影到约束空间内
             w_try = project_to_constraints_pocs(w0 + eps, single_limits, multi_limits,
                                                 max_iter=200, tol=1e-9, damping=0.9)
             if w_try is None:
                 continue
             if step_grid is not None:
+                # 如果设置了精度，则对权重进行量化处理
                 w_try = quantize_with_projection(w_try, step_grid, single_limits, multi_limits, rounds=5)
                 if w_try is None:
                     continue
+            # 计算尝试权重的风险与收益
             r, s = port_stats(w_try, mu, Sigma)
+            # 判断是否在有效前沿下方且风险未显著增加
             if (s[0] <= s_bar + 1e-12) and (r[0] <= f_upper(s)[0] + 1e-8):
                 collected.append(w_try)
 
+    # 构造最终输出矩阵并去重
     W = np.array(collected) if collected else np.empty((0, W_anchor.shape[1]))
     if step_grid is not None and W.size:
         W = dedup_by_grid(W, step_grid)
