@@ -493,7 +493,7 @@ if __name__ == '__main__':
     # --- 8) C1~C6 档位：与平台约束取交集后生成“可配置空间” ---
     print("\n--- 为每个风险等级生成可配置空间（与平台约束求交） ---")
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-    num_points_per_level = 6000
+    num_points_per_level = 1000
 
     # 平台约束复制一份，供交集使用
     platform_limits = single_limits_platform
