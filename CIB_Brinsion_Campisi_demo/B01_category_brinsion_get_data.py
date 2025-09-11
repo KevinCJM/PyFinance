@@ -8,6 +8,7 @@
 import time
 import pandas as pd
 from tqdm import tqdm
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tushare_config import pro
@@ -51,16 +52,40 @@ def fetch_fund_daily_return_parallel(codes: list[str], max_workers: int = 10, ma
     return pd.concat(results, ignore_index=True).reset_index(drop=True) if results else pd.DataFrame()
 
 
-# 多线程获取指数日行情数据
-def main_fetch_index_daily_return(codes: list[str], start: str = "20230101", end: str = "20230905",
-                                  max_workers: int = 10, max_retries: int = 5,
-                                  retry_delay: float = 1.0) -> pd.DataFrame:
+# 生成按自然年拆分的区间
+def split_years(start: str, end: str) -> list[tuple[str, str]]:
+    start_dt = datetime.strptime(start, "%Y%m%d")
+    end_dt = datetime.strptime(end, "%Y%m%d")
+    years = range(start_dt.year, end_dt.year + 1)
+
+    intervals = []
+    for y in years:
+        y_start = datetime(y, 1, 1)
+        y_end = datetime(y, 12, 31)
+        if y == start_dt.year:
+            y_start = start_dt
+        if y == end_dt.year:
+            y_end = end_dt
+        intervals.append((y_start.strftime("%Y%m%d"), y_end.strftime("%Y%m%d")))
+    return intervals
+
+
+def main_fetch_index_daily_return(
+        codes: list[str],
+        start: str = "20230101",
+        end: str = "20230905",
+        max_workers: int = 10,
+        max_retries: int = 5,
+        retry_delay: float = 1.0
+) -> pd.DataFrame:
     results = []
+    intervals = split_years(start, end)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(fetch_index_daily_return, code, start, end, max_retries, retry_delay): code
+            executor.submit(fetch_index_daily_return, code, s, e, max_retries, retry_delay): (code, s, e)
             for code in codes
+            for s, e in intervals
         }
         for fut in tqdm(as_completed(futures), total=len(futures), desc="fetch_index_daily_return"):
             results.append(fut.result())
