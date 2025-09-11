@@ -654,7 +654,7 @@ if __name__ == '__main__':
     print(f"全局有效前沿锚点数量: {len(W_anchors_glb)}")
 
     ''' --- 4) 全局：随机游走 + POCS 填厚前沿之下区域（可选精度） --- '''
-    precision_choice = '0.5%'  # 可改 '0.1%', '0.2%'、'0.5%' 或 None
+    precision_choice = '0.2%'  # 可改 '0.1%', '0.2%'、'0.5%' 或 None
     print(f"全局：填充前沿之下的可行空间（precision={precision_choice}) ...")
     W_below_glb = random_walk_below_frontier(
         W_anchor=W_anchors_glb, mu=mu, Sigma=Sigma,
@@ -803,7 +803,7 @@ if __name__ == '__main__':
     plot_efficient_frontier(
         scatter_points_data=scatter_data,
         title=f"全局与 C1~C6 等级：有效前沿（QCQP）+ 前沿下可行空间（随机游走+POCS）",
-        # output_filename="efficient_frontier_2.html"
+        output_filename="efficient_frontier.html"
     )
 
     ''' --- 9) 导出 Excel --- '''
@@ -819,11 +819,12 @@ if __name__ == '__main__':
             multi_limits=multi_limits_global,
             port_daily=port_daily_returns
         )
-    # 可选：量化后按资产列去重，避免重复行
+
+    # 9.2 量化后按资产列去重，避免重复行
     export_df_glb = export_df_glb.drop_duplicates(subset=assets_list, keep='first').reset_index(drop=True)
     export_sheets['全局'] = build_export_view(export_df_glb, assets_list)
 
-    # 9.2 写出到 Excel
+    # 9.3 写出到 Excel
     excel_filename = "前沿与等级可配置空间导出.xlsx"
     with pd.ExcelWriter(excel_filename) as writer:
         for sheet_name, df_out in export_sheets.items():
