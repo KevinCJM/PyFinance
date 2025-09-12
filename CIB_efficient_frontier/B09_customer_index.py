@@ -283,46 +283,109 @@ def _mu_Sigma_for_ewma_log_qcqp(port_daily: np.ndarray, N: int, lam: float) -> t
 
 
 # ========= SLQP（SLSQP）路径 =========
-def _scipy_slsqp_one(port_daily: np.ndarray, ret_spec: ReturnSpec, risk_spec: RiskSpec,
-                     s_target: float, single_limits, multi_limits, w0: np.ndarray):
+def _scipy_slsqp_one(
+        port_daily: np.ndarray,
+        ret_spec: ReturnSpec,
+        risk_spec: RiskSpec,
+        s_target: float,
+        single_limits,
+        multi_limits,
+        w0: np.ndarray,
+        n_starts: int = 6,
+        risk_band: float = 5e-7,
+        rho_penalty: float = 5e4,
+        extra_starts: Optional[List[np.ndarray]] = None,
+        rng: Optional[np.random.Generator] = None,
+):
+    """
+    强化版 SLSQP：
+      - 多起点：last_w / 中点投影 / 随机可行点 / 可选热启动池 extra_starts
+      - 风险同温带：σ(w) ≤ s_target + risk_band（硬约束）
+      - 软惩罚：最大化 [收益 - ρ·max(0, σ-s_target)^2]（更贴近风险边界）
+    """
     try:
         from scipy.optimize import minimize
     except Exception as e:
         print(f"[WARN] SciPy 不可用，无法走SLQP: {e}")
         return None
+
     n = port_daily.shape[1]
+    if rng is None:
+        rng = np.random.default_rng(2024)
     bounds = [tuple(map(float, single_limits[i])) for i in range(n)]
-    cons = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+
+    # 组约束
+    cons_base = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
     for idxs, (low, up) in multi_limits.items():
         idxs = np.array(idxs, dtype=np.int64)
-        cons.append({'type': 'ineq', 'fun': (lambda idxs, low: lambda w: np.sum(w[idxs]) - low)(idxs, float(low))})
-        cons.append({'type': 'ineq', 'fun': (lambda idxs, up: lambda w: up - np.sum(w[idxs]))(idxs, float(up))})
+        cons_base.append({'type': 'ineq', 'fun': (lambda idxs, low: lambda w: np.sum(w[idxs]) - low)(idxs, float(low))})
+        cons_base.append({'type': 'ineq', 'fun': (lambda idxs, up: lambda w: up - np.sum(w[idxs]))(idxs, float(up))})
 
-    def risk_con(w):
+    # 风险同温带（硬约束放宽到 s_target + band）
+    def risk_band_con(w):
         R = port_daily @ w
-        return float(s_target - risk_metric(R, risk_spec))
+        return float((s_target + risk_band) - risk_metric(R, risk_spec))
 
-    cons.append({'type': 'ineq', 'fun': risk_con})
+    cons_base.append({'type': 'ineq', 'fun': risk_band_con})
 
+    # 目标：-(收益 - 惩罚)  →  最小化
     def obj(w):
         R = port_daily @ w
-        return -float(return_metric(R, ret_spec))
+        ret = return_metric(R, ret_spec)
+        sig = risk_metric(R, risk_spec)
+        pen = max(0.0, sig - s_target)
+        return -(ret - rho_penalty * (pen * pen))
 
-    res = minimize(obj, w0, method='SLSQP', bounds=bounds, constraints=cons,
-                   options={'maxiter': 1000, 'ftol': 1e-9, 'disp': False})
-    if not res.success:
-        return None
-    w = res.x.astype(np.float64)
-    if abs(w.sum() - 1.0) > 1e-6:
-        return None
-    return w
+    # ====== 多起点集合 ======
+    starts: List[np.ndarray] = [w0]
+
+    # 中点投影
+    mids = np.array([(lo + hi) * 0.5 for (lo, hi) in single_limits], dtype=np.float64)
+    w_mid = project_to_constraints_pocs(mids, single_limits, multi_limits, max_iter=300, tol=1e-10)
+    if w_mid is not None:
+        starts.append(w_mid)
+
+    # 随机可行点
+    need_rand = max(0, n_starts - len(starts))
+    for _ in range(need_rand):
+        x = rng.uniform([a for a, _ in single_limits], [b for _, b in single_limits])
+        x = project_to_constraints_pocs(x, single_limits, multi_limits, max_iter=300, tol=1e-10)
+        if x is not None:
+            starts.append(x)
+
+    # 热启动池
+    if extra_starts:
+        for x in extra_starts:
+            if x is not None and np.isfinite(x).all():
+                starts.append(x)
+    best = None
+    best_val = -np.inf
+
+    for w_init in starts:
+        res = minimize(obj, w_init, method='SLSQP', bounds=bounds, constraints=cons_base,
+                       options={'maxiter': 1500, 'ftol': 1e-10, 'disp': False})
+        if not res.success:
+            continue
+        w = res.x.astype(np.float64)
+        if abs(w.sum() - 1.0) > 1e-6:
+            continue
+        R = port_daily @ w
+        sig = risk_metric(R, risk_spec)
+        # 落在同温带内的解才收
+        if sig <= s_target + risk_band + 1e-12:
+            val = -obj(w)  # 因为 obj 取了负
+            if val > best_val:
+                best_val = val
+                best = w
+
+    return best
 
 
 def _risk_grid_from_samples(port_daily: np.ndarray, risk_spec: RiskSpec,
                             single_limits, multi_limits, n_grid=300, seed=1234):
     rng = np.random.default_rng(seed)
     n = port_daily.shape[1]
-    lows = np.array([a for a, _ in single_limits]);
+    lows = np.array([a for a, _ in single_limits])
     highs = np.array([b for _, b in single_limits])
     cand = [(lows + highs) * 0.5]
     for i in range(n):
@@ -345,26 +408,204 @@ def _risk_grid_from_samples(port_daily: np.ndarray, risk_spec: RiskSpec,
     return np.linspace(s_min, s_max, n_grid)
 
 
-def sweep_frontier_by_risk_slqp(port_daily: np.ndarray, ret_spec: ReturnSpec, risk_spec: RiskSpec,
-                                single_limits, multi_limits, n_grid=300):
-    n = port_daily.shape[1]
-    grid = _risk_grid_from_samples(port_daily, risk_spec, single_limits, multi_limits, n_grid=n_grid)
+def multistage_frontier_scan_slqp(
+        port_daily: np.ndarray,
+        ret_spec: ReturnSpec,
+        risk_spec: RiskSpec,
+        single_limits,
+        multi_limits,
+        *,
+        n_grid: int = 300,
+        # --- SLSQP 扫描参数 ---
+        risk_band: float = 5e-7,
+        rho_penalty: float = 5e4,
+        n_starts: int = 6,
+        seed: int = 2024,
+        # --- 随机游走参数（阶段1→2）---
+        walk_per_anchor: int = 60,
+        walk_step: float = 0.08,
+        walk_sigma_tol: float = 1e-4,
+        walk_sigma_band: Optional[float] = None,
+        walk_precision: Optional[str | float] = None,
+        # --- 热启动池筛选 ---
+        hot_bins: int = 60,
+        hot_top_k_per_bin: int = 3,
+        # --- 是否返回“最终前沿”的随机游走填充 ---
+        return_fill: bool = True,
+        final_fill_per_anchor: Optional[int] = None,  # 若为 None，沿用 walk_per_anchor
+        final_fill_step: Optional[float] = None,  # 若为 None，沿用 walk_step
+        final_fill_sigma_tol: Optional[float] = None,  # 若为 None，沿用 walk_sigma_tol
+        final_fill_precision: Optional[str | float] = None  # 覆盖最终量化精度
+):
+    # ========== 阶段1：初扫 ==========
+    grid1, W1, R1, S1 = sweep_frontier_by_risk_slqp(
+        port_daily, ret_spec, risk_spec,
+        single_limits, multi_limits,
+        n_grid=n_grid, risk_band=risk_band, rho_penalty=rho_penalty,
+        n_starts=n_starts, seed=seed, hot_start_pool=None
+    )
+    idx = np.argsort(S1)
+    S_sorted, R_sorted, W_sorted = S1[idx], R1[idx], W1[idx]
+    keep = np.isclose(R_sorted, np.maximum.accumulate(R_sorted), atol=1e-10)
+    W_anchors = W_sorted[keep]
+
+    # ========== 阶段2：随机游走拿热启动池 ==========
+    W_walk = random_walk_frontier_explore(
+        W_anchor=W_anchors, port_daily=port_daily,
+        single_limits=single_limits, multi_limits=multi_limits,
+        per_anchor=walk_per_anchor, step=walk_step,
+        sigma_tol=walk_sigma_tol, seed=seed + 1,
+        precision=walk_precision,
+        ret_spec=ret_spec, risk_spec=risk_spec,
+        walk_region="any",
+        sigma_band=(2.0 * walk_sigma_tol if walk_sigma_band is None else walk_sigma_band),
+        ret_tol_up=1e-6
+    )
+
+    hot_pool = None
+    if W_walk is not None and W_walk.size:
+        perf = generate_alloc_perf_batch(port_daily, W_walk, ret_spec, risk_spec)
+        Sseed = perf['vol_annual'].to_numpy();
+        Rseed = perf['ret_annual'].to_numpy()
+        bins = np.linspace(Sseed.min(), Sseed.max(), max(5, hot_bins))
+        pick = []
+        for i in range(len(bins) - 1):
+            m = (Sseed >= bins[i]) & (Sseed <= bins[i + 1])
+            if not m.any():
+                continue
+            ids = np.where(m)[0]
+            top = ids[np.argsort(Rseed[m])][-hot_top_k_per_bin:]
+            pick.extend(top)
+        hot_pool = np.unique(W_walk[pick], axis=0)
+
+    # ========== 阶段3：热启动再扫 ==========
+    grid2, W2, R2, S2 = sweep_frontier_by_risk_slqp(
+        port_daily, ret_spec, risk_spec,
+        single_limits, multi_limits,
+        n_grid=n_grid, risk_band=risk_band, rho_penalty=rho_penalty,
+        n_starts=max(n_starts, 8), seed=seed + 7,
+        hot_start_pool=hot_pool, hot_k=3
+    )
+
+    if not return_fill:
+        return grid2, W2, R2, S2
+
+    # ========== 阶段4：基于“新的前沿”做最终随机游走 ==========
+    idx2 = np.argsort(S2)
+    S2s, R2s, W2s = S2[idx2], R2[idx2], W2[idx2]
+    keep2 = np.isclose(R2s, np.maximum.accumulate(R2s), atol=1e-10)
+    W_anchors2 = W2s[keep2]
+
+    W_fill = random_walk_frontier_explore(
+        W_anchor=W_anchors2, port_daily=port_daily,
+        single_limits=single_limits, multi_limits=multi_limits,
+        per_anchor=(walk_per_anchor if final_fill_per_anchor is None else final_fill_per_anchor),
+        step=(walk_step if final_fill_step is None else final_fill_step),
+        sigma_tol=(walk_sigma_tol if final_fill_sigma_tol is None else final_fill_sigma_tol),
+        seed=seed + 11,
+        precision=(walk_precision if final_fill_precision is None else final_fill_precision),
+        ret_spec=ret_spec, risk_spec=risk_spec,
+        walk_region="any",
+        sigma_band=(2.0 * walk_sigma_tol if walk_sigma_band is None else walk_sigma_band),
+        ret_tol_up=1e-6
+    )
+    return grid2, W2, R2, S2, W_fill
+
+
+def sweep_frontier_by_risk_slqp(
+        port_daily: np.ndarray,
+        ret_spec: ReturnSpec,
+        risk_spec: RiskSpec,
+        single_limits,
+        multi_limits,
+        n_grid=300,
+        risk_band=5e-7,  # 同温带宽度
+        rho_penalty=5e4,  # 风险软惩罚系数
+        n_starts=6,
+        seed=2024,
+        hot_start_pool: Optional[np.ndarray] = None,  # 形状 [m, n] 的候选起点（来自随机游走）
+        hot_k: int = 3,  # 对每个目标风险挑选的热启动个数
+):
+    """
+    使用 SLSQP 优化器在给定风险水平网格上扫描有效前沿，返回对应的风险、收益和权重。
+
+    参数:
+        port_daily : np.ndarray               资产的日收益率矩阵，形状为 [T, n]，T 为时间长度，n 为资产数量。
+        ret_spec : ReturnSpec                 收益度量的配置对象。
+        risk_spec : RiskSpec                  风险度量的配置对象。
+        single_limits : list of tuple         每个资产的上下限约束 [(lo1, hi1), (lo2, hi2), ...]。
+        multi_limits : list of tuple          多资产线性约束，格式为 (A, b)，表示 A @ w <= b。
+        n_grid : int, optional                在风险维度上划分的网格点数，默认为 300。
+        risk_band : float, optional           用于风险软约束的带宽参数，默认为 5e-7。
+        rho_penalty : float, optional         风险软约束的惩罚系数，默认为 5e4。
+        n_starts : int, optional              每个优化问题尝试的随机初始点数量，默认为 6。
+        seed : int, optional                  随机种子，默认为 2024。
+        hot_start_pool : Optional[np.ndarray] 可选的热启动候选点池，形状为 [m, n]，默认为 None。
+        hot_k : int, optional                 每个目标风险水平选取的热启动点数量，默认为 3。
+
+    返回:
+        tuple:
+            - grid : np.ndarray     实际有效的风险目标值数组。
+            - W : np.ndarray        对应的有效前沿权重矩阵，形状为 [len(grid), n]。
+            - R : np.ndarray        对应的年化收益数组。
+            - S : np.ndarray        对应的年化风险数组。
+    """
+
+    rng = np.random.default_rng(seed)
+    # 构造风险目标网格
+    grid = _risk_grid_from_samples(port_daily, risk_spec, single_limits, multi_limits, n_grid=n_grid, seed=seed)
+
+    # 默认初始点：取中点并投影到约束空间
     mids = np.array([(lo + hi) * 0.5 for (lo, hi) in single_limits], dtype=np.float64)
     w0 = project_to_constraints_pocs(mids, single_limits, multi_limits, max_iter=300, tol=1e-10)
     if w0 is None:
-        w0 = np.full(n, 1.0 / n, dtype=np.float64)
+        w0 = np.full(port_daily.shape[1], 1.0 / port_daily.shape[1], dtype=np.float64)
+
+    # 若提供了热启动池，则预计算其风险与收益
+    hot_S = hot_R = None
+    if hot_start_pool is not None and hot_start_pool.size:
+        perf = generate_alloc_perf_batch(port_daily, hot_start_pool, ret_spec, risk_spec)
+        hot_S = perf['vol_annual'].to_numpy()
+        hot_R = perf['ret_annual'].to_numpy()
+
     W_list = []
     last_w = w0
+
+    # 遍历风险目标网格，逐个优化得到前沿点
     for s in grid:
-        w = _scipy_slsqp_one(port_daily, ret_spec, risk_spec, float(s), single_limits, multi_limits, last_w)
+        extra = None
+        if hot_start_pool is not None and hot_start_pool.size:
+            # 从热启动池中选择风险最接近且收益较高的点作为额外初始点
+            d = np.abs(hot_S - s)
+            idx = np.argsort(d)[:max(1, hot_k * 2)]  # 先取距离近的
+            idx = idx[np.argsort(hot_R[idx])][-hot_k:]  # 再在里面取收益最高
+            extra = [hot_start_pool[i] for i in idx]
+
+        # 使用 SLSQP 进行优化
+        w = _scipy_slsqp_one(
+            port_daily, ret_spec, risk_spec, float(s),
+            single_limits, multi_limits, last_w,
+            n_starts=n_starts, risk_band=risk_band, rho_penalty=rho_penalty,
+            extra_starts=extra, rng=rng
+        )
+        # 若失败则使用默认初始点重试
         if w is None:
-            w = _scipy_slsqp_one(port_daily, ret_spec, risk_spec, float(s), single_limits, multi_limits, w0)
-        W_list.append(w if w is not None else np.full(n, np.nan))
+            w = _scipy_slsqp_one(
+                port_daily, ret_spec, risk_spec, float(s),
+                single_limits, multi_limits, w0,
+                n_starts=n_starts + 2, risk_band=risk_band, rho_penalty=rho_penalty,
+                extra_starts=extra, rng=rng
+            )
+        W_list.append(w if w is not None else np.full(port_daily.shape[1], np.nan))
         if w is not None:
             last_w = w
+
+    # 将所有结果堆叠为矩阵
     W = np.vstack(W_list)
-    R = np.full(W.shape[0], np.nan);
+    R = np.full(W.shape[0], np.nan)
     S = np.full(W.shape[0], np.nan)
+
+    # 计算每个权重向量对应的实际收益和风险
     for i in range(W.shape[0]):
         wi = W[i]
         if np.any(~np.isfinite(wi)):
@@ -372,6 +613,8 @@ def sweep_frontier_by_risk_slqp(port_daily: np.ndarray, ret_spec: ReturnSpec, ri
         Ri = port_daily @ wi
         R[i] = return_metric(Ri, ret_spec)
         S[i] = risk_metric(Ri, risk_spec)
+
+    # 过滤掉无效结果
     mask = np.isfinite(R) & np.isfinite(S)
     return grid[mask], W[mask], R[mask], S[mask]
 
@@ -379,23 +622,34 @@ def sweep_frontier_by_risk_slqp(port_daily: np.ndarray, ret_spec: ReturnSpec, ri
 def sweep_frontier_by_risk_unified(port_daily: np.ndarray,
                                    ret_spec: ReturnSpec, risk_spec: RiskSpec,
                                    single_limits, multi_limits, n_grid=300):
+    # --- QCQP 两种口径 ---
     if (ret_spec.kind in ("total_log", "total_log_annual") and
             risk_spec.kind in ("log_std", "log_std_annual")):
         print("[INFO] 使用 QCQP（log 口径均值/方差）")
         mu, Sigma = _mu_Sigma_for_log_qcqp(port_daily)
+        grid, W, R, S, *_ = sweep_frontier_by_risk(mu, Sigma, single_limits, multi_limits, n_grid=n_grid)
+        return grid, W, R, S
 
-    elif (ret_spec.kind == "ew_roll_log" and risk_spec.kind == "ew_roll_log_std" and
-          (ret_spec.N == risk_spec.N) and (ret_spec.lam == risk_spec.lam)):
+    if (ret_spec.kind == "ew_roll_log" and risk_spec.kind == "ew_roll_log_std" and
+            (ret_spec.N == risk_spec.N) and (ret_spec.lam == risk_spec.lam)):
         print("[INFO] 使用 QCQP（EWMA-log 口径：N=%d, λ=%.2f）" % (ret_spec.N, risk_spec.lam))
         mu, Sigma = _mu_Sigma_for_ewma_log_qcqp(port_daily, ret_spec.N, ret_spec.lam)
+        grid, W, R, S, *_ = sweep_frontier_by_risk(mu, Sigma, single_limits, multi_limits, n_grid=n_grid)
+        return grid, W, R, S
 
-    else:
-        print("[INFO] 使用 SLQP（SLSQP 非线性前沿）")
-        return sweep_frontier_by_risk_slqp(port_daily, ret_spec, risk_spec,
-                                           single_limits, multi_limits, n_grid=n_grid)
-
-    grid, W, R, S, *_ = sweep_frontier_by_risk(mu, Sigma,
-                                               single_limits, multi_limits, n_grid=n_grid)
+    # --- 非 QCQP：走多阶段 SLSQP 强化版 ---
+    print("[INFO] 使用 SLSQP（多起点 + 同温带 + 软惩罚 + 随机游走热启动）")
+    grid, W, R, S = multistage_frontier_scan_slqp(
+        port_daily, ret_spec, risk_spec,
+        single_limits, multi_limits,
+        n_grid=n_grid,
+        risk_band=5e-7,  # 可按横轴尺度微调
+        rho_penalty=5e4,
+        n_starts=6, seed=2024,
+        walk_per_anchor=60, walk_step=0.08, walk_sigma_tol=1e-4,
+        walk_sigma_band=None, walk_precision=None,
+        hot_bins=60, hot_top_k_per_bin=3
+    )
     return grid, W, R, S
 
 
@@ -1193,26 +1447,52 @@ def random_walk_frontier_explore(
         W_anchor: np.ndarray, port_daily: np.ndarray,
         single_limits, multi_limits,
         per_anchor: int = 30, step: float = 0.01,
-        sigma_tol: float = 1e-4, seed: int = 123,
+        sigma_tol: float = 1e-4,  # “below” 模式下的风险上界松弛量
+        seed: int = 123,
         precision: str | float | None = None,
         ret_spec: ReturnSpec | None = None,
         risk_spec: RiskSpec | None = None,
         walk_region: str = "below",  # "below" | "around" | "any"
-        sigma_band: float | None = None,  # walk_region="around" 时生效；若 None 用 2*sigma_tol
-        ret_tol_up: float = 1e-8  # 允许略微超过当前上包络的容忍（数值噪声）
+        sigma_band: float | None = None,  # "around" 时的风险带宽；若 None 用 2*sigma_tol
+        ret_tol_up: float = 1e-8  # "around" 和 "below" 时生效: 允许略微超过当前上包络的容忍（数值噪声）
 ):
+    """
+    使用随机游走方法在有效前沿附近探索新的投资组合权重。
+
+    该函数从给定的锚点（初始权重）出发，通过添加符合约束的小幅扰动，生成新的投资组合权重，
+    并根据指定的接受规则筛选出满足条件的新权重点。可用于扩展有效前沿样本或进行稳健性分析。
+
+    参数:
+        W_anchor (np.ndarray): 锚点权重矩阵，每一行是一个投资组合权重向量。
+        port_daily (np.ndarray): 资产的日收益率矩阵，形状为 (T, N)，T为时间长度，N为资产数。
+        single_limits: 单个资产权重的上下限约束。
+        multi_limits: 多资产组合的线性约束。
+        per_anchor (int): 每个锚点尝试生成的新权重数量，默认为30。
+        step (float): 随机扰动的标准差，默认为0.01。
+        sigma_tol (float): 在"below"模式下用于风险容忍度的阈值，默认为1e-4。
+        seed (int): 随机数种子，默认为123。
+        precision (str | float | None): 权重精度控制参数，用于量化权重网格。
+        ret_spec (ReturnSpec | None): 收益计算规范对象，默认使用全局RET_SPEC。
+        risk_spec (RiskSpec | None): 风险计算规范对象，默认使用全局RISK_SPEC。
+        walk_region (str): 控制新点接受区域的策略，可选 "below", "around", "any"。
+        sigma_band (float | None): 当walk_region="around"时使用的风险波动带宽。
+        ret_tol_up (float): 允许略微超过当前上包络的容忍度（处理数值误差），默认为1e-8。
+
+    返回:
+        np.ndarray: 探索得到的新权重矩阵，形状为 (M, N)，M为有效新点数量。
+    """
     if ret_spec is None:
         ret_spec = globals().get('RET_SPEC', ReturnSpec(kind="total_log_annual"))
     if risk_spec is None:
         risk_spec = globals().get('RISK_SPEC', RiskSpec(kind="log_std_annual"))
 
-    # 基于当前锚点构建上包络（用于限定“below/around”的收益阈值）
+    # 基于当前锚点构建上包络函数，用于后续判断收益是否合理
     R_anchor, S_anchor = [], []
     for w0 in W_anchor:
         r0, s0 = port_RS_by_spec(port_daily, w0, ret_spec, risk_spec)
-        R_anchor.append(r0);
+        R_anchor.append(r0)
         S_anchor.append(s0)
-    R_anchor = np.array(R_anchor);
+    R_anchor = np.array(R_anchor)
     S_anchor = np.array(S_anchor)
     f_upper = make_upper_envelope_fn(R_anchor, S_anchor)
 
@@ -1227,22 +1507,24 @@ def random_walk_frontier_explore(
         s_bar = s0 + sigma_tol
 
         for _ in range(per_anchor):
-            eps = rng.normal(0.0, step, size=w0.size);
+            # 生成符合均值为0的正态分布扰动，并投影到约束空间
+            eps = rng.normal(0.0, step, size=w0.size)
             eps -= eps.mean()
             w_try = project_to_constraints_pocs(w0 + eps, single_limits, multi_limits,
                                                 max_iter=200, tol=1e-9, damping=0.9)
             if w_try is None:
                 continue
 
+            # 若设置了精度控制，则对权重进行量化处理
             if step_grid is not None:
-                w_try = quantize_with_projection(w_try, step_grid, single_limits, multi_limits, rounds=5)
+                w_try = quantize_with_projection(w_try, step_grid,
+                                                 single_limits, multi_limits, rounds=5)
                 if w_try is None:
                     continue
 
             r, s = port_RS_by_spec(port_daily, w_try, ret_spec, risk_spec)
 
-            # ---- 接受规则：按 walk_region 可配置 ----
-            accept = False
+            # 根据 walk_region 策略决定是否接受该点
             if walk_region == "below":
                 accept = (s <= s_bar + 1e-12) and (r <= f_upper(s) + ret_tol_up)
             elif walk_region == "around":
@@ -1258,6 +1540,7 @@ def random_walk_frontier_explore(
                 collected.append(w_try)
 
     W = np.array(collected) if collected else np.empty((0, W_anchor.shape[1]))
+    # 若启用精度控制，则去除重复点
     if (step_grid is not None) and W.size:
         W = dedup_by_grid(W, step_grid)
     return W
