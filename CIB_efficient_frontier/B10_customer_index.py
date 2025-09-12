@@ -13,6 +13,7 @@ import time
 import numpy as np
 import cvxpy as cp
 import pandas as pd
+from enum import Enum
 import plotly.graph_objects as go
 from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple, Optional, Literal
@@ -105,6 +106,7 @@ ReturnType = Literal[
     "total_log_annual",  # 总年化对数收益: (Σlog(1+R))/T*252
     "ew_roll_cum",  # 指数加权滚动N区间累计收益率
     "ew_roll_log",  # 指数加权滚动N区间对数收益率
+    "ew_roll_mean_simple",  # 指数加权普通收益均值
     "mean_simple",  # 普通收益率均值
     "mean_log"  # 对数收益率均值
 ]
@@ -187,6 +189,12 @@ def return_metric(R: np.ndarray, spec: ReturnSpec) -> float:
         log_win = np.log(_safe_one_plus(r_win))
         log_agg = float(np.dot(w, log_win))
         return float(np.exp(log_agg) - 1.0) if spec.kind == "ew_roll_cum" else float(log_agg)
+    if spec.kind == "ew_roll_mean_simple":
+        assert spec.N and spec.lam is not None
+        N = min(spec.N, T)
+        r_win = R[-N:]
+        w = _exp_weights(N, spec.lam)[::-1]  # 最近权重大
+        return float(np.dot(w, r_win))
     if spec.kind == "mean_simple":
         return float(np.mean(R))  # 普通收益率均值
     if spec.kind == "mean_log":
@@ -247,6 +255,50 @@ def _is_qcqp_compatible(ret_spec: ReturnSpec, risk_spec: RiskSpec) -> bool:
     return False
 
 
+def _mu_Sigma_for_ewma_simple_qcqp(port_daily: np.ndarray, N: int, lam: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    精确 Markowitz（EWMA 简单收益口径）：
+      μ = 252 * Σ_t w_t * r_t
+      Σ = 252 * Σ_t w_t * (r_t - μ_d)(r_t - μ_d)^T
+    其中 r_t 为【普通日收益】向量；w_t 为指数加权（近端权重大）；μ_d 为加权日均值。
+    """
+    R = port_daily.astype(np.float64)  # [T, n] 普通日收益
+    T = R.shape[0]
+    N = int(min(N, T))
+    w = _exp_weights(N, lam)[::-1]  # 近端权重大，和=1
+
+    Rw = R[-N:]  # 取窗口
+    mu_day = (Rw * w[:, None]).sum(axis=0)  # 加权日均
+    X = Rw - mu_day  # 去中心
+    Sigma_day = np.tensordot(w, np.einsum('ti,tj->tij', X, X), axes=(0, 0))  # 加权协方差（日频）
+
+    mu = mu_day * TRADING_DAYS
+    Sigma = Sigma_day * TRADING_DAYS
+
+    # 轻度 PSD 投影
+    S = 0.5 * (Sigma + Sigma.T)
+    vals, vecs = np.linalg.eigh(S)
+    vals = np.clip(vals, 1e-12, None)
+    Sigma_psd = (vecs * vals) @ vecs.T
+    return mu.astype(np.float64), Sigma_psd.astype(np.float64)
+
+
+def _mu_Sigma_for_simple_qcqp(port_daily: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    精确 Markowitz (mean_simple + std/std_annual) 的 μ、Σ（基于普通日收益）。
+    日→年化：μ*252, Σ*252
+    """
+    R = port_daily.astype(np.float64)  # [T, n] 普通日收益
+    mu = R.mean(axis=0) * TRADING_DAYS
+    Sigma = np.cov(R, rowvar=False, ddof=1) * TRADING_DAYS
+    # 轻度 PSD 投影
+    S = 0.5 * (Sigma + Sigma.T)
+    vals, vecs = np.linalg.eigh(S)
+    vals = np.clip(vals, 1e-12, None)
+    Sigma_psd = (vecs * vals) @ vecs.T
+    return mu.astype(np.float64), Sigma_psd.astype(np.float64)
+
+
 def _mu_Sigma_for_log_qcqp(port_daily: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     L = np.log(_safe_one_plus(port_daily))  # [T,n]
     mu = L.mean(axis=0) * TRADING_DAYS
@@ -286,6 +338,85 @@ def _mu_Sigma_for_ewma_log_qcqp(port_daily: np.ndarray, N: int, lam: float) -> t
     vals = np.clip(vals, 1e-12, None)
     Sigma_psd = (vecs * vals) @ vecs.T
     return mu.astype(np.float64), Sigma_psd.astype(np.float64)
+
+
+class QCQPTag(str, Enum):
+    EXACT = "QCQP可解"
+    APPROX = "QCQP可近似"
+    NONE = "QCQP无法使用"
+
+
+def classify_qcqp_combo(ret_spec: ReturnSpec, risk_spec: RiskSpec) -> QCQPTag:
+    """
+    体系化地判断 (收益, 风险) 组合是否可用 QCQP。
+    只对“线性均值 + 二次方差”结构给 EXACT；对“线性化近似可写成二次”的给 APPROX；其余 NONE。
+    """
+
+    # 1) 精确 QCQP：mean_simple + {std, std_annual}
+    if ret_spec.kind == "mean_simple" and risk_spec.kind in ("std", "std_annual"):
+        return QCQPTag.EXACT
+
+    # 1.1) 精确 QCQP ：ew_roll_mean_simple + ew_roll_std，且 N/λ 对齐
+    if (ret_spec.kind == "ew_roll_mean_simple" and risk_spec.kind == "ew_roll_std"
+            and (ret_spec.N == risk_spec.N) and (ret_spec.lam == risk_spec.lam)):
+        return QCQPTag.EXACT
+
+    # 2) 近似 QCQP：基于“把资产某变换当作线性因子”的线性化
+    # 2.1 对数口径（近似假设：log(1+r_p) ≈ wᵀlog(1+r_i)）
+    if (ret_spec.kind in ("total_log", "total_log_annual", "ew_roll_log")
+            and risk_spec.kind in ("log_std", "log_std_annual", "ew_roll_log_std")):
+        # 仅当 EWMA 日志两者 N、λ 对齐时，近似更一致
+        if ret_spec.kind == "ew_roll_log" and risk_spec.kind == "ew_roll_log_std":
+            if (ret_spec.N == risk_spec.N) and (ret_spec.lam == risk_spec.lam):
+                return QCQPTag.APPROX
+            else:
+                return QCQPTag.NONE
+        # 非 EWMA 情况也可给“近似”标签（但要提示）
+        return QCQPTag.APPROX
+
+    # 3) 其它组合：无法表示成 (线性目标, 二次约束) 的，标记为 NONE
+    return QCQPTag.NONE
+
+
+def build_mu_Sigma_for_qcqp(
+        port_daily: np.ndarray,
+        ret_spec: ReturnSpec,
+        risk_spec: RiskSpec
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray], QCQPTag, str]:
+    """
+    返回 (mu, Sigma, tag, msg)
+    tag: EXACT / APPROX / NONE
+    msg: 说明信息（用于日志提示）
+    """
+    tag = classify_qcqp_combo(ret_spec, risk_spec)
+
+    if tag == QCQPTag.EXACT:
+        # 精确 Markowitz：mean_simple + std/std_annual
+        if ret_spec.kind == "mean_simple" and risk_spec.kind in ("std", "std_annual"):
+            mu, Sigma = _mu_Sigma_for_simple_qcqp(port_daily)
+            return mu, Sigma, tag, "[QCQP] 精确 Markowitz (mean_simple + std*)"
+
+        # 精确 Markowitz：ew_roll_mean_simple + ew_roll_std (N/λ 对齐)
+        if ret_spec.kind == "ew_roll_mean_simple" and risk_spec.kind == "ew_roll_std":
+            mu, Sigma = _mu_Sigma_for_ewma_simple_qcqp(port_daily, ret_spec.N, ret_spec.lam)
+            return mu, Sigma, tag, "[QCQP] 精确 Markowitz (EWMA simple mean + EWMA std)"
+
+    if tag == QCQPTag.APPROX:
+        # 近似一：log 口径（与现有实现保持一致）
+        if (ret_spec.kind in ("total_log", "total_log_annual", "ew_roll_log")
+                and risk_spec.kind in ("log_std", "log_std_annual", "ew_roll_log_std")):
+
+            if ret_spec.kind == "ew_roll_log" and risk_spec.kind == "ew_roll_log_std":
+                if (ret_spec.N == risk_spec.N) and (ret_spec.lam == risk_spec.lam):
+                    mu, Sigma = _mu_Sigma_for_ewma_log_qcqp(port_daily, ret_spec.N, ret_spec.lam)
+                    return mu, Sigma, tag, "[QCQP-Approx] 采用 EWMA-log 线性化近似 (N/λ 对齐)"
+                else:
+                    return None, None, QCQPTag.NONE, "[QCQP-Approx] EWMA N/λ 未对齐，放弃近似"
+            else:
+                mu, Sigma = _mu_Sigma_for_log_qcqp(port_daily)
+                return mu, Sigma, tag, "[QCQP-Approx] 采用 log 线性化近似"
+
+    return None, None, QCQPTag.NONE, "[QCQP] 该指标组合无法用 QCQP 表达"
 
 
 ''' ========= SLSQP 路径 ========= 
@@ -631,28 +762,23 @@ def sweep_frontier_by_risk_slqp(
 def sweep_frontier_by_risk_unified(port_daily: np.ndarray,
                                    ret_spec: ReturnSpec, risk_spec: RiskSpec,
                                    single_limits, multi_limits, n_grid=300):
-    # --- QCQP 两种口径 ---
-    if (ret_spec.kind in ("total_log", "total_log_annual") and
-            risk_spec.kind in ("log_std", "log_std_annual")):
-        print("[INFO] 使用 QCQP（log 口径均值/方差）")
-        mu, Sigma = _mu_Sigma_for_log_qcqp(port_daily)
-        grid, W, R, S, *_ = sweep_frontier_by_risk(mu, Sigma, single_limits, multi_limits, n_grid=n_grid)
+    # 统一判断 + 构造 μ、Σ
+    mu, Sigma, tag, msg = build_mu_Sigma_for_qcqp(port_daily, ret_spec, risk_spec)
+    print("[INFO]", msg)
+
+    if tag in (QCQPTag.EXACT, QCQPTag.APPROX):
+        # 走 QCQP（EXACT 精确；APPROX 为线性化近似）
+        grid, W, R, S, *_ = sweep_frontier_by_risk(mu, Sigma,
+                                                   single_limits, multi_limits, n_grid=n_grid)
         return grid, W, R, S
 
-    if (ret_spec.kind == "ew_roll_log" and risk_spec.kind == "ew_roll_log_std" and
-            (ret_spec.N == risk_spec.N) and (ret_spec.lam == risk_spec.lam)):
-        print("[INFO] 使用 QCQP（EWMA-log 口径：N=%d, λ=%.2f）" % (ret_spec.N, risk_spec.lam))
-        mu, Sigma = _mu_Sigma_for_ewma_log_qcqp(port_daily, ret_spec.N, ret_spec.lam)
-        grid, W, R, S, *_ = sweep_frontier_by_risk(mu, Sigma, single_limits, multi_limits, n_grid=n_grid)
-        return grid, W, R, S
-
-    # --- 非 QCQP：走多阶段 SLSQP 强化版 ---
+    # 其它情况：走强化版 SLSQP（多起点 + 同温带 + 软惩罚 + 随机游走热启动）
     print("[INFO] 使用 SLSQP（多起点 + 同温带 + 软惩罚 + 随机游走热启动）")
     grid, W, R, S = multistage_frontier_scan_slqp(
         port_daily, ret_spec, risk_spec,
         single_limits, multi_limits,
         n_grid=n_grid,
-        risk_band=5e-7,  # 可按横轴尺度微调
+        risk_band=5e-7,
         rho_penalty=5e4,
         n_starts=6, seed=2024,
         walk_per_anchor=60, walk_step=0.08, walk_sigma_tol=1e-4,
@@ -1223,6 +1349,11 @@ def spec_axis_labels(ret_spec: ReturnSpec, risk_spec: RiskSpec) -> tuple[str, st
             ret_label = "指数加权滚动对数收益"
         else:
             ret_label = f"指数加权滚动{ret_spec.N}期对数收益(λ={ret_spec.lam})"
+    elif ret_spec.kind == "ew_roll_mean_simple":
+        if ret_spec.N is None or ret_spec.lam is None:
+            ret_label = "指数加权普通收益均值"
+        else:
+            ret_label = f"指数加权{ret_spec.N}期普通收益均值(λ={ret_spec.lam})"
     elif ret_spec.kind == "mean_simple":
         ret_label = "普通收益率均值"
     elif ret_spec.kind == "mean_log":
@@ -1756,8 +1887,8 @@ def run_level_layer(level: str,
 
 if __name__ == '__main__':
     # ---- 统一配置（可按需调整）----
-    RET_SPEC = ReturnSpec(kind="mean_simple", N=20, lam=0.94)
-    RISK_SPEC = RiskSpec(kind="std", N=20, lam=0.94, p=0.99)
+    RET_SPEC = ReturnSpec(kind="ew_roll_log", N=120, lam=0.94)
+    RISK_SPEC = RiskSpec(kind="ew_roll_log_std", N=120, lam=0.94, p=0.99)
     ''' ---------------------------------- 可用指标:
 "total_cum",  # 总累计收益率: Π(1+R)-1
 "total_geom_annual",  # 总年化复利收益: (Π(1+R))**(252/T)-1
@@ -1765,6 +1896,7 @@ if __name__ == '__main__':
 "total_log_annual",  # 总年化对数收益: (Σlog(1+R))/T*252
 "ew_roll_cum",  # 指数加权滚动N区间累计收益率
 "ew_roll_log"  # 指数加权滚动N区间对数收益率
+"ew_roll_mean_simple"   # 指数加权普通收益均值
 "mean_simple",  # 普通收益率均值
 "mean_log"  # 对数收益率均值
 
