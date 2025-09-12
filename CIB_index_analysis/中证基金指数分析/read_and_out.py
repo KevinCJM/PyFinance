@@ -61,7 +61,7 @@ def read_and_combine_excel(file_list: List[str]) -> pd.DataFrame:
     return all_data
 
 
-def main(identifiers_to_include):
+def main(identifiers_to_include, col_name='index_code'):
     """
     主函数
     """
@@ -112,9 +112,12 @@ def main(identifiers_to_include):
     # 定义输出文件的完整路径
     output_path = os.path.join(current_dir, output_filename)
 
+    if col_name:
+        combined_data = combined_data.pivot(index='date', columns=col_name, values='close')
+
     # 保存到 Excel
     try:
-        combined_data.to_excel(output_path, index=False, engine='openpyxl')
+        combined_data.to_excel(output_path, index=True, engine='openpyxl')
         print(f"\n[SUCCESS] 数据已成功合并并保存至: {output_path}")
         print("\n输出数据预览 (前5行):")
         print(combined_data.head())
@@ -133,4 +136,4 @@ if __name__ == '__main__':
         '中证货币基金指数',
         # 您可以在此添加更多代码或名称
     ]
-    main(index_list)
+    main(index_list, 'index_name')
