@@ -14,7 +14,8 @@ import numpy as np
 import cvxpy as cp
 import pandas as pd
 import plotly.graph_objects as go
-from typing import List, Dict, Any, Tuple, Optional
+from dataclasses import dataclass
+from typing import List, Dict, Any, Tuple, Optional, Literal
 
 ''' ========= 工具：加载 & 基础统计 =========
 '''
@@ -92,9 +93,8 @@ def str_time():
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 
 
-# ========= 指标规格（统一口径） =========
-from dataclasses import dataclass
-from typing import Literal
+''' ========= 指标规格（统一口径） ========= 
+'''
 
 TRADING_DAYS = 252.0
 
@@ -104,7 +104,9 @@ ReturnType = Literal[
     "total_log",  # 总对数收益: Σ log(1+R)
     "total_log_annual",  # 总年化对数收益: (Σlog(1+R))/T*252
     "ew_roll_cum",  # 指数加权滚动N区间累计收益率
-    "ew_roll_log"  # 指数加权滚动N区间对数收益率
+    "ew_roll_log",  # 指数加权滚动N区间对数收益率
+    "mean_simple",  # 普通收益率均值
+    "mean_log"  # 对数收益率均值
 ]
 
 RiskType = Literal[
@@ -185,6 +187,10 @@ def return_metric(R: np.ndarray, spec: ReturnSpec) -> float:
         log_win = np.log(_safe_one_plus(r_win))
         log_agg = float(np.dot(w, log_win))
         return float(np.exp(log_agg) - 1.0) if spec.kind == "ew_roll_cum" else float(log_agg)
+    if spec.kind == "mean_simple":
+        return float(np.mean(R))  # 普通收益率均值
+    if spec.kind == "mean_log":
+        return float(np.mean(np.log(one_plus)))  # 对数收益率均值
     raise ValueError(f"Unknown ReturnSpec: {spec}")
 
 
@@ -282,7 +288,10 @@ def _mu_Sigma_for_ewma_log_qcqp(port_daily: np.ndarray, N: int, lam: float) -> t
     return mu.astype(np.float64), Sigma_psd.astype(np.float64)
 
 
-# ========= SLQP（SLSQP）路径 =========
+''' ========= SLSQP 路径 ========= 
+'''
+
+
 def _scipy_slsqp_one(
         port_daily: np.ndarray,
         ret_spec: ReturnSpec,
@@ -653,16 +662,32 @@ def sweep_frontier_by_risk_unified(port_daily: np.ndarray,
     return grid, W, R, S
 
 
-# ========= 统一计算：任意 W → 指标列 =========
+''' ========= 统一指标计算 ========== 
+'''
+
+
+# 对任意权重矩阵 W（m×n）统一计算收益与风险两列
 def compute_metrics_for_W(port_daily: np.ndarray, W: np.ndarray,
                           ret_spec: ReturnSpec, risk_spec: RiskSpec,
                           col_ret: str = "ret_annual", col_risk: str = "vol_annual") -> pd.DataFrame:
     """
     对任意权重矩阵 W（m×n）统一计算收益与风险两列，列名默认沿用原脚本，便于无缝替换。
+
+    参数:
+        port_daily: 形状为[T, n]的日度收益率矩阵，T为时间维度，n为资产数量
+        W: 形状为[m, n]的权重矩阵，m为组合数量，n为资产数量
+        ret_spec: 收益指标计算规范对象
+        risk_spec: 风险指标计算规范对象
+        col_ret: 收益列的列名，默认为"ret_annual"
+        col_risk: 风险列的列名，默认为"vol_annual"
+
+    返回:
+        pd.DataFrame: 包含权重、收益和风险指标的DataFrame，形状为[m, n+2]
     """
     T, n = port_daily.shape
     assert W.shape[1] == n
-    # R_all: [T, m] = [T,n] @ [n,m]
+    # 计算所有组合在各个时间点的收益率：R_all = port_daily @ W.T
+    # 结果矩阵R_all的形状为[T, m]，每一列表示一个组合的收益率时间序列
     R_all = port_daily @ W.T
     # 分别逐列算指标（避免大复制）
     m = W.shape[0]
@@ -1198,6 +1223,10 @@ def spec_axis_labels(ret_spec: ReturnSpec, risk_spec: RiskSpec) -> tuple[str, st
             ret_label = "指数加权滚动对数收益"
         else:
             ret_label = f"指数加权滚动{ret_spec.N}期对数收益(λ={ret_spec.lam})"
+    elif ret_spec.kind == "mean_simple":
+        ret_label = "普通收益率均值"
+    elif ret_spec.kind == "mean_log":
+        ret_label = "对数收益率均值"
     else:
         ret_label = "收益"
 
@@ -1306,7 +1335,9 @@ def plot_efficient_frontier(
         fig.show()
 
 
-# ========= 其他小工具 =========
+''' ========= 其他小工具 ========= 
+'''
+
 
 def dict_alloc_to_vector(assets: List[str], alloc_map: Dict[str, float]) -> np.ndarray:
     return np.array([alloc_map.get(a, 0.0) for a in assets], dtype=np.float64)
@@ -1546,7 +1577,9 @@ def random_walk_frontier_explore(
     return W
 
 
-# ========= 核心流程（全局 & 等级） =========
+''' ========= 核心流程 (全局 & 等级)  ========= 
+'''
+
 
 def run_global_layer(cfg: Dict[str, Any],
                      assets_list: List[str],
@@ -1723,8 +1756,8 @@ def run_level_layer(level: str,
 
 if __name__ == '__main__':
     # ---- 统一配置（可按需调整）----
-    RET_SPEC = ReturnSpec(kind="ew_roll_log", N=20, lam=0.94)
-    RISK_SPEC = RiskSpec(kind="log_std", N=20, lam=0.94, p=0.99)
+    RET_SPEC = ReturnSpec(kind="mean_simple", N=20, lam=0.94)
+    RISK_SPEC = RiskSpec(kind="std", N=20, lam=0.94, p=0.99)
     ''' ---------------------------------- 可用指标:
 "total_cum",  # 总累计收益率: Π(1+R)-1
 "total_geom_annual",  # 总年化复利收益: (Π(1+R))**(252/T)-1
@@ -1732,6 +1765,8 @@ if __name__ == '__main__':
 "total_log_annual",  # 总年化对数收益: (Σlog(1+R))/T*252
 "ew_roll_cum",  # 指数加权滚动N区间累计收益率
 "ew_roll_log"  # 指数加权滚动N区间对数收益率
+"mean_simple",  # 普通收益率均值
+"mean_log"  # 对数收益率均值
 
 "std",  # 总日普通收益标准差
 "std_annual",  # 总日普通收益年化标准差
