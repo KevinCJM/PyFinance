@@ -14,6 +14,11 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List, Tuple
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+try:
+    from numba import njit, prange
+    HAS_NUMBA = True
+except Exception:
+    HAS_NUMBA = False
 
 import numpy as np
 import pandas as pd
@@ -147,6 +152,157 @@ def _build_group_struct(
     up = np.asarray(up_list, dtype=np.float64)
     return members, gid, gsize, low, up
 
+
+# ============== 可选：Numba 版 POCS 投影（释放 GIL，便于多线程） ==============
+if HAS_NUMBA:
+    @njit(cache=True, nogil=True)
+    def _pocs_project_numba(
+        v: np.ndarray,
+        lows: np.ndarray,
+        highs: np.ndarray,
+        members: np.ndarray,           # 长度 L 的资产索引
+        gid_for_member: np.ndarray,    # 长度 L 的对应组 id
+        gsize: np.ndarray,             # 长度 m 的组规模
+        low_g: np.ndarray,             # 长度 m 的组下限
+        up_g: np.ndarray,              # 长度 m 的组上限
+        inv_n: float,
+        n: int,
+        m: int,
+        max_iter: int,
+        tol: float,
+        damping: float,
+    ) -> Tuple[boolean, np.ndarray]:
+        x = v.copy()
+
+        # 初始盒约束 + sum=1
+        for i in range(n):
+            if x[i] < lows[i]:
+                x[i] = lows[i]
+            elif x[i] > highs[i]:
+                x[i] = highs[i]
+        s = 0.0
+        for i in range(n):
+            s += x[i]
+        adj = (1.0 - s) * inv_n
+        for i in range(n):
+            x[i] += adj
+
+        x_prev = x.copy()
+        L = members.shape[0]
+        t = np.zeros(m, dtype=x.dtype)
+        delta = np.zeros(n, dtype=x.dtype)
+
+        for _ in range(max_iter):
+            # 盒约束
+            for i in range(n):
+                if x[i] < lows[i]:
+                    x[i] = lows[i]
+                elif x[i] > highs[i]:
+                    x[i] = highs[i]
+            # sum=1
+            s = 0.0
+            for i in range(n):
+                s += x[i]
+            adj = (1.0 - s) * inv_n
+            for i in range(n):
+                x[i] += adj
+
+            if m > 0:
+                # 组和 t
+                for j in range(m):
+                    t[j] = 0.0
+                for idx in range(L):
+                    t[gid_for_member[idx]] += x[members[idx]]
+                # net 校正
+                for j in range(n):
+                    delta[j] = 0.0
+                for j in range(m):
+                    over = t[j] - up_g[j]
+                    under = low_g[j] - t[j]
+                    corr = 0.0
+                    if over > 0.0:
+                        corr = -over / gsize[j]
+                    elif under > 0.0:
+                        corr = under / gsize[j]
+                    if damping != 1.0:
+                        corr *= damping
+                    # 散射回资产
+                    # 再次遍历成员
+                    for idx in range(L):
+                        if gid_for_member[idx] == j:
+                            delta[members[idx]] += corr
+                for i in range(n):
+                    x[i] += delta[i]
+                # sum=1
+                s = 0.0
+                for i in range(n):
+                    s += x[i]
+                adj = (1.0 - s) * inv_n
+                for i in range(n):
+                    x[i] += adj
+
+            # 收敛
+            md = 0.0
+            for i in range(n):
+                d = x[i] - x_prev[i]
+                if d < 0:
+                    d = -d
+                if d > md:
+                    md = d
+                x_prev[i] = x[i]
+            if md < tol:
+                break
+
+        # 严格校验
+        for i in range(n):
+            if x[i] < lows[i] - 1e-6 or x[i] > highs[i] + 1e-6:
+                return False, x
+        if m > 0:
+            for j in range(m):
+                t[j] = 0.0
+            for idx in range(L):
+                t[gid_for_member[idx]] += x[members[idx]]
+            for j in range(m):
+                if t[j] < low_g[j] - 1e-6 or t[j] > up_g[j] + 1e-6:
+                    return False, x
+        s = 0.0
+        for i in range(n):
+            s += x[i]
+        if abs(s - 1.0) > 1e-6:
+            return False, x
+        return True, x
+
+    def make_pocs_projector_numba(
+        single_limits: Iterable[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        max_iter: int = 200,
+        tol: float = 1e-9,
+        damping: float = 1.0,
+    ):
+        single_limits = tuple(single_limits)
+        n = len(single_limits)
+        lows = np.array([a for a, _ in single_limits], dtype=np.float32)
+        highs = np.array([b for _, b in single_limits], dtype=np.float32)
+        members, gid, gsize, low_g, up_g = _build_group_struct(multi_limits, n)
+        members = members.astype(np.int64)
+        gid = gid.astype(np.int64)
+        gsize = (gsize if gsize.size else np.array([], dtype=np.float32)).astype(np.float32)
+        low_g = (low_g if low_g.size else np.array([], dtype=np.float32)).astype(np.float32)
+        up_g = (up_g if up_g.size else np.array([], dtype=np.float32)).astype(np.float32)
+        m = low_g.size
+        inv_n = 1.0 / float(n)
+
+        def project(v: np.ndarray):
+            vv = np.array(v, dtype=np.float32, copy=True)
+            ok, x = _pocs_project_numba(
+                vv, lows, highs, members, gid, gsize, low_g, up_g,
+                float(inv_n), int(n), int(m), int(max_iter), float(tol), float(damping)
+            )
+            if ok:
+                return x.astype(np.float64, copy=False)
+            return None
+
+        return project
 
 def make_pocs_projector(
     single_limits: Iterable[Tuple[float, float]],
@@ -368,6 +524,7 @@ def generate_weights_random_walk(
     projector_iters: int = 200,
     projector_tol: float = 1e-9,
     projector_damping: float = 1.0,
+    use_numba: bool | None = None,
 ) -> np.ndarray:
     """使用带约束的随机游走生成一批合法权重 (M,N)。"""
     log(
@@ -375,7 +532,11 @@ def generate_weights_random_walk(
         f"N={N}, samples={num_samples}, step={step_size}"
     )
     rng = np.random.default_rng(seed)
-    projector = make_pocs_projector(
+    if use_numba is None:
+        use_numba = HAS_NUMBA
+    projector = (
+        make_pocs_projector_numba if (use_numba and HAS_NUMBA) else make_pocs_projector
+    )(
         single_limits=single_limits,
         multi_limits=multi_limits,
         max_iter=projector_iters,
@@ -412,6 +573,7 @@ def generate_weights_from_seeds(
     projector_tol: float = 1e-9,
     projector_damping: float = 1.0,
     parallel_workers: int | None = None,
+    use_numba: bool | None = None,
 ) -> np.ndarray:
     """
     从一组起始点（通常为上一轮的有效前沿点）出发，进行局部随机游走，生成新的合法权重。
@@ -459,6 +621,18 @@ def generate_weights_from_seeds(
     if parallel_workers is None:
         cpu = os.cpu_count() or 4
         parallel_workers = min(8, max(2, cpu // 2))
+
+    if use_numba is None:
+        use_numba = HAS_NUMBA
+    projector = (
+        make_pocs_projector_numba if (use_numba and HAS_NUMBA) else make_pocs_projector
+    )(
+        single_limits=single_limits,
+        multi_limits=multi_limits,
+        max_iter=projector_iters,
+        tol=projector_tol,
+        damping=projector_damping,
+    )
 
     with ThreadPoolExecutor(max_workers=parallel_workers) as ex:
         futures = [ex.submit(_task, i) for i in range(seeds.shape[0])]
@@ -838,6 +1012,7 @@ def multi_level_random_walk_config(
         projector_iters=p_iters,
         projector_tol=p_tol,
         projector_damping=p_damping,
+        use_numba=bool(r0_cfg.get("use_numba", False)),
     )
     if W.size == 0:
         log("[第0轮] 未获得任何权重，终止。")
@@ -921,6 +1096,7 @@ def multi_level_random_walk_config(
             projector_tol=p_tol,
             projector_damping=p_damping,
             parallel_workers=int(cfg.get("parallel_workers", 0)) or None,
+            use_numba=bool(cfg.get("use_numba", False)),
         )
         if new_W.size == 0:
             log(f"[第{r}轮] 未生成新权重，提前停止。")
