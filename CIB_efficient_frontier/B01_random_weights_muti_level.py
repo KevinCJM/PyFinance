@@ -1153,26 +1153,15 @@ def run_pipeline(
         multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
         *,
         seed: int = 12345,
-        # 单层（旧）路径参数（保留以兼容）：
-        num_samples: int = 200,
-        step_size: float = 0.99,
-        # 多层（新）路径参数：
-        use_multi_level: bool = True,
         rounds_config: Dict[int, Dict[str, Any]] | None = None,
-        initial_samples: int = 200,
-        rounds: int = 3,
-        samples_per_round: int = 200,
-        step_size_initial: float = 0.99,
-        step_size_mid: float = 0.5,
-        step_decay: float = 1.0,
         # 公共参数
         annual_trading_days: float = 252.0,
         drop_duplicates_decimals: int = 4,
         show_plot: bool = True,
 ) -> None:
     """
-    端到端执行（单层或多层）：数据 -> 权重 -> 指标 -> 前沿 -> 绘图。
-    - 默认采用多层随机游走策略；可通过 use_multi_level=False 退回旧流程。
+    端到端执行：数据 -> 权重 -> 指标 -> 前沿 -> 绘图。
+    仅支持字典式 rounds_config 配置多轮参数。
     """
     overall_t0 = time.time()
 
@@ -1183,83 +1172,21 @@ def run_pipeline(
     T, N = port_daily_returns.shape
     log(f"数据准备完成：T={T}, N={N}")
 
-    if use_multi_level:
-        if rounds_config is not None:
-            # 基于字典配置的多层策略
-            W, ret_annual, vol_annual, ef_mask = multi_level_random_walk_config(
-                port_daily_returns=port_daily_returns,
-                single_limits=SINGLE_LIMITS if 'SINGLE_LIMITS' in globals() else single_limits,
-                multi_limits=MULTI_LIMITS if 'MULTI_LIMITS' in globals() else multi_limits,
-                rounds_config=rounds_config,
-                dedup_decimals=drop_duplicates_decimals,
-                annual_trading_days=annual_trading_days,
-                global_seed=seed,
-            )
-            if W.size == 0:
-                log("多层（字典配置）流程未产出结果，终止。")
-                return
-        else:
-            # 新：多层随机游走（参数化）
-            W, ret_annual, vol_annual, ef_mask = multi_level_random_walk(
-                port_daily_returns=port_daily_returns,
-                single_limits=SINGLE_LIMITS if 'SINGLE_LIMITS' in globals() else single_limits,
-                multi_limits=MULTI_LIMITS if 'MULTI_LIMITS' in globals() else multi_limits,
-                seed=seed,
-                initial_samples=initial_samples,
-                rounds=rounds,
-                samples_per_round=samples_per_round,
-                step_size_initial=step_size_initial,
-                step_size_mid=step_size_mid,
-                step_decay=step_decay,
-                dedup_decimals=drop_duplicates_decimals,
-                annual_trading_days=annual_trading_days,
-            )
-            if W.size == 0:
-                log("多层流程未产出结果，终止。")
-                return
-    else:
-        # 旧：单层随机游走
-        G, low_g, up_g = build_group_matrix(N, multi_limits)
-        lows = np.array([a for a, _ in single_limits], dtype=np.float64)
-        highs = np.array([b for _, b in single_limits], dtype=np.float64)
+    if rounds_config is None:
+        raise ValueError("rounds_config 不能为空（仅支持字典配置模式）")
 
-        W = generate_weights_random_walk(
-            N=N,
-            single_limits=single_limits,
-            multi_limits=multi_limits,
-            seed=seed,
-            num_samples=num_samples,
-            step_size=step_size,
-        )
-        if W.shape[0] == 0:
-            log("未获得任何权重，流程终止。")
-            return
-
-        W = deduplicate_weights(W, decimals=drop_duplicates_decimals)
-        log(f"去重后样本数: {W.shape[0]}")
-        log("执行向量化约束校验...")
-        valid_mask = validate_weights_batch(W, lows, highs, G, low_g, up_g, atol=1e-6)
-        W = W[valid_mask]
-        log(f"校验完成，有效权重: {W.shape[0]}")
-        if W.shape[0] == 0:
-            log("有效权重为空，流程终止。")
-            return
-
-        log("批量计算年化收益与年化波动...")
-        t0 = time.time()
-        ret_annual, vol_annual = compute_perf_arrays(
-            port_daily_returns, W, trading_days=annual_trading_days, ddof=1
-        )
-        finite_mask = np.isfinite(ret_annual) & np.isfinite(vol_annual)
-        if not np.all(finite_mask):
-            W = W[finite_mask]
-            ret_annual = ret_annual[finite_mask]
-            vol_annual = vol_annual[finite_mask]
-            log("发现无效样本，已过滤。")
-        log(f"绩效计算完成，用时 {time.time() - t0:.2f}s")
-
-        ef_mask = cal_ef_mask(ret_annual, vol_annual)
-        log(f"有效前沿点数: {ef_mask.sum()} / {ef_mask.size}")
+    W, ret_annual, vol_annual, ef_mask = multi_level_random_walk_config(
+        port_daily_returns=port_daily_returns,
+        single_limits=single_limits,
+        multi_limits=multi_limits,
+        rounds_config=rounds_config,
+        dedup_decimals=drop_duplicates_decimals,
+        annual_trading_days=annual_trading_days,
+        global_seed=seed,
+    )
+    if W.size == 0:
+        log("多层（字典配置）流程未产出结果，终止。")
+        return
 
     # 7) 绘图
     log("生成交互式图表...")
@@ -1289,33 +1216,21 @@ if __name__ == "__main__":
     # 多资产联合约束（示例为空；可设如 {(0,1):(0.2,0.6)}）
     MULTI_LIMITS: Dict[Tuple[int, ...], Tuple[float, float]] = {}
 
-    # 随机游走与指标参数（多层）
+    # 随机游走与指标参数（仅字典方式）
     RANDOM_SEED = 12345
-    # 旧单层参数（如需退回旧流程可用）：
-    NUM_SAMPLES = 100000
-    STEP_SIZE = 0.1
-    # 多层参数（两种方式二选一）
-    USE_MULTI_LEVEL = True
-    # A) 字典方式（推荐）：逐轮灵活配置
+    # 字典式多轮配置（参数含义见 multi_level_random_walk_config 注释）
     ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
-        0: {"samples": 10000, "step_size": 0.2},
-        1: {"samples_total": 1000, "step_size": 0.08, "vol_bins": 100, "parallel_workers": 80},
-        2: {"samples_total": 2000, "step_size": 0.06, "vol_bins": 200, "parallel_workers": 80},
-        3: {"samples_total": 3000, "step_size": 0.04, "vol_bins": 300, "parallel_workers": 80},
-        4: {"samples_total": 5000, "step_size": 0.02, "vol_bins": 500, "parallel_workers": 80},
+        0: {"samples": 300, "step_size": 0.99},
+        1: {"samples_total": 1000, "step_size": 0.1, "vol_bins": 100, "parallel_workers": 8},
+        2: {"samples_total": 2000, "step_size": 0.1, "vol_bins": 200, "parallel_workers": 8},
+        3: {"samples_total": 3000, "step_size": 0.05, "vol_bins": 300, "parallel_workers": 8},
+        4: {"samples_total": 5000, "step_size": 0.01, "vol_bins": 500, "parallel_workers": 8},
     }
-    # B) 旧参数化方式（保留兼容，不用可忽略）
-    INITIAL_SAMPLES = 300  # 初始采样数量，用于算法开始时的样本数据量
-    ROUNDS = 3  # 优化轮次，算法执行的总轮数
-    SAMPLES_PER_ROUND = 300  # 每轮采样数量，每轮优化过程中生成的新样本数
-    STEP_SIZE_INITIAL = 0.99  # 初始步长，算法开始时的参数调整步长
-    STEP_SIZE_MID = 0.5  # 中间步长，算法过程中的参考步长值
-    STEP_DECAY = 1.0  # 步长衰减因子，控制步长随轮次的衰减程度
-    TRADING_DAYS = 252.0  # 年交易日数量，用于金融计算中的年化转换
-    DEDUP_DECIMALS = 4  # 去重精度，数据去重时保留的小数位数
+    TRADING_DAYS = 252.0  # 年化换算用交易天数
+    DEDUP_DECIMALS = 4     # 权重去重精度（行）
 
-    # 是否显示图表（自测时可置 False，避免打开窗口）
-    SHOW_PLOT = True
+    # 是否显示图表（自测/批处理可为 False）
+    SHOW_PLOT = False
 
     log("程序开始运行")
     run_pipeline(
@@ -1325,18 +1240,7 @@ if __name__ == "__main__":
         single_limits=SINGLE_LIMITS,
         multi_limits=MULTI_LIMITS,
         seed=RANDOM_SEED,
-        # 旧单层参数
-        num_samples=NUM_SAMPLES,
-        step_size=STEP_SIZE,
-        # 多层参数
-        use_multi_level=USE_MULTI_LEVEL,
         rounds_config=ROUNDS_CONFIG,
-        initial_samples=INITIAL_SAMPLES,
-        rounds=ROUNDS,
-        samples_per_round=SAMPLES_PER_ROUND,
-        step_size_initial=STEP_SIZE_INITIAL,
-        step_size_mid=STEP_SIZE_MID,
-        step_decay=STEP_DECAY,
         # 公共参数
         annual_trading_days=TRADING_DAYS,
         drop_duplicates_decimals=DEDUP_DECIMALS,
