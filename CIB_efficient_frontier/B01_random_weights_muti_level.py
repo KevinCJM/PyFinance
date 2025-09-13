@@ -393,6 +393,7 @@ def generate_weights_from_seeds(
     multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
     rng: np.random.Generator,
     samples_per_seed: int = 50,
+    per_seed_quota: np.ndarray | None = None,
     step_size: float = 0.3,
     projector_iters: int = 200,
     projector_tol: float = 1e-9,
@@ -416,10 +417,16 @@ def generate_weights_from_seeds(
     )
 
     out: List[np.ndarray] = []
-    for seed in seeds:
+    quotas = (
+        per_seed_quota.astype(int, copy=False)
+        if per_seed_quota is not None
+        else np.full(seeds.shape[0], int(samples_per_seed), dtype=int)
+    )
+    for seed, q in zip(seeds, quotas):
         current = seed.copy()
         accepted = 0
-        for _ in range(samples_per_seed):
+        # 允许 q==0 的种子被跳过（密集区抑制）
+        for _ in range(int(q)):
             proposal = current + rng.normal(loc=0.0, scale=step_size, size=N)
             adjusted = projector(proposal)
             if adjusted is not None:
@@ -430,6 +437,96 @@ def generate_weights_from_seeds(
     if not out:
         return np.empty((0, N), dtype=np.float64)
     return np.vstack(out).astype(np.float64, copy=False)
+
+
+def _compute_local_spacing(vol_sorted: np.ndarray) -> np.ndarray:
+    """给定按升序排序的 vol，计算每点的局部间距尺度 d_i（端点用一侧差分）。"""
+    n = vol_sorted.shape[0]
+    if n == 1:
+        return np.array([1.0], dtype=np.float64)
+    d = np.empty(n, dtype=np.float64)
+    d[0] = vol_sorted[1] - vol_sorted[0]
+    d[-1] = vol_sorted[-1] - vol_sorted[-2]
+    if n > 2:
+        left = vol_sorted[1:-1] - vol_sorted[:-2]
+        right = vol_sorted[2:] - vol_sorted[1:-1]
+        d[1:-1] = 0.5 * (left + right)
+    # 避免非正间距
+    d = np.maximum(d, 0.0)
+    return d
+
+
+def _assign_quota_by_spacing(
+    seeds_vol: np.ndarray,
+    samples_total: int,
+    *,
+    d_target_bins: int | None = None,
+    d_target: float | None = None,
+    q_min: float = 0.0,
+    q_max: float = 6.0,
+    min_quota_per_seed: int = 0,
+) -> np.ndarray:
+    """
+    基于邻近间距的配额分配：
+    - 计算局部间距 d_i，与目标间距 d_target 比例转为权重 w_i=clip(d_i/d_target, q_min, q_max)
+    - 将权重归一化到整数配额，总和为 samples_total；若需要，确保每个非零权重点至少 min_quota_per_seed。
+    - 返回与 seeds_vol 同长的整型配额数组。
+    """
+    k = seeds_vol.shape[0]
+    if k == 0 or samples_total <= 0:
+        return np.zeros((0,), dtype=int)
+    order = np.argsort(seeds_vol)
+    vol_sorted = seeds_vol[order]
+    d = _compute_local_spacing(vol_sorted)
+    # 目标间距：优先 d_target；否则按分箱估计
+    if d_target is None:
+        if d_target_bins is None:
+            d_target_bins = max(30, min(80, k))
+        rng = vol_sorted[-1] - vol_sorted[0]
+        d_target = (rng / float(d_target_bins)) if rng > 0 else 1.0
+    w = d / float(d_target)
+    # 限幅
+    w = np.clip(w, q_min, q_max)
+    # 若全为 0，退化为均分
+    if not np.any(w > 0):
+        quotas = np.full(k, samples_total // k, dtype=int)
+        quotas[: samples_total % k] += 1
+        # 还原原顺序
+        out = np.empty_like(quotas)
+        out[order] = quotas
+        return out
+    # 归一化为期望配额
+    w_sum = w.sum()
+    expected = w / w_sum * float(samples_total)
+    base = np.floor(expected).astype(int)
+    remainder = expected - base
+    remaining = samples_total - int(base.sum())
+    if remaining > 0:
+        take = np.argsort(-remainder)[:remaining]
+        base[take] += 1
+    # 最小配额约束（仅对 w>0 的点）
+    if min_quota_per_seed > 0:
+        mask_pos = w > 0
+        need = np.maximum(min_quota_per_seed - base[mask_pos], 0)
+        inc_total = int(need.sum())
+        if inc_total > 0:
+            base[mask_pos] += need
+            # 为保持总量，按最小 remainder 或权重小的点回收
+            dec_candidates = np.where(~mask_pos, 0, base)[0]
+            # 简化：从配额最高的点开始回收
+            idx_sorted = np.argsort(-base)
+            to_recover = inc_total
+            for i in idx_sorted:
+                if to_recover == 0:
+                    break
+                take = min(base[i], to_recover)
+                base[i] -= take
+                to_recover -= take
+            base = np.maximum(base, 0)
+    # 还原到原顺序
+    out = np.empty_like(base)
+    out[order] = base
+    return out
 
 
 def multi_level_random_walk(
@@ -633,16 +730,28 @@ def multi_level_random_walk_config(
         p_damping = float(cfg.get("projector_damping", 1.0))
         r_seed = int(cfg.get("seed", global_seed))
 
-        # 目标采样数：优先 samples_per_seed；否则按 samples_total 平均分配
-        if "samples_per_seed" in cfg:
-            sps = int(cfg["samples_per_seed"]) or 1
-        else:
+        per_seed_quota = None
+        desc = ""
+        if "samples_total" in cfg:
             total = int(cfg.get("samples_total", 200))
-            sps = max(1, int(np.ceil(total / seeds.shape[0])))
+            per_seed_quota = _assign_quota_by_spacing(
+                seeds_vol=compute_perf_arrays(
+                    port_daily_returns, seeds, trading_days=annual_trading_days, ddof=1
+                )[1],
+                samples_total=total,
+                d_target_bins=int(cfg.get("spacing_d_target_bins", 60)),
+                d_target=None,
+                q_min=float(cfg.get("spacing_q_min", 0.0)),
+                q_max=float(cfg.get("spacing_q_max", 6.0)),
+                min_quota_per_seed=int(cfg.get("spacing_min_quota_per_seed", 0)),
+            )
+            desc = f"总量 {total}，间距自适应分配（min={per_seed_quota.min()}, median={int(np.median(per_seed_quota))}, max={per_seed_quota.max()}）"
+        else:
+            sps = int(cfg.get("samples_per_seed", 1)) or 1
+            per_seed_quota = np.full(seeds.shape[0], sps, dtype=int)
+            desc = f"每种子 {sps} 次"
 
-        log(
-            f"[第{r}轮] 以 {seeds.shape[0]} 个种子，步长={step_mid}，每种子 {sps} 次"
-        )
+        log(f"[第{r}轮] 以 {seeds.shape[0]} 个种子，步长={step_mid}，{desc}")
 
         rng = np.random.default_rng(r_seed)
         new_W = generate_weights_from_seeds(
@@ -650,7 +759,8 @@ def multi_level_random_walk_config(
             single_limits=single_limits,
             multi_limits=multi_limits,
             rng=rng,
-            samples_per_seed=sps,
+            per_seed_quota=per_seed_quota,
+            samples_per_seed=1,
             step_size=step_mid,
             projector_iters=p_iters,
             projector_tol=p_tol,
@@ -832,9 +942,9 @@ if __name__ == "__main__":
     # A) 字典方式（推荐）：逐轮灵活配置
     ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
         0: {"samples": 300, "step_size": 0.99},               # 大步长探索
-        1: {"samples_total": 300, "step_size": 0.5},          # 中步长，按总量均分到每个种子
-        2: {"samples_per_seed": 3, "step_size": 0.5},         # 中步长，每个种子固定采样数
-        3: {"samples_per_seed": 3, "step_size": 0.5},
+        1: {"samples_total": 400, "step_size": 0.5, "spacing_d_target_bins": 60},
+        2: {"samples_total": 400, "step_size": 0.3, "spacing_d_target_bins": 60},
+        3: {"samples_total": 400, "step_size": 0.2, "spacing_d_target_bins": 60},
     }
     # B) 旧参数化方式（保留兼容，不用可忽略）
     INITIAL_SAMPLES = 300
