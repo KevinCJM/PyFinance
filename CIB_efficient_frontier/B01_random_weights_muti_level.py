@@ -12,6 +12,8 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Tuple
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -222,22 +224,21 @@ def compute_perf_arrays(
     ddof: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    返回 (ret_annual, vol_annual)，不构建 DataFrame。
+    返回 (ret_annual, vol_annual)，保持原逻辑（精确 log1p）：
+    R = port_daily @ portfolio_allocs.T；对每列做 log1p 后统计均值与标准差并年化。
+    为提升 BLAS 效率，将权重转置为 C 连续内存。
     """
-    # dtype
-    if port_daily.dtype != np.float64:
-        port_daily = port_daily.astype(np.float64, copy=False)
-    if portfolio_allocs.dtype != np.float64:
-        portfolio_allocs = portfolio_allocs.astype(np.float64, copy=False)
+    # 使用 float32 优先（SIMD/内存带宽更友好）；保持原公式(log1p)不变
+    if port_daily.dtype != np.float32:
+        port_daily = port_daily.astype(np.float32, copy=False)
+    if portfolio_allocs.dtype != np.float32:
+        portfolio_allocs = portfolio_allocs.astype(np.float32, copy=False)
 
     T = port_daily.shape[0]
-    # 一次 GEMM
-    R = port_daily @ portfolio_allocs.T  # (T, M)
-    # 原地 log1p
+    WT = np.ascontiguousarray(portfolio_allocs.T)  # (N, M) 连续内存利于 GEMM
+    R = port_daily @ WT  # (T, M)
     np.log1p(R, out=R)
-    # 年化对数收益
-    ret_annual = (R.sum(axis=0) / float(T)) * float(trading_days)
-    # 年化波动
+    ret_annual = (R.sum(axis=0, dtype=np.float32) / float(T)) * float(trading_days)
     vol_annual = R.std(axis=0, ddof=ddof) * np.sqrt(float(trading_days))
     return ret_annual, vol_annual
 
@@ -264,18 +265,29 @@ def plot_efficient_frontier_arrays(
 
     fig = go.Figure()
 
+    # 云点数量过大时做等间距抽样以加速渲染（不影响前沿点）
+    max_cloud = 5000
+    M = vol_all.shape[0]
+    if M > max_cloud:
+        sel = np.linspace(0, M - 1, max_cloud, dtype=int)
+        vol_cloud = vol_all[sel]
+        ret_cloud = ret_all[sel]
+        weights_cloud = weights_all[sel]
+    else:
+        vol_cloud, ret_cloud, weights_cloud = vol_all, ret_all, weights_all
+
     # 全部点
-    fig.add_trace(go.Scatter(
-        x=vol_all, y=ret_all,
+    fig.add_trace(go.Scattergl(
+        x=vol_cloud, y=ret_cloud,
         mode='markers',
         name='随机权重数据点',
         marker=dict(color='grey', size=2, opacity=0.45),
-        customdata=weights_all,
+        customdata=weights_cloud,
         hovertemplate=hovertemplate
     ))
 
     # 有效前沿
-    fig.add_trace(go.Scatter(
+    fig.add_trace(go.Scattergl(
         x=vol_all[ef_mask], y=ret_all[ef_mask],
         mode='markers',
         name='有效前沿数据点',
@@ -331,7 +343,8 @@ def load_returns_from_excel(
         raise ValueError(f"缺少列: {missing}")
 
     hist_ret_df = df[assets_list].pct_change().dropna()
-    arr = hist_ret_df.values.astype(np.float64, copy=False)
+    # 全局采用 float32，以获得更好的吞吐（矩阵乘法/缓存）
+    arr = hist_ret_df.values.astype(np.float32, copy=False)
     log(f"数据加载完成，样本天数={arr.shape[0]}，资产数={arr.shape[1]}")
     return arr, assets_list
 
@@ -398,6 +411,7 @@ def generate_weights_from_seeds(
     projector_iters: int = 200,
     projector_tol: float = 1e-9,
     projector_damping: float = 1.0,
+    parallel_workers: int | None = None,
 ) -> np.ndarray:
     """
     从一组起始点（通常为上一轮的有效前沿点）出发，进行局部随机游走，生成新的合法权重。
@@ -422,18 +436,37 @@ def generate_weights_from_seeds(
         if per_seed_quota is not None
         else np.full(seeds.shape[0], int(samples_per_seed), dtype=int)
     )
-    for seed, q in zip(seeds, quotas):
-        current = seed.copy()
-        accepted = 0
-        # 允许 q==0 的种子被跳过（密集区抑制）
-        for _ in range(int(q)):
-            proposal = current + rng.normal(loc=0.0, scale=step_size, size=N)
+
+    # 线程任务：从单个种子生成 q 个样本
+    def _task(seed_idx: int) -> np.ndarray:
+        q = int(quotas[seed_idx])
+        if q <= 0:
+            return np.empty((0, N), dtype=np.float64)
+        local_rng = np.random.default_rng(rng.integers(2**63 - 1))
+        current = seeds[seed_idx].copy()
+        buf = []
+        for _ in range(q):
+            proposal = current + local_rng.normal(loc=0.0, scale=step_size, size=N)
             adjusted = projector(proposal)
             if adjusted is not None:
-                out.append(adjusted)
+                buf.append(adjusted)
                 current = adjusted
-                accepted += 1
-        # 可选：如果该 seed 接受数太少，可追加少量尝试；为简洁先忽略
+        if not buf:
+            return np.empty((0, N), dtype=np.float64)
+        return np.vstack(buf).astype(np.float64, copy=False)
+
+    # 并发执行（默认使用 CPU 核数上限的 1/2~8 之间）
+    if parallel_workers is None:
+        cpu = os.cpu_count() or 4
+        parallel_workers = min(8, max(2, cpu // 2))
+
+    with ThreadPoolExecutor(max_workers=parallel_workers) as ex:
+        futures = [ex.submit(_task, i) for i in range(seeds.shape[0])]
+        for fu in as_completed(futures):
+            arr = fu.result()
+            if arr.size:
+                out.append(arr)
+    # 可选：如果该 seed 接受数太少，可追加少量尝试；为简洁先忽略
     if not out:
         return np.empty((0, N), dtype=np.float64)
     return np.vstack(out).astype(np.float64, copy=False)
@@ -887,6 +920,7 @@ def multi_level_random_walk_config(
             projector_iters=p_iters,
             projector_tol=p_tol,
             projector_damping=p_damping,
+            parallel_workers=int(cfg.get("parallel_workers", 0)) or None,
         )
         if new_W.size == 0:
             log(f"[第{r}轮] 未生成新权重，提前停止。")
@@ -1082,10 +1116,11 @@ if __name__ == "__main__":
     USE_MULTI_LEVEL = True
     # A) 字典方式（推荐）：逐轮灵活配置
     ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
-        0: {"samples": 300, "step_size": 0.99},               # 大步长探索
-        1: {"samples_total": 400, "step_size": 0.5, "vol_bins": 60},
-        2: {"samples_total": 400, "step_size": 0.3, "vol_bins": 60},
-        3: {"samples_total": 400, "step_size": 0.2, "vol_bins": 60},
+        0: {"samples": 300, "step_size": 0.99},
+        1: {"samples_total": 1000, "step_size": 0.1, "vol_bins": 100, "parallel_workers": 8},
+        2: {"samples_total": 2000, "step_size": 0.1, "vol_bins": 200, "parallel_workers": 8},
+        3: {"samples_total": 3000, "step_size": 0.05, "vol_bins": 300, "parallel_workers": 8},
+        4: {"samples_total": 5000, "step_size": 0.01, "vol_bins": 500, "parallel_workers": 8},
     }
     # B) 旧参数化方式（保留兼容，不用可忽略）
     INITIAL_SAMPLES = 300
@@ -1098,7 +1133,7 @@ if __name__ == "__main__":
     DEDUP_DECIMALS = 4
 
     # 是否显示图表（自测时可置 False，避免打开窗口）
-    SHOW_PLOT = True
+    SHOW_PLOT = False
 
     log("程序开始运行")
     run_pipeline(
