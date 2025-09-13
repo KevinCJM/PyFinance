@@ -1,0 +1,31 @@
+#!/bin/sh
+
+# Block committing certain file types and local test scripts
+
+# Get staged files (Added/Copied/Modified/Renamed)
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACMR)
+
+BLOCKED=""
+
+for f in $STAGED_FILES; do
+  case "$f" in
+    *.csv|*.xlsx|*.html)
+      BLOCKED="$BLOCKED\n$f";;
+  esac
+  base=$(basename "$f")
+  case "$base" in
+    local_test_*.py)
+      BLOCKED="$BLOCKED\n$f";;
+  esac
+done
+
+if [ -n "$BLOCKED" ]; then
+  echo "❌ 提交被阻止：检测到禁止提交的文件："
+  printf "%b\n" "$BLOCKED"
+  echo "规则：不提交 .csv/.xlsx/.html 以及以 local_test_ 开头的 .py 文件"
+  echo "处理：从暂存区移除（git restore --staged <file>）或将其添加到 .gitignore 后重试"
+  exit 1
+fi
+
+exit 0
+
