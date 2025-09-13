@@ -1,14 +1,15 @@
 # -*- encoding: utf-8 -*-
 """
 @File: B01_random_weights.py
-@Modify Time: 2025/9/9 20:23       
+@Modify Time: 2025/9/9 20:23
 @Author: Kevin-Chen
 @Descriptions: 结合了（1）通用随机组合与有效前沿 和（2）基于建议配置生成各风险等级可配置空间的功能
 """
+import time
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from typing import List, Dict, Any
+from typing import List, Any, Dict, Tuple, Iterable
 
 
 # 绘图函数 (模块化)
@@ -53,8 +54,8 @@ def plot_efficient_frontier(
     fig.show()
 
 
-# 指标计算函数 (老)
-def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.ndarray) -> pd.DataFrame:
+# 指标计算函数
+def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarray) -> pd.DataFrame:
     """
     批量计算多个资产组合的性能指标，使用向量化操作以提高效率。
     """
@@ -85,44 +86,69 @@ def generate_alloc_perf_batch_old(port_daily: np.ndarray, portfolio_allocs: np.n
     return pd.concat([weight_df, ret_df], axis=1).dropna()
 
 
-# 指标计算函数 (内存友好)
-def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarray,
-                              chunk_size: int = 20000) -> pd.DataFrame:
+def generate_alloc_perf_batch_fast(
+        port_daily: np.ndarray,  # shape: (T, N)  资产日收益率
+        portfolio_allocs: np.ndarray,  # shape: (M, N)  组合权重
+        trading_days: float = 252.0,
+        ddof: int = 1,
+) -> pd.DataFrame:
     """
-    分块计算，避免 T×N 爆内存；并且对 log 计算做 clip，清理 ±inf。
+    批量计算多个资产组合的性能指标（年化对数收益、年化波动），纯向量化 & 省内存版本。
+    - 组合日收益: R = port_daily @ portfolio_allocs.T   (一次BLAS)
+    - 年化收益:   ret_annual = (sum_t log1p(R_t))/T * 252
+    - 年化波动:   vol_annual = std(log1p(R_t)) * sqrt(252)
+
+    说明：
+    1) 与“先累乘再取log”的做法等价，但直接按列 sum(log1p) 更快更稳。
+    2) 为了避免额外大矩阵，log1p 在 R 上原地执行（内存复用）。
+    3) 若某组合存在 -100% 日收益（1+r=0），对应列会出现 -inf，这里用 isfinite 过滤掉。
     """
-    assert port_daily.shape[1] == portfolio_allocs.shape[1]
-    T, n = port_daily.shape
-    N = portfolio_allocs.shape[0]
+    # --- 形状与 dtype 检查 ---
+    assert port_daily.ndim == 2 and portfolio_allocs.ndim == 2, "输入必须是二维数组"
+    T, N = port_daily.shape
+    M, Nw = portfolio_allocs.shape
+    assert N == Nw, "资产数不一致"
+    # 强制为 float64（BLAS/归约在 f64 上通常更稳更快）
+    if port_daily.dtype != np.float64:
+        port_daily = port_daily.astype(np.float64, copy=False)
+    if portfolio_allocs.dtype != np.float64:
+        portfolio_allocs = portfolio_allocs.astype(np.float64, copy=False)
 
-    res_list = []
-    for s in range(0, N, chunk_size):
-        e = min(N, s + chunk_size)
-        W = portfolio_allocs[s:e]  # [m, n]
-        R = port_daily @ W.T  # [T, m]
+    # --- 1) 组合日收益：一次 GEMM（最重的一步）---
+    # R shape: (T, M)
+    R = port_daily @ portfolio_allocs.T
 
-        # 安全 log：避免 <= -1 的极端值
-        one_plus_R = np.clip(1.0 + R, 1e-12, None)
-        port_cum = np.cumprod(one_plus_R, axis=0)  # [T, m]
-        final_ret = port_cum[-1, :]
+    # --- 2) 在 R 上“原地”转成对数收益：R ← log1p(R) ---
+    # 避免额外分配巨大中间矩阵
+    # 若存在 r = -1 导致 1+r=0 → -inf，这里保留 -inf，稍后统一过滤
+    np.log1p(R, out=R)
 
-        log_total = np.log(np.clip(final_ret, 1e-12, None))
-        ret_annual = (log_total / T) * 252.0
+    # --- 3) 年化收益（对数收益的年化）：(sum_t log(1+r_t))/T * 252 ---
+    sum_log = R.sum(axis=0)  # (M,)
+    ret_annual = (sum_log / float(T)) * float(trading_days)
 
-        log_daily = np.log(one_plus_R)
-        vol_annual = np.std(log_daily, axis=0, ddof=1) * np.sqrt(252.0)
+    # --- 4) 年化波动（对数收益的标准差年化）---
+    vol_annual = R.std(axis=0, ddof=ddof) * np.sqrt(float(trading_days))
 
-        df = pd.DataFrame({
+    # --- 5) 组装 DataFrame（并过滤掉无效列）---
+    valid = np.isfinite(ret_annual) & np.isfinite(vol_annual)
+    if not np.all(valid):
+        # 仅保留数值有效的组合（例如出现 -inf 的列会被去掉）
+        ret_annual = ret_annual[valid]
+        vol_annual = vol_annual[valid]
+        portfolio_allocs = portfolio_allocs[valid, :]
+
+    weight_df = pd.DataFrame(
+        portfolio_allocs,
+        columns=[f"w_{i}" for i in range(portfolio_allocs.shape[1])]
+    )
+    perf_df = pd.DataFrame(
+        {
             "ret_annual": ret_annual,
             "vol_annual": vol_annual,
-        })
-        wdf = pd.DataFrame(W, columns=[f"w_{i}" for i in range(n)])
-        res_list.append(pd.concat([wdf, df], axis=1))
-
-    out = pd.concat(res_list, axis=0, ignore_index=True)
-    # 清理 ±inf
-    out = out.replace([np.inf, -np.inf], np.nan).dropna()
-    return out
+        }
+    )
+    return pd.concat([weight_df, perf_df], axis=1)
 
 
 # 识别出位于有效前沿上的点
@@ -277,7 +303,165 @@ def project_to_constraints_pocs(v: np.ndarray,
     return x
 
 
+def _build_group_struct(multi_limits: Dict[Tuple[int, ...], Tuple[float, float]], n: int):
+    """
+    将多资产联合约束编译为向量化所需的稀疏结构：
+    - members:  所有组成员索引拼接的一维数组（长度等于所有组成员总数）
+    - gid:      与 members 对应的组id（同长度），用于 segment 归并/散射
+    - gsize:    每个组的大小（m,）且转为 float64，作为 ||a||^2
+    - low, up:  组下界与上界（m,）
+    """
+    if not multi_limits:
+        # 空约束：返回最小结构以避免分支判断
+        members = np.empty(0, dtype=np.int64)
+        gid = np.empty(0, dtype=np.int64)
+        gsize = np.empty(0, dtype=np.float64)
+        low = np.empty(0, dtype=np.float64)
+        up = np.empty(0, dtype=np.float64)
+        return members, gid, gsize, low, up
+
+    # 展平所有组
+    members_list = []
+    gid_list = []
+    gsize_list = []
+    low_list = []
+    up_list = []
+
+    g = 0
+    for idx_tuple, (lo, hi) in multi_limits.items():
+        idx = np.asarray(idx_tuple, dtype=np.int64)
+        if idx.size == 0:
+            continue
+        # 基本健壮性（可按需放宽）
+        # 这里不强制 idx 在 [0, n) 内或去重，默认上游保证
+        members_list.append(idx)
+        gid_list.append(np.full(idx.size, g, dtype=np.int64))
+        gsize_list.append(float(idx.size))
+        low_list.append(float(lo))
+        up_list.append(float(hi))
+        g += 1
+
+    if g == 0:
+        members = np.empty(0, dtype=np.int64)
+        gid = np.empty(0, dtype=np.int64)
+        gsize = np.empty(0, dtype=np.float64)
+        low = np.empty(0, dtype=np.float64)
+        up = np.empty(0, dtype=np.float64)
+    else:
+        members = np.concatenate(members_list, axis=0)
+        gid = np.concatenate(gid_list, axis=0)
+        gsize = np.asarray(gsize_list, dtype=np.float64)
+        low = np.asarray(low_list, dtype=np.float64)
+        up = np.asarray(up_list, dtype=np.float64)
+
+    return members, gid, gsize, low, up
+
+
+def project_to_constraints_pocs_fast(v: np.ndarray,
+                                     single_limits: Iterable[Tuple[float, float]],
+                                     multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+                                     max_iter: int = 200,
+                                     tol: float = 1e-9,
+                                     damping: float = 1.0):
+    """
+    高性能 POCS：在每次迭代中，
+      1) 盒约束投影（向量化 clip）
+      2) 总和=1 超平面投影（x += (1-sum)/n）
+      3) 所有“组和”半空间并行投影（一次性算组和 -> 计算超/欠 -> segment 散射更新）
+
+    与原版的差异：
+      - 第3步不再逐组 for-loop，而是“并行组校正”（block-Jacobi 式），数值上更稳定；
+      - 保留 damping∈(0,1] 抑制过冲；
+      - 收敛停止使用 L_inf 范数；尾部做严格校验，若有违约束返回 None。
+
+    参数与返回：
+      v: 初始向量（不会被原地改动）
+      single_limits: [(low_i, high_i)]
+      multi_limits: {(i,j,k,...): (low, high)}
+      返回：满足所有约束的解向量；若未满足（数值容差1e-6）则返回 None
+    """
+    x = np.array(v, dtype=np.float64, copy=True)
+    n = x.size
+
+    # 单资产上下界（一次性取出成向量，零拷贝广播）
+    single_limits = tuple(single_limits)
+    lows = np.fromiter((a for a, _ in single_limits), count=n, dtype=np.float64)
+    highs = np.fromiter((b for _, b in single_limits), count=n, dtype=np.float64)
+
+    # 预编译组结构
+    members, gid, gsize, low_g, up_g = _build_group_struct(multi_limits, n)
+    m = low_g.size  # 组数
+
+    inv_n = 1.0 / n
+
+    # 预处理：先盒约束，再对齐到 sum=1，减少初始振荡
+    np.clip(x, lows, highs, out=x)
+    x += (1.0 - x.sum()) * inv_n
+
+    # 为收敛判据准备缓冲，避免每轮分配新内存
+    x_prev = x.copy()
+
+    for _ in range(max_iter):
+        # 1) 盒约束
+        np.clip(x, lows, highs, out=x)
+
+        # 2) 总和=1
+        x += (1.0 - x.sum()) * inv_n
+
+        # 3) 并行组投影（若 m=0 则跳过）
+        if m:
+            # 组和：sum_{i in group g} x_i
+            # 用 bincount 做 segment reduce：O(#members)
+            t = np.bincount(gid, weights=x[members], minlength=m).astype(np.float64, copy=False)
+
+            # 超出/低于量（>=0）
+            over = t - up_g
+            over = np.where(over > 0.0, over, 0.0)  # max(t - up, 0)
+            under = low_g - t
+            under = np.where(under > 0.0, under, 0.0)  # max(low - t, 0)
+
+            # 每组需要在组内均匀分摊的校正量：(+表示上调, -表示下调)
+            #   t>up  ⇒  每个成员 -= (t-up)/|G|
+            #   t<low ⇒  每个成员 += (low-t)/|G|
+            # 合并为：net = (-over + under) / |G|
+            net = (-over + under) / gsize
+            if damping != 1.0:
+                net *= damping
+
+            # 将 net[g] 散射到资产维度：Δx_i = sum_{g: i∈G} net[g]
+            # 用 bincount 做“组到资产”的一次性聚合，避免 np.add.at 的原子慢路径
+            delta_x = np.bincount(members, weights=net[gid], minlength=n).astype(np.float64, copy=False)
+            x += delta_x
+
+            # 再次总和=1（组投影会改变总和）
+            x += (1.0 - x.sum()) * inv_n
+
+        # 收敛判据（L_inf）
+        if np.max(np.abs(x - x_prev)) < tol:
+            break
+        # 覆盖旧缓冲，避免重复分配
+        x_prev[:] = x
+
+    # -------- 严格校验（带容差） --------
+    # 单资产
+    if (x < lows - 1e-6).any() or (x > highs + 1e-6).any():
+        return None
+
+    # 组和
+    if m:
+        t = np.bincount(gid, weights=x[members], minlength=m).astype(np.float64, copy=False)
+        if (t < low_g - 1e-6).any() or (t > up_g + 1e-6).any():
+            return None
+
+    # 总和
+    if not np.isclose(x.sum(), 1.0, atol=1e-6):
+        return None
+
+    return x
+
+
 if __name__ == '__main__':
+    s_t = time.time()
     # --- 1. 数据加载和预处理 ---
     hist_value = pd.read_excel('历史净值数据.xlsx', sheet_name='历史净值数据')
     hist_value = hist_value.set_index('date')
@@ -305,21 +489,21 @@ if __name__ == '__main__':
     print("开始通过约束随机游走生成投资组合...")
     num_of_asset = len(assets_list)
     current_weights = np.array([1 / num_of_asset] * num_of_asset)
-    step_size = 0.02
+    step_size = 0.99
     single_limits = [(0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]  # 示例：每个资产的权重限制在0%到100%
     multi_limits = {}  # 多资产联合约束, 写法: {(tuple_idx): (low, high)}
 
     final_weights = []
-    for i in range(10000):
+    s_t_2 = time.time()
+    for i in range(100000):
         new_proposal = current_weights + np.random.normal(0, step_size, len(current_weights))
-        # adjusted_weights = primal_dual_interior_point(new_proposal, single_limits, multi_limits, max_iter=100)
-        adjusted_weights = project_to_constraints_pocs(new_proposal, single_limits, multi_limits)
+        adjusted_weights = project_to_constraints_pocs_fast(new_proposal, single_limits, multi_limits)
 
         if adjusted_weights is not None:
             final_weights.append(adjusted_weights)
             current_weights = adjusted_weights
 
-    print(f"成功生成 {len(final_weights)} 个候选投资组合。")
+    print(f"成功生成 {len(final_weights)} 个候选投资组合。耗时 {time.time() - s_t_2:.2f} 秒。")
 
     # --- 3. 显式校验和过滤权重 (新功能) ---
     print("正在对所有生成的权重进行最终校验...")
@@ -356,11 +540,13 @@ if __name__ == '__main__':
         port_daily_returns = hist_value_r[assets_list].values
 
         # 批量计算
-        results_df = generate_alloc_perf_batch(port_daily_returns, weights_array)
+        s_t_3 = time.time()
+        # results_df = generate_alloc_perf_batch(port_daily_returns, weights_array)
+        results_df = generate_alloc_perf_batch_fast(port_daily_returns, weights_array)
 
         # 找出有效前沿
         results_df = cal_ef2_v4_ultra_fast(results_df)
-        print("计算完成。")
+        print(f"计算完成, 耗时: {time.time() - s_t_3:.2f} 秒")
 
         # --- 5. 使用模块化函数进行交互式可视化 ---
         print("正在生成交互式图表...")
@@ -411,3 +597,5 @@ if __name__ == '__main__':
 
     else:
         print("未能生成任何有效的投资组合，无法进行后续计算和绘图。")
+
+    print(f"总耗时: {time.time() - s_t:.2f} 秒")
