@@ -7,18 +7,22 @@ B01_random_weights_faster.py
 - 性能重点：尽量使用 NumPy 向量化、减少中间对象与 DataFrame 依赖。
 """
 
-from __future__ import annotations
+from __future__ import annotations  # 启用 Python 3.10+ 的类型注解特性
 
 import time
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Tuple
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
 try:
     from numba import njit, prange
+
     HAS_NUMBA = True
+    print("Numba 可用，启用 JIT 加速。")
 except Exception:
     HAS_NUMBA = False
+    print("Numba 不可用，使用纯 Python 版本。")
 
 import numpy as np
 import pandas as pd
@@ -36,6 +40,7 @@ def log(msg: str) -> None:
     """标准化日志输出，带时间戳。"""
     print(f"[{_ts()}] {msg}")
 
+
 def cal_ef_mask(ret_annual: np.ndarray, vol_annual: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     """
     识别有效前沿：对收益降序排序，保留波动率新的“前缀最小”点。
@@ -52,7 +57,7 @@ def cal_ef_mask(ret_annual: np.ndarray, vol_annual: np.ndarray, eps: float = 1e-
 
 
 def build_group_matrix(
-    n_assets: int, multi_limits: Dict[Tuple[int, ...], Tuple[float, float]]
+        n_assets: int, multi_limits: Dict[Tuple[int, ...], Tuple[float, float]]
 ):
     """
     构建稠密组矩阵 G (m, n)，用于批量校验（权重 @ G.T）。
@@ -74,13 +79,13 @@ def build_group_matrix(
 
 
 def validate_weights_batch(
-    W: np.ndarray,
-    lows: np.ndarray,
-    highs: np.ndarray,
-    G: np.ndarray | None = None,
-    low_g: np.ndarray | None = None,
-    up_g: np.ndarray | None = None,
-    atol: float = 1e-6,
+        W: np.ndarray,
+        lows: np.ndarray,
+        highs: np.ndarray,
+        G: np.ndarray | None = None,
+        low_g: np.ndarray | None = None,
+        up_g: np.ndarray | None = None,
+        atol: float = 1e-6,
 ) -> np.ndarray:
     """
     向量化校验一批权重（行和=1、单资产上下限、组上下限）。
@@ -109,7 +114,7 @@ def validate_weights_batch(
 # ===================== 1) POCS 约束投影（高速） =====================
 
 def _build_group_struct(
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]], n: int
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]], n: int
 ):
     """
     为 POCS 投影构建“拼接索引 + 组id”结构，供 bincount 做 segment reduce / scatter。
@@ -157,20 +162,20 @@ def _build_group_struct(
 if HAS_NUMBA:
     @njit(cache=True, nogil=True)
     def _pocs_project_numba(
-        v: np.ndarray,
-        lows: np.ndarray,
-        highs: np.ndarray,
-        members: np.ndarray,           # 长度 L 的资产索引
-        gid_for_member: np.ndarray,    # 长度 L 的对应组 id
-        gsize: np.ndarray,             # 长度 m 的组规模
-        low_g: np.ndarray,             # 长度 m 的组下限
-        up_g: np.ndarray,              # 长度 m 的组上限
-        inv_n: float,
-        n: int,
-        m: int,
-        max_iter: int,
-        tol: float,
-        damping: float,
+            v: np.ndarray,
+            lows: np.ndarray,
+            highs: np.ndarray,
+            members: np.ndarray,  # 长度 L 的资产索引
+            gid_for_member: np.ndarray,  # 长度 L 的对应组 id
+            gsize: np.ndarray,  # 长度 m 的组规模
+            low_g: np.ndarray,  # 长度 m 的组下限
+            up_g: np.ndarray,  # 长度 m 的组上限
+            inv_n: float,
+            n: int,
+            m: int,
+            max_iter: int,
+            tol: float,
+            damping: float,
     ) -> Tuple[boolean, np.ndarray]:
         x = v.copy()
 
@@ -272,12 +277,13 @@ if HAS_NUMBA:
             return False, x
         return True, x
 
+
     def make_pocs_projector_numba(
-        single_limits: Iterable[Tuple[float, float]],
-        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-        max_iter: int = 200,
-        tol: float = 1e-9,
-        damping: float = 1.0,
+            single_limits: Iterable[Tuple[float, float]],
+            multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+            max_iter: int = 200,
+            tol: float = 1e-9,
+            damping: float = 1.0,
     ):
         single_limits = tuple(single_limits)
         n = len(single_limits)
@@ -304,12 +310,13 @@ if HAS_NUMBA:
 
         return project
 
+
 def make_pocs_projector(
-    single_limits: Iterable[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    max_iter: int = 200,
-    tol: float = 1e-9,
-    damping: float = 1.0,
+        single_limits: Iterable[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        max_iter: int = 200,
+        tol: float = 1e-9,
+        damping: float = 1.0,
 ):
     """
     预编译 POCS 约束，返回高性能投影函数 project(v)->x 或 None。
@@ -374,10 +381,10 @@ def make_pocs_projector(
 # ===================== 2) 批量指标计算（高效） =====================
 
 def compute_perf_arrays(
-    port_daily: np.ndarray,  # (T, N)
-    portfolio_allocs: np.ndarray,  # (M, N)
-    trading_days: float = 252.0,
-    ddof: int = 1,
+        port_daily: np.ndarray,  # (T, N)
+        portfolio_allocs: np.ndarray,  # (M, N)
+        trading_days: float = 252.0,
+        ddof: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     返回 (ret_annual, vol_annual)，保持原逻辑（精确 log1p）：
@@ -402,13 +409,13 @@ def compute_perf_arrays(
 # ===================== 3) 绘图（纯数组 + hovertemplate） =====================
 
 def plot_efficient_frontier_arrays(
-    vol_all: np.ndarray,
-    ret_all: np.ndarray,
-    weights_all: np.ndarray,  # (M, N)
-    ef_mask: np.ndarray,  # (M,)
-    asset_names: List[str],
-    title: str = "约束随机游走生成的投资组合与有效前沿",
-    show: bool = True,
+        vol_all: np.ndarray,
+        ret_all: np.ndarray,
+        weights_all: np.ndarray,  # (M, N)
+        ef_mask: np.ndarray,  # (M,)
+        asset_names: List[str],
+        title: str = "约束随机游走生成的投资组合与有效前沿",
+        show: bool = True,
 ):
     # 自定义 hover：使用 customdata 避免 Python 循环拼接
     # customdata: 权重矩阵 (M, N)
@@ -466,9 +473,9 @@ def plot_efficient_frontier_arrays(
 # ===================== 4) 数据与流程函数 =====================
 
 def load_returns_from_excel(
-    excel_path: str,
-    sheet_name: str,
-    assets_list: List[str],
+        excel_path: str,
+        sheet_name: str,
+        assets_list: List[str],
 ) -> Tuple[np.ndarray, List[str]]:
     """从 Excel 读取净值数据，生成日收益二维数组 (T,N)。"""
     log(f"加载数据: {excel_path} | sheet={sheet_name}")
@@ -515,16 +522,16 @@ def deduplicate_weights(W: np.ndarray, decimals: int = 4) -> np.ndarray:
 
 
 def generate_weights_random_walk(
-    N: int,
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    seed: int = 12345,
-    num_samples: int = 200,
-    step_size: float = 0.99,
-    projector_iters: int = 200,
-    projector_tol: float = 1e-9,
-    projector_damping: float = 1.0,
-    use_numba: bool | None = None,
+        N: int,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        seed: int = 12345,
+        num_samples: int = 200,
+        step_size: float = 0.99,
+        projector_iters: int = 200,
+        projector_tol: float = 1e-9,
+        projector_damping: float = 1.0,
+        use_numba: bool | None = None,
 ) -> np.ndarray:
     """使用带约束的随机游走生成一批合法权重 (M,N)。"""
     log(
@@ -562,18 +569,18 @@ def generate_weights_random_walk(
 
 
 def generate_weights_from_seeds(
-    seeds: np.ndarray,
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    rng: np.random.Generator,
-    samples_per_seed: int = 50,
-    per_seed_quota: np.ndarray | None = None,
-    step_size: float = 0.3,
-    projector_iters: int = 200,
-    projector_tol: float = 1e-9,
-    projector_damping: float = 1.0,
-    parallel_workers: int | None = None,
-    use_numba: bool | None = None,
+        seeds: np.ndarray,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        rng: np.random.Generator,
+        samples_per_seed: int = 50,
+        per_seed_quota: np.ndarray | None = None,
+        step_size: float = 0.3,
+        projector_iters: int = 200,
+        projector_tol: float = 1e-9,
+        projector_damping: float = 1.0,
+        parallel_workers: int | None = None,
+        use_numba: bool | None = None,
 ) -> np.ndarray:
     """
     从一组起始点（通常为上一轮的有效前沿点）出发，进行局部随机游走，生成新的合法权重。
@@ -604,7 +611,7 @@ def generate_weights_from_seeds(
         q = int(quotas[seed_idx])
         if q <= 0:
             return np.empty((0, N), dtype=np.float64)
-        local_rng = np.random.default_rng(rng.integers(2**63 - 1))
+        local_rng = np.random.default_rng(rng.integers(2 ** 63 - 1))
         current = seeds[seed_idx].copy()
         buf = []
         for _ in range(q):
@@ -664,14 +671,14 @@ def _compute_local_spacing(vol_sorted: np.ndarray) -> np.ndarray:
 
 
 def _assign_quota_by_spacing(
-    seeds_vol: np.ndarray,
-    samples_total: int,
-    *,
-    d_target_bins: int | None = None,
-    d_target: float | None = None,
-    q_min: float = 0.0,
-    q_max: float = 6.0,
-    min_quota_per_seed: int = 0,
+        seeds_vol: np.ndarray,
+        samples_total: int,
+        *,
+        d_target_bins: int | None = None,
+        d_target: float | None = None,
+        q_min: float = 0.0,
+        q_max: float = 6.0,
+        min_quota_per_seed: int = 0,
 ) -> np.ndarray:
     """
     基于邻近间距的配额分配：
@@ -737,13 +744,13 @@ def _assign_quota_by_spacing(
 
 
 def _assign_quota_by_vol_bins(
-    seeds_vol: np.ndarray,
-    samples_total: int,
-    *,
-    bins: int = 60,
-    weight_mode: str = "inverse",  # "inverse" or "deficit"
-    min_quota_per_seed: int = 0,
-    max_quota_per_seed: int | None = None,
+        seeds_vol: np.ndarray,
+        samples_total: int,
+        *,
+        bins: int = 60,
+        weight_mode: str = "inverse",  # "inverse" or "deficit"
+        min_quota_per_seed: int = 0,
+        max_quota_per_seed: int | None = None,
 ) -> np.ndarray:
     """
     根据波动率分桶策略为种子分配采样配额。
@@ -848,21 +855,20 @@ def _assign_quota_by_vol_bins(
     return base
 
 
-
 def multi_level_random_walk(
-    port_daily_returns: np.ndarray,
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    *,
-    seed: int = 12345,
-    initial_samples: int = 200,
-    rounds: int = 3,
-    samples_per_round: int = 200,
-    step_size_initial: float = 0.99,
-    step_size_mid: float = 0.5,
-    step_decay: float = 1.0,
-    dedup_decimals: int = 4,
-    annual_trading_days: float = 252.0,
+        port_daily_returns: np.ndarray,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        seed: int = 12345,
+        initial_samples: int = 200,
+        rounds: int = 3,
+        samples_per_round: int = 200,
+        step_size_initial: float = 0.99,
+        step_size_mid: float = 0.5,
+        step_decay: float = 1.0,
+        dedup_decimals: int = 4,
+        annual_trading_days: float = 252.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     多层随机游走：
@@ -963,14 +969,14 @@ def multi_level_random_walk(
 
 
 def multi_level_random_walk_config(
-    port_daily_returns: np.ndarray,
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    rounds_config: Dict[int, Dict[str, Any]],
-    *,
-    dedup_decimals: int = 4,
-    annual_trading_days: float = 252.0,
-    global_seed: int = 12345,
+        port_daily_returns: np.ndarray,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        rounds_config: Dict[int, Dict[str, Any]],
+        *,
+        dedup_decimals: int = 4,
+        annual_trading_days: float = 252.0,
+        global_seed: int = 12345,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     基于“字典配置”的多层随机游走：
@@ -1073,7 +1079,7 @@ def multi_level_random_walk_config(
             )
             zeros = int((per_seed_quota == 0).sum())
             desc = (
-                f"总量 {total}，按 vol 分桶分配（bins={int(cfg.get('vol_bins',60))}, "
+                f"总量 {total}，按 vol 分桶分配（bins={int(cfg.get('vol_bins', 60))}, "
                 f"min={per_seed_quota.min()}, median={int(np.median(per_seed_quota))}, max={per_seed_quota.max()}, zeros={zeros})"
             )
         else:
@@ -1140,29 +1146,29 @@ def multi_level_random_walk_config(
 
 
 def run_pipeline(
-    excel_path: str,
-    sheet_name: str,
-    assets_list: List[str],
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    *,
-    seed: int = 12345,
-    # 单层（旧）路径参数（保留以兼容）：
-    num_samples: int = 200,
-    step_size: float = 0.99,
-    # 多层（新）路径参数：
-    use_multi_level: bool = True,
-    rounds_config: Dict[int, Dict[str, Any]] | None = None,
-    initial_samples: int = 200,
-    rounds: int = 3,
-    samples_per_round: int = 200,
-    step_size_initial: float = 0.99,
-    step_size_mid: float = 0.5,
-    step_decay: float = 1.0,
-    # 公共参数
-    annual_trading_days: float = 252.0,
-    drop_duplicates_decimals: int = 4,
-    show_plot: bool = True,
+        excel_path: str,
+        sheet_name: str,
+        assets_list: List[str],
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        seed: int = 12345,
+        # 单层（旧）路径参数（保留以兼容）：
+        num_samples: int = 200,
+        step_size: float = 0.99,
+        # 多层（新）路径参数：
+        use_multi_level: bool = True,
+        rounds_config: Dict[int, Dict[str, Any]] | None = None,
+        initial_samples: int = 200,
+        rounds: int = 3,
+        samples_per_round: int = 200,
+        step_size_initial: float = 0.99,
+        step_size_mid: float = 0.5,
+        step_decay: float = 1.0,
+        # 公共参数
+        annual_trading_days: float = 252.0,
+        drop_duplicates_decimals: int = 4,
+        show_plot: bool = True,
 ) -> None:
     """
     端到端执行（单层或多层）：数据 -> 权重 -> 指标 -> 前沿 -> 绘图。
@@ -1286,30 +1292,30 @@ if __name__ == "__main__":
     # 随机游走与指标参数（多层）
     RANDOM_SEED = 12345
     # 旧单层参数（如需退回旧流程可用）：
-    NUM_SAMPLES = 200
-    STEP_SIZE = 0.99
+    NUM_SAMPLES = 100000
+    STEP_SIZE = 0.1
     # 多层参数（两种方式二选一）
     USE_MULTI_LEVEL = True
     # A) 字典方式（推荐）：逐轮灵活配置
     ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
-        0: {"samples": 300, "step_size": 0.99},
-        1: {"samples_total": 1000, "step_size": 0.1, "vol_bins": 100, "parallel_workers": 8},
-        2: {"samples_total": 2000, "step_size": 0.1, "vol_bins": 200, "parallel_workers": 8},
-        3: {"samples_total": 3000, "step_size": 0.05, "vol_bins": 300, "parallel_workers": 8},
-        4: {"samples_total": 5000, "step_size": 0.01, "vol_bins": 500, "parallel_workers": 8},
+        0: {"samples": 10000, "step_size": 0.2},
+        1: {"samples_total": 1000, "step_size": 0.08, "vol_bins": 100, "parallel_workers": 80},
+        2: {"samples_total": 2000, "step_size": 0.06, "vol_bins": 200, "parallel_workers": 80},
+        3: {"samples_total": 3000, "step_size": 0.04, "vol_bins": 300, "parallel_workers": 80},
+        4: {"samples_total": 5000, "step_size": 0.02, "vol_bins": 500, "parallel_workers": 80},
     }
     # B) 旧参数化方式（保留兼容，不用可忽略）
-    INITIAL_SAMPLES = 300
-    ROUNDS = 3
-    SAMPLES_PER_ROUND = 300
-    STEP_SIZE_INITIAL = 0.99
-    STEP_SIZE_MID = 0.5
-    STEP_DECAY = 1.0
-    TRADING_DAYS = 252.0
-    DEDUP_DECIMALS = 4
+    INITIAL_SAMPLES = 300  # 初始采样数量，用于算法开始时的样本数据量
+    ROUNDS = 3  # 优化轮次，算法执行的总轮数
+    SAMPLES_PER_ROUND = 300  # 每轮采样数量，每轮优化过程中生成的新样本数
+    STEP_SIZE_INITIAL = 0.99  # 初始步长，算法开始时的参数调整步长
+    STEP_SIZE_MID = 0.5  # 中间步长，算法过程中的参考步长值
+    STEP_DECAY = 1.0  # 步长衰减因子，控制步长随轮次的衰减程度
+    TRADING_DAYS = 252.0  # 年交易日数量，用于金融计算中的年化转换
+    DEDUP_DECIMALS = 4  # 去重精度，数据去重时保留的小数位数
 
     # 是否显示图表（自测时可置 False，避免打开窗口）
-    SHOW_PLOT = False
+    SHOW_PLOT = True
 
     log("程序开始运行")
     run_pipeline(
