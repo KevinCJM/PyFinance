@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -545,6 +545,139 @@ def multi_level_random_walk(
     return W, ret, vol, ef_mask
 
 
+def multi_level_random_walk_config(
+    port_daily_returns: np.ndarray,
+    single_limits: List[Tuple[float, float]],
+    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+    rounds_config: Dict[int, Dict[str, Any]],
+    *,
+    dedup_decimals: int = 4,
+    annual_trading_days: float = 252.0,
+    global_seed: int = 12345,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    基于“字典配置”的多层随机游走：
+    - rounds_config: { 轮次: { 参数... } }
+      - 第0轮（大步长）：需包含 `samples`（总采样数）与 `step_size`；可选 projector 参数：
+        `projector_iters`/`projector_tol`/`projector_damping`/`seed`。
+      - 第1..N轮（中步长）：包含 `step_size`，以下二选一：
+        - `samples_per_seed`：每个种子生成的数量；
+        - `samples_total`：本轮总体目标数量（会均分到各种子并向上取整）。
+        同样支持 projector 参数与 `seed`（若未给，沿用 global_seed 生成器）。
+    返回：最终 (W, ret, vol, ef_mask)。
+    """
+    if not rounds_config:
+        raise ValueError("rounds_config 为空")
+
+    # 预构建约束矩阵与上下界
+    T, N = port_daily_returns.shape
+    G, low_g, up_g = build_group_matrix(N, multi_limits)
+    lows = np.array([a for a, _ in single_limits], dtype=np.float64)
+    highs = np.array([b for _, b in single_limits], dtype=np.float64)
+
+    # Round 0：大步长
+    r0_cfg = rounds_config.get(0, {})
+    init_samples = int(r0_cfg.get("samples", 200))
+    init_step = float(r0_cfg.get("step_size", 0.99))
+    p_iters = int(r0_cfg.get("projector_iters", 200))
+    p_tol = float(r0_cfg.get("projector_tol", 1e-9))
+    p_damping = float(r0_cfg.get("projector_damping", 1.0))
+    seed0 = int(r0_cfg.get("seed", global_seed))
+
+    log(f"[第0轮] 大步长探索: samples={init_samples}, step={init_step}")
+    W = generate_weights_random_walk(
+        N=N,
+        single_limits=single_limits,
+        multi_limits=multi_limits,
+        seed=seed0,
+        num_samples=init_samples,
+        step_size=init_step,
+        projector_iters=p_iters,
+        projector_tol=p_tol,
+        projector_damping=p_damping,
+    )
+    if W.size == 0:
+        log("[第0轮] 未获得任何权重，终止。")
+        return W, np.array([]), np.array([]), np.array([], dtype=bool)
+
+    W = deduplicate_weights(W, decimals=dedup_decimals)
+    valid_mask = validate_weights_batch(W, lows, highs, G, low_g, up_g, atol=1e-6)
+    W = W[valid_mask]
+    log(f"[第0轮] 去重且有效的权重数: {W.shape[0]}")
+
+    ret, vol = compute_perf_arrays(
+        port_daily_returns, W, trading_days=annual_trading_days, ddof=1
+    )
+    finite_mask = np.isfinite(ret) & np.isfinite(vol)
+    if not np.all(finite_mask):
+        W, ret, vol = W[finite_mask], ret[finite_mask], vol[finite_mask]
+    ef_mask = cal_ef_mask(ret, vol)
+    log(f"[第0轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}")
+
+    # 后续轮次：按配置执行
+    max_round = max(rounds_config.keys())
+    for r in range(1, max_round + 1):
+        cfg = rounds_config.get(r)
+        if not cfg:
+            log(f"[第{r}轮] 未提供配置，跳过。")
+            continue
+
+        seeds = W[ef_mask]
+        if seeds.size == 0:
+            log(f"[第{r}轮] 无有效前沿点可作为种子，提前停止。")
+            break
+
+        step_mid = float(cfg.get("step_size", 0.5))
+        p_iters = int(cfg.get("projector_iters", 200))
+        p_tol = float(cfg.get("projector_tol", 1e-9))
+        p_damping = float(cfg.get("projector_damping", 1.0))
+        r_seed = int(cfg.get("seed", global_seed))
+
+        # 目标采样数：优先 samples_per_seed；否则按 samples_total 平均分配
+        if "samples_per_seed" in cfg:
+            sps = int(cfg["samples_per_seed"]) or 1
+        else:
+            total = int(cfg.get("samples_total", 200))
+            sps = max(1, int(np.ceil(total / seeds.shape[0])))
+
+        log(
+            f"[第{r}轮] 以 {seeds.shape[0]} 个种子，步长={step_mid}，每种子 {sps} 次"
+        )
+
+        rng = np.random.default_rng(r_seed)
+        new_W = generate_weights_from_seeds(
+            seeds=seeds,
+            single_limits=single_limits,
+            multi_limits=multi_limits,
+            rng=rng,
+            samples_per_seed=sps,
+            step_size=step_mid,
+            projector_iters=p_iters,
+            projector_tol=p_tol,
+            projector_damping=p_damping,
+        )
+        if new_W.size == 0:
+            log(f"[第{r}轮] 未生成新权重，提前停止。")
+            break
+
+        W = np.vstack([W, new_W])
+        W = deduplicate_weights(W, decimals=dedup_decimals)
+        valid_mask = validate_weights_batch(W, lows, highs, G, low_g, up_g, atol=1e-6)
+        W = W[valid_mask]
+        log(f"[第{r}轮] 合并后有效权重数: {W.shape[0]}")
+
+        ret, vol = compute_perf_arrays(
+            port_daily_returns, W, trading_days=annual_trading_days, ddof=1
+        )
+        finite_mask = np.isfinite(ret) & np.isfinite(vol)
+        if not np.all(finite_mask):
+            W, ret, vol = W[finite_mask], ret[finite_mask], vol[finite_mask]
+        ef_mask = cal_ef_mask(ret, vol)
+        log(f"[第{r}轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}")
+
+    return W, ret, vol, ef_mask
+
+
 def run_pipeline(
     excel_path: str,
     sheet_name: str,
@@ -558,6 +691,7 @@ def run_pipeline(
     step_size: float = 0.99,
     # 多层（新）路径参数：
     use_multi_level: bool = True,
+    rounds_config: Dict[int, Dict[str, Any]] | None = None,
     initial_samples: int = 200,
     rounds: int = 3,
     samples_per_round: int = 200,
@@ -583,24 +717,39 @@ def run_pipeline(
     log(f"数据准备完成：T={T}, N={N}")
 
     if use_multi_level:
-        # 新：多层随机游走
-        W, ret_annual, vol_annual, ef_mask = multi_level_random_walk(
-            port_daily_returns=port_daily_returns,
-            single_limits=SINGLE_LIMITS if 'SINGLE_LIMITS' in globals() else single_limits,
-            multi_limits=MULTI_LIMITS if 'MULTI_LIMITS' in globals() else multi_limits,
-            seed=seed,
-            initial_samples=initial_samples,
-            rounds=rounds,
-            samples_per_round=samples_per_round,
-            step_size_initial=step_size_initial,
-            step_size_mid=step_size_mid,
-            step_decay=step_decay,
-            dedup_decimals=drop_duplicates_decimals,
-            annual_trading_days=annual_trading_days,
-        )
-        if W.size == 0:
-            log("多层流程未产出结果，终止。")
-            return
+        if rounds_config is not None:
+            # 基于字典配置的多层策略
+            W, ret_annual, vol_annual, ef_mask = multi_level_random_walk_config(
+                port_daily_returns=port_daily_returns,
+                single_limits=SINGLE_LIMITS if 'SINGLE_LIMITS' in globals() else single_limits,
+                multi_limits=MULTI_LIMITS if 'MULTI_LIMITS' in globals() else multi_limits,
+                rounds_config=rounds_config,
+                dedup_decimals=drop_duplicates_decimals,
+                annual_trading_days=annual_trading_days,
+                global_seed=seed,
+            )
+            if W.size == 0:
+                log("多层（字典配置）流程未产出结果，终止。")
+                return
+        else:
+            # 新：多层随机游走（参数化）
+            W, ret_annual, vol_annual, ef_mask = multi_level_random_walk(
+                port_daily_returns=port_daily_returns,
+                single_limits=SINGLE_LIMITS if 'SINGLE_LIMITS' in globals() else single_limits,
+                multi_limits=MULTI_LIMITS if 'MULTI_LIMITS' in globals() else multi_limits,
+                seed=seed,
+                initial_samples=initial_samples,
+                rounds=rounds,
+                samples_per_round=samples_per_round,
+                step_size_initial=step_size_initial,
+                step_size_mid=step_size_mid,
+                step_decay=step_decay,
+                dedup_decimals=drop_duplicates_decimals,
+                annual_trading_days=annual_trading_days,
+            )
+            if W.size == 0:
+                log("多层流程未产出结果，终止。")
+                return
     else:
         # 旧：单层随机游走
         G, low_g, up_g = build_group_matrix(N, multi_limits)
@@ -678,14 +827,22 @@ if __name__ == "__main__":
     # 旧单层参数（如需退回旧流程可用）：
     NUM_SAMPLES = 200
     STEP_SIZE = 0.99
-    # 多层参数：
+    # 多层参数（两种方式二选一）
     USE_MULTI_LEVEL = True
-    INITIAL_SAMPLES = 300      # 第 0 轮大步长采样数量
-    ROUNDS = 3                 # 迭代轮数
-    SAMPLES_PER_ROUND = 300    # 每轮新增采样目标数（总量）
-    STEP_SIZE_INITIAL = 0.99   # 大步长
-    STEP_SIZE_MID = 0.5        # 中步长
-    STEP_DECAY = 1.0           # 中步长衰减系数（<=1.0 生效）
+    # A) 字典方式（推荐）：逐轮灵活配置
+    ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
+        0: {"samples": 300, "step_size": 0.99},               # 大步长探索
+        1: {"samples_total": 300, "step_size": 0.5},          # 中步长，按总量均分到每个种子
+        2: {"samples_per_seed": 3, "step_size": 0.5},         # 中步长，每个种子固定采样数
+        3: {"samples_per_seed": 3, "step_size": 0.5},
+    }
+    # B) 旧参数化方式（保留兼容，不用可忽略）
+    INITIAL_SAMPLES = 300
+    ROUNDS = 3
+    SAMPLES_PER_ROUND = 300
+    STEP_SIZE_INITIAL = 0.99
+    STEP_SIZE_MID = 0.5
+    STEP_DECAY = 1.0
     TRADING_DAYS = 252.0
     DEDUP_DECIMALS = 4
 
@@ -705,6 +862,7 @@ if __name__ == "__main__":
         step_size=STEP_SIZE,
         # 多层参数
         use_multi_level=USE_MULTI_LEVEL,
+        rounds_config=ROUNDS_CONFIG,
         initial_samples=INITIAL_SAMPLES,
         rounds=ROUNDS,
         samples_per_round=SAMPLES_PER_ROUND,
