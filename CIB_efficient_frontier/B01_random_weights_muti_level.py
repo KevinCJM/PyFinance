@@ -529,6 +529,105 @@ def _assign_quota_by_spacing(
     return out
 
 
+def _assign_quota_by_vol_bins(
+    seeds_vol: np.ndarray,
+    samples_total: int,
+    *,
+    bins: int = 60,
+    weight_mode: str = "inverse",  # "inverse" or "deficit"
+    min_quota_per_seed: int = 0,
+    max_quota_per_seed: int | None = None,
+) -> np.ndarray:
+    """
+    基于波动率分桶的配额分配：
+    - 将 seeds_vol 等宽分成 bins 桶，统计每桶种子数 count[b]。
+    - 为每个种子分配权重：
+        - inverse：w_seed = 1 / (count[bin(seed)] + 1e-9)，稀疏桶权重大；
+        - deficit：以目标桶密度 target = (#seeds / bins) 为参考，w_bin = max(target - count[b], 0)，再分给种子。
+    - 归一化为整数配额，总和 samples_total；可选最小/最大配额约束。
+    """
+    k = seeds_vol.shape[0]
+    if k == 0 or samples_total <= 0:
+        return np.zeros((0,), dtype=int)
+
+    vmin, vmax = float(seeds_vol.min()), float(seeds_vol.max())
+    if vmax <= vmin:
+        # 所有 vol 几乎相同，退化为均分
+        quotas = np.full(k, samples_total // k, dtype=int)
+        quotas[: samples_total % k] += 1
+        return quotas
+
+    edges = np.linspace(vmin, vmax, bins + 1)
+    # digitize 返回 1..bins，修正到 0..bins-1
+    bin_idx = np.clip(np.digitize(seeds_vol, edges, right=False) - 1, 0, bins - 1)
+    counts = np.bincount(bin_idx, minlength=bins).astype(float)
+
+    if weight_mode == "deficit":
+        target = k / float(bins)
+        w_bin = np.maximum(target - counts, 0.0)
+        # 若全 0，降级为 inverse
+        if not np.any(w_bin > 0):
+            w_bin = 1.0 / (counts + 1e-9)
+    else:  # inverse
+        w_bin = 1.0 / (counts + 1e-9)
+
+    w_seed = w_bin[bin_idx]
+    # 若仍全 0（极端情况），均分
+    if not np.any(w_seed > 0):
+        quotas = np.full(k, samples_total // k, dtype=int)
+        quotas[: samples_total % k] += 1
+        return quotas
+
+    # 归一化为期望配额
+    w_sum = w_seed.sum()
+    expected = w_seed / w_sum * float(samples_total)
+    base = np.floor(expected).astype(int)
+    remainder = expected - base
+    remaining = samples_total - int(base.sum())
+    if remaining > 0:
+        take = np.argsort(-remainder)[:remaining]
+        base[take] += 1
+
+    # 最小/最大配额约束
+    if min_quota_per_seed > 0:
+        need = np.maximum(min_quota_per_seed - base, 0)
+        inc_total = int(need.sum())
+        base += need
+        # 回收多出的配额
+        if inc_total > 0:
+            idx_sorted = np.argsort(-base)
+            to_recover = inc_total
+            for i in idx_sorted:
+                if to_recover == 0:
+                    break
+                can = base[i] - min_quota_per_seed
+                if can <= 0:
+                    continue
+                take = min(can, to_recover)
+                base[i] -= take
+                to_recover -= take
+    if max_quota_per_seed is not None:
+        over = np.maximum(base - int(max_quota_per_seed), 0)
+        reduce_total = int(over.sum())
+        base -= over
+        if reduce_total > 0:
+            # 把回收的 quota 再分配给未达上限者
+            mask = base < int(max_quota_per_seed)
+            if np.any(mask):
+                w2 = (int(max_quota_per_seed) - base[mask]).astype(float)
+                w2_sum = w2.sum()
+                if w2_sum > 0:
+                    expected2 = w2 / w2_sum * float(reduce_total)
+                    add = np.floor(expected2).astype(int)
+                    rem2 = int(reduce_total - add.sum())
+                    if rem2 > 0:
+                        idx2 = np.argsort(-(expected2 - add))[:rem2]
+                        add[idx2] += 1
+                    base[mask] += add
+
+    return base
+
+
 def multi_level_random_walk(
     port_daily_returns: np.ndarray,
     single_limits: List[Tuple[float, float]],
@@ -734,18 +833,22 @@ def multi_level_random_walk_config(
         desc = ""
         if "samples_total" in cfg:
             total = int(cfg.get("samples_total", 200))
-            per_seed_quota = _assign_quota_by_spacing(
-                seeds_vol=compute_perf_arrays(
-                    port_daily_returns, seeds, trading_days=annual_trading_days, ddof=1
-                )[1],
+            seeds_vol = compute_perf_arrays(
+                port_daily_returns, seeds, trading_days=annual_trading_days, ddof=1
+            )[1]
+            per_seed_quota = _assign_quota_by_vol_bins(
+                seeds_vol=seeds_vol,
                 samples_total=total,
-                d_target_bins=int(cfg.get("spacing_d_target_bins", 60)),
-                d_target=None,
-                q_min=float(cfg.get("spacing_q_min", 0.0)),
-                q_max=float(cfg.get("spacing_q_max", 6.0)),
-                min_quota_per_seed=int(cfg.get("spacing_min_quota_per_seed", 0)),
+                bins=int(cfg.get("vol_bins", 60)),
+                weight_mode=str(cfg.get("bin_weight_mode", "inverse")),
+                min_quota_per_seed=int(cfg.get("bin_min_quota_per_seed", 0)),
+                max_quota_per_seed=cfg.get("bin_max_quota_per_seed"),
             )
-            desc = f"总量 {total}，间距自适应分配（min={per_seed_quota.min()}, median={int(np.median(per_seed_quota))}, max={per_seed_quota.max()}）"
+            zeros = int((per_seed_quota == 0).sum())
+            desc = (
+                f"总量 {total}，按 vol 分桶分配（bins={int(cfg.get('vol_bins',60))}, "
+                f"min={per_seed_quota.min()}, median={int(np.median(per_seed_quota))}, max={per_seed_quota.max()}, zeros={zeros})"
+            )
         else:
             sps = int(cfg.get("samples_per_seed", 1)) or 1
             per_seed_quota = np.full(seeds.shape[0], sps, dtype=int)
@@ -942,9 +1045,9 @@ if __name__ == "__main__":
     # A) 字典方式（推荐）：逐轮灵活配置
     ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
         0: {"samples": 300, "step_size": 0.99},               # 大步长探索
-        1: {"samples_total": 400, "step_size": 0.5, "spacing_d_target_bins": 60},
-        2: {"samples_total": 400, "step_size": 0.3, "spacing_d_target_bins": 60},
-        3: {"samples_total": 400, "step_size": 0.2, "spacing_d_target_bins": 60},
+        1: {"samples_total": 400, "step_size": 0.5, "vol_bins": 60},
+        2: {"samples_total": 400, "step_size": 0.3, "vol_bins": 60},
+        3: {"samples_total": 400, "step_size": 0.2, "vol_bins": 60},
     }
     # B) 旧参数化方式（保留兼容，不用可忽略）
     INITIAL_SAMPLES = 300
