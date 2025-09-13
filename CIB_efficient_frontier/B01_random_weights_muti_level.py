@@ -539,12 +539,25 @@ def _assign_quota_by_vol_bins(
     max_quota_per_seed: int | None = None,
 ) -> np.ndarray:
     """
-    基于波动率分桶的配额分配：
-    - 将 seeds_vol 等宽分成 bins 桶，统计每桶种子数 count[b]。
-    - 为每个种子分配权重：
-        - inverse：w_seed = 1 / (count[bin(seed)] + 1e-9)，稀疏桶权重大；
-        - deficit：以目标桶密度 target = (#seeds / bins) 为参考，w_bin = max(target - count[b], 0)，再分给种子。
-    - 归一化为整数配额，总和 samples_total；可选最小/最大配额约束。
+    根据波动率分桶策略为种子分配采样配额。
+
+    该函数将输入的波动率数组划分为多个等宽的桶（bins），并根据每桶中种子的数量，
+    为每个种子计算一个权重，进而决定其应得的采样配额。支持两种权重模式：
+    - inverse：稀疏桶中的种子获得更高的权重；
+    - deficit：基于目标密度与当前桶密度的差值分配权重。
+
+    配额最终会被调整为整数，并满足最小和最大配额限制。
+
+    参数:
+        seeds_vol (np.ndarray): 种子的波动率数组，形状为 (k,)。
+        samples_total (int): 总共需要分配的样本数量。
+        bins (int): 分桶的数量，默认为 60。
+        weight_mode (str): 权重分配模式，可选 "inverse" 或 "deficit"，默认为 "inverse"。
+        min_quota_per_seed (int): 每个种子的最小配额，默认为 0。
+        max_quota_per_seed (int | None): 每个种子的最大配额，若为 None 则无上限，默认为 None。
+
+    返回:
+        np.ndarray: 每个种子分配到的整数配额数组，形状为 (k,)。
     """
     k = seeds_vol.shape[0]
     if k == 0 or samples_total <= 0:
@@ -626,6 +639,7 @@ def _assign_quota_by_vol_bins(
                     base[mask] += add
 
     return base
+
 
 
 def multi_level_random_walk(
@@ -812,6 +826,12 @@ def multi_level_random_walk_config(
 
     # 后续轮次：按配置执行
     max_round = max(rounds_config.keys())
+    # 已见权重缓存（按四舍五入到 dedup_decimals 后的字节序列）
+    seen: set[bytes] = set()
+    if W.size:
+        Wc0 = np.ascontiguousarray(np.round(W, dedup_decimals))
+        for row in Wc0:
+            seen.add(row.tobytes())
     for r in range(1, max_round + 1):
         cfg = rounds_config.get(r)
         if not cfg:
@@ -833,9 +853,8 @@ def multi_level_random_walk_config(
         desc = ""
         if "samples_total" in cfg:
             total = int(cfg.get("samples_total", 200))
-            seeds_vol = compute_perf_arrays(
-                port_daily_returns, seeds, trading_days=annual_trading_days, ddof=1
-            )[1]
+            # 直接复用上一轮已计算的波动率，避免重复矩阵乘法
+            seeds_vol = vol[ef_mask]
             per_seed_quota = _assign_quota_by_vol_bins(
                 seeds_vol=seeds_vol,
                 samples_total=total,
@@ -873,18 +892,37 @@ def multi_level_random_walk_config(
             log(f"[第{r}轮] 未生成新权重，提前停止。")
             break
 
-        W = np.vstack([W, new_W])
-        W = deduplicate_weights(W, decimals=dedup_decimals)
-        valid_mask = validate_weights_batch(W, lows, highs, G, low_g, up_g, atol=1e-6)
-        W = W[valid_mask]
+        # 仅对新增进行去重与可行性校验，然后增量计算绩效
+        if new_W.size:
+            # 先在新增集合内部去重
+            new_W = deduplicate_weights(new_W, decimals=dedup_decimals)
+            # 过滤跨轮重复
+            Wc = np.ascontiguousarray(np.round(new_W, dedup_decimals))
+            mask_new = np.fromiter((row.tobytes() not in seen for row in Wc), count=Wc.shape[0], dtype=bool)
+            new_W = new_W[mask_new]
+        if new_W.size:
+            # 约束校验
+            vmask = validate_weights_batch(new_W, lows, highs, G, low_g, up_g, atol=1e-6)
+            new_W = new_W[vmask]
+        if new_W.size:
+            # 增量计算绩效
+            ret_new, vol_new = compute_perf_arrays(
+                port_daily_returns, new_W, trading_days=annual_trading_days, ddof=1
+            )
+            finite_new = np.isfinite(ret_new) & np.isfinite(vol_new)
+            if not np.all(finite_new):
+                new_W = new_W[finite_new]
+                ret_new = ret_new[finite_new]
+                vol_new = vol_new[finite_new]
+            if new_W.size:
+                # 合并
+                W = np.vstack([W, new_W])
+                ret = np.concatenate([ret, ret_new])
+                vol = np.concatenate([vol, vol_new])
+                # 标记已见
+                for row in np.ascontiguousarray(np.round(new_W, dedup_decimals)):
+                    seen.add(row.tobytes())
         log(f"[第{r}轮] 合并后有效权重数: {W.shape[0]}")
-
-        ret, vol = compute_perf_arrays(
-            port_daily_returns, W, trading_days=annual_trading_days, ddof=1
-        )
-        finite_mask = np.isfinite(ret) & np.isfinite(vol)
-        if not np.all(finite_mask):
-            W, ret, vol = W[finite_mask], ret[finite_mask], vol[finite_mask]
         ef_mask = cal_ef_mask(ret, vol)
         log(f"[第{r}轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}")
 
