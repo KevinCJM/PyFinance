@@ -78,24 +78,23 @@ def load_and_process_data(file_path='历史净值数据.xlsx'):
 
 
 def run_custom_portfolio(
-    *,
-    data_file: str,
-    selected_assets: list,
-    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'],
-    manual_weights: Tuple[float, ...],
-    risk_metric: Literal['vol', 'ES', 'VaR'],
-    rp_alpha: float,
-    rp_tol: float,
-    rp_max_iter: int,
-    risk_budget: Tuple[float, ...],
+        *,
+        data_file: str,
+        selected_assets: list,
+        weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'],
+        manual_weights: Tuple[float, ...],
+        risk_metric: Literal['vol', 'ES', 'VaR'],
+        rp_alpha: float,
+        rp_tol: float,
+        rp_max_iter: int,
+        risk_budget: Tuple[float, ...],
 ):
     """按参数构建“自定义组合”并作图（供 __main__ 调用）。"""
     # 1) 加载与预处理
     hist_value = load_and_process_data(file_path=data_file)
     hist_value = hist_value / hist_value.iloc[0, :]
 
-    # 2) 绘制所有资产净值
-    plot_asset_trends(hist_value, None, title='全资产历史净值走势')
+    # 2) 不单独绘制全资产；仅在最后绘制“全资产 + 自定义组合”一张图
 
     # 3) 构造“自定义组合”
     sub = hist_value[selected_assets].dropna()
@@ -338,14 +337,14 @@ def _erc_tail_n_assets(R: np.ndarray, *, metric: Literal['ES', 'VaR'] = 'ES', al
 if __name__ == '__main__':
     # ========== 配置参数（仅需修改此处） ==========
     DATA_FILE = '历史净值数据.xlsx'  # 历史净值数据文件路径
-    selected_assets = ['权益投资类', '固定收益类']  # 参与“自定义组合”的资产列表（支持多资产）
+    selected_assets = ['权益投资类', '固定收益类', '另类投资类']  # 参与“自定义组合”的资产列表（支持多资产）
     weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'risk_parity'
-    manual_weights: Tuple[float, ...] = (0.5, 0.5)  # 与 selected_assets 等长
-    risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol'  # 风险平价度量
-    rp_alpha: float = 0.95  # ES/VaR 置信度（左尾 1-alpha）
-    rp_tol: float = 1e-6    # 迭代收敛阈值
-    rp_max_iter: int = 50   # 迭代上限
-    risk_budget: Tuple[float, ...] = (1.0, 1.0)  # 风险预算比例（与 selected_assets 等长）
+    manual_weights: Tuple[float, ...] = (0.5, 0.5)  # 与 selected_assets 等长, 选择 weight_mode='manual' 时有效
+    risk_metric: Literal['vol', 'ES', 'VaR'] = 'ES'  # 风险平价度量, 选择 weight_mode='risk_parity' 时有效
+    rp_alpha: float = 0.95  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
+    rp_tol: float = 1e-6  # 迭代收敛阈值, 选择 weight_mode='risk_parity' 时有效
+    rp_max_iter: int = 50  # 迭代上限, 选择 weight_mode='risk_parity' 时有效
+    risk_budget: Tuple[float, ...] = (9.0, 1.0, 5.0)  # 风险预算比例 (与 selected_assets 等长), 选择 weight_mode='risk_parity' 时有效
 
     # ========== 执行 ==========
     run_custom_portfolio(
