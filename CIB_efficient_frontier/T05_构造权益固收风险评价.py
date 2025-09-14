@@ -96,10 +96,12 @@ def main():
     # - rp_alpha: ES/VaR 的置信度（例如 0.95 -> 使用 5% 左尾）
     # - rp_tol: 迭代收敛阈值
     # - rp_max_iter: 迭代次数上限
+    # - risk_budget: 指定两资产的目标风险贡献占比 (b_equity, b_bond)，无需归一化；例如 (1,1) 表示等风险贡献，(2,1) 表示权益承担 2/3 风险
     risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol'
     rp_alpha: float = 0.95
     rp_tol: float = 1e-6
     rp_max_iter: int = 50
+    risk_budget: Tuple[float, float] = (1.0, 1.0)
 
     # 1) 加载与预处理
     hist_value = load_and_process_data()
@@ -142,7 +144,8 @@ def main():
             risk_metric=risk_metric,
             alpha=rp_alpha,
             tol=rp_tol,
-            max_iter=rp_max_iter
+            max_iter=rp_max_iter,
+            risk_budget=risk_budget,
         )
     else:
         raise ValueError(f'未知的 weight_mode: {weight_mode}')
@@ -170,6 +173,7 @@ def _solve_risk_parity_two_assets(
     alpha: float = 0.95,
     tol: float = 1e-6,
     max_iter: int = 50,
+    risk_budget: Tuple[float, float] = (1.0, 1.0),
 ) -> Tuple[float, float]:
     """
     两资产风险平价（Equal Risk Contribution）权重求解。
@@ -189,7 +193,11 @@ def _solve_risk_parity_two_assets(
         if s1 < eps and s2 < eps:
             return 0.5, 0.5
         rho = float(np.corrcoef(ret_e, ret_b)[0, 1]) if (s1 > eps and s2 > eps) else 0.0
-        # ERC 目标：最小化 (RC1 - RC2)^2，w∈[0,1]
+        # 风险预算归一化到占比
+        b1, b2 = risk_budget
+        bt = b1 + b2 if (b1 + b2) > eps else 2.0
+        t1 = float(b1 / bt)
+        # ERC 目标：最小化 (RC1_norm - t1)^2，w∈[0,1]
         def rc_diff_sq(w: float) -> float:
             w = min(max(w, 0.0), 1.0)
             u = 1.0 - w
@@ -201,7 +209,9 @@ def _solve_risk_parity_two_assets(
             a2 = u*s2*s2 + w*rho*s1*s2
             RC1 = w * (a1 / sp)
             RC2 = u * (a2 / sp)
-            d = RC1 - RC2
+            sRC = RC1 + RC2 + eps
+            rc1n = RC1 / sRC
+            d = rc1n - t1
             return float(d*d)
         # 网格粗扫 + 局部细化（黄金分割）
         grid = np.linspace(0.0, 1.0, 501)
@@ -232,9 +242,14 @@ def _solve_risk_parity_two_assets(
         w = float((lo + hi) * 0.5)
         return w, 1.0 - w
 
-    # 历史 ES/VaR：固定点迭代（尾部子梯度）
+    # 历史 ES/VaR：固定点迭代（尾部子梯度 + 风险预算）
     tail = max(1e-4, 1.0 - float(alpha))
     w = 0.5
+    b1, b2 = risk_budget
+    b1 = float(max(b1, 0.0))
+    b2 = float(max(b2, 0.0))
+    if b1 + b2 < eps:
+        b1, b2 = 1.0, 1.0
     for _ in range(max_iter):
         u = 1.0 - w
         rp = w*ret_e + u*ret_b
@@ -249,10 +264,13 @@ def _solve_risk_parity_two_assets(
             j = int(np.abs(rp - q).argmin())
             g_e = -float(ret_e[j])
             g_b = -float(ret_b[j])
-        denom = g_e + g_b
-        if abs(denom) < eps:
+        # w_i = (b_i / g_i) / sum_j (b_j / g_j)
+        if abs(g_e) < eps and abs(g_b) < eps:
             break
-        w_new = min(max(g_b / denom, 0.0), 1.0)
+        ge = max(abs(g_e), eps)
+        gb = max(abs(g_b), eps)
+        w_new = (b1/ge) / ((b1/ge) + (b2/gb))
+        w_new = min(max(w_new, 0.0), 1.0)
         if abs(w_new - w) < tol:
             w = w_new
             break
