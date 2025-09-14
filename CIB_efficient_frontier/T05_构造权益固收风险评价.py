@@ -110,7 +110,8 @@ def main():
     risk_budget: Tuple[float, ...] = (1.0, 1.0)
 
     # 1) 加载与预处理
-    hist_value = load_and_process_data()
+    DATA_FILE = '历史净值数据.xlsx'  # 历史净值数据文件路径（可配置）
+    hist_value = load_and_process_data(file_path=DATA_FILE)
     hist_value = hist_value / hist_value.iloc[0, :]
 
     # 2) 绘制所有资产净值
