@@ -77,55 +77,33 @@ def load_and_process_data(file_path='历史净值数据.xlsx'):
     return hist_value
 
 
-def main():
-    """
-    主函数：
-    1) 加载并预处理历史净值；
-    2) 绘制五大类资产净值；
-    3) 基于“权益+固收”构造一条虚拟净值曲线（风险评价组合）并展示。
-    """
-    # 0) 参数区：可按需调整
-    # 选择用于“自定义组合”的资产列表（可多资产）
-    selected_assets = ['权益投资类', '固定收益类']
-    # 组合权重方法：
-    # - 'equal' 等权
-    # - 'inverse_vol' 逆波动（两资产时在风险度量为'vol'时与ERC等价）
-    # - 'manual' 手工指定权重
-    # - 'risk_parity' 风险平价（Equal Risk Contribution），按指定风险度量分配风险贡献
-    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'risk_parity'
-    # 手工权重（与 selected_assets 等长），仅当 weight_mode='manual' 时生效
-    manual_weights: Tuple[float, ...] = (0.5, 0.5)
-
-    # 风险平价参数（仅当 weight_mode='risk_parity' 生效）
-    # - risk_metric: 'vol'|'ES'|'VaR'（组合风险度量：波动率/期望短缺/在险值）
-    # - rp_alpha: ES/VaR 的置信度（例如 0.95 -> 使用 5% 左尾）
-    # - rp_tol: 迭代收敛阈值
-    # - rp_max_iter: 迭代次数上限
-    # - risk_budget: 指定两资产的目标风险贡献占比 (b_equity, b_bond)，无需归一化；例如 (1,1) 表示等风险贡献，(2,1) 表示权益承担 2/3 风险
-    risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol'
-    rp_alpha: float = 0.95
-    rp_tol: float = 1e-6
-    rp_max_iter: int = 50
-    # 风险预算（与 selected_assets 等长），例如 (1,1,1) 等风险；(2,1,1) 倾向第一个资产品担更多风险
-    risk_budget: Tuple[float, ...] = (1.0, 1.0)
-
+def run_custom_portfolio(
+    *,
+    data_file: str,
+    selected_assets: list,
+    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'],
+    manual_weights: Tuple[float, ...],
+    risk_metric: Literal['vol', 'ES', 'VaR'],
+    rp_alpha: float,
+    rp_tol: float,
+    rp_max_iter: int,
+    risk_budget: Tuple[float, ...],
+):
+    """按参数构建“自定义组合”并作图（供 __main__ 调用）。"""
     # 1) 加载与预处理
-    DATA_FILE = '历史净值数据.xlsx'  # 历史净值数据文件路径（可配置）
-    hist_value = load_and_process_data(file_path=DATA_FILE)
+    hist_value = load_and_process_data(file_path=data_file)
     hist_value = hist_value / hist_value.iloc[0, :]
 
     # 2) 绘制所有资产净值
     plot_asset_trends(hist_value, None, title='全资产历史净值走势')
 
     # 3) 构造“自定义组合”
-    # 3.1 计算日收益（按归一化净值的日度变化）
-    # 对所选资产取子集
     sub = hist_value[selected_assets].dropna()
     ret = sub.pct_change().dropna()
 
     # 3.2 计算权重
     if weight_mode == 'equal':
-        w = np.full(len(selected_assets), 1.0/len(selected_assets))
+        w = np.full(len(selected_assets), 1.0 / len(selected_assets))
     elif weight_mode == 'manual':
         if len(manual_weights) != len(selected_assets):
             raise ValueError('manual_weights 长度需与 selected_assets 一致')
@@ -141,7 +119,7 @@ def main():
         inv = inv.fillna(0.0)
         s = inv.sum()
         if s == 0:
-            w = np.full(len(selected_assets), 1.0/len(selected_assets))
+            w = np.full(len(selected_assets), 1.0 / len(selected_assets))
         else:
             w = (inv / s).values.astype(float)
     elif weight_mode == 'risk_parity':
@@ -153,7 +131,8 @@ def main():
             w = _erc_vol_n_assets(cov, np.asarray(risk_budget, dtype=float), tol=rp_tol, max_iter=rp_max_iter)
         else:
             R = ret[selected_assets].values
-            w = _erc_tail_n_assets(R, metric=risk_metric, alpha=rp_alpha, budget=np.asarray(risk_budget, dtype=float), tol=rp_tol, max_iter=rp_max_iter)
+            w = _erc_tail_n_assets(R, metric=risk_metric, alpha=rp_alpha, budget=np.asarray(risk_budget, dtype=float),
+                                   tol=rp_tol, max_iter=rp_max_iter)
     else:
         raise ValueError(f'未知的 weight_mode: {weight_mode}')
 
@@ -175,14 +154,14 @@ def main():
 
 
 def _solve_risk_parity_two_assets(
-    ret_e: np.ndarray,
-    ret_b: np.ndarray,
-    *,
-    risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol',
-    alpha: float = 0.95,
-    tol: float = 1e-6,
-    max_iter: int = 50,
-    risk_budget: Tuple[float, float] = (1.0, 1.0),
+        ret_e: np.ndarray,
+        ret_b: np.ndarray,
+        *,
+        risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol',
+        alpha: float = 0.95,
+        tol: float = 1e-6,
+        max_iter: int = 50,
+        risk_budget: Tuple[float, float] = (1.0, 1.0),
 ) -> Tuple[float, float]:
     """
     两资产风险平价（Equal Risk Contribution）权重求解。
@@ -206,31 +185,33 @@ def _solve_risk_parity_two_assets(
         b1, b2 = risk_budget
         bt = b1 + b2 if (b1 + b2) > eps else 2.0
         t1 = float(b1 / bt)
+
         # ERC 目标：最小化 (RC1_norm - t1)^2，w∈[0,1]
         def rc_diff_sq(w: float) -> float:
             w = min(max(w, 0.0), 1.0)
             u = 1.0 - w
             # sigma_p
-            sp2 = (w*w*s1*s1) + (u*u*s2*s2) + (2.0*w*u*rho*s1*s2)
+            sp2 = (w * w * s1 * s1) + (u * u * s2 * s2) + (2.0 * w * u * rho * s1 * s2)
             sp = np.sqrt(max(sp2, 0.0)) + eps
             # Sigma*w 分量
-            a1 = w*s1*s1 + u*rho*s1*s2
-            a2 = u*s2*s2 + w*rho*s1*s2
+            a1 = w * s1 * s1 + u * rho * s1 * s2
+            a2 = u * s2 * s2 + w * rho * s1 * s2
             RC1 = w * (a1 / sp)
             RC2 = u * (a2 / sp)
             sRC = RC1 + RC2 + eps
             rc1n = RC1 / sRC
             d = rc1n - t1
-            return float(d*d)
+            return float(d * d)
+
         # 网格粗扫 + 局部细化（黄金分割）
         grid = np.linspace(0.0, 1.0, 501)
         vals = np.array([rc_diff_sq(x) for x in grid])
         i = int(vals.argmin())
-        lo = max(0.0, grid[max(0, i-1)])
-        hi = min(1.0, grid[min(len(grid)-1, i+1)])
+        lo = max(0.0, grid[max(0, i - 1)])
+        hi = min(1.0, grid[min(len(grid) - 1, i + 1)])
         phi = (np.sqrt(5.0) - 1.0) / 2.0
-        x1 = hi - phi*(hi - lo)
-        x2 = lo + phi*(hi - lo)
+        x1 = hi - phi * (hi - lo)
+        x2 = lo + phi * (hi - lo)
         f1 = rc_diff_sq(x1)
         f2 = rc_diff_sq(x2)
         for _ in range(60):
@@ -238,13 +219,13 @@ def _solve_risk_parity_two_assets(
                 lo = x1
                 x1 = x2
                 f1 = f2
-                x2 = lo + phi*(hi - lo)
+                x2 = lo + phi * (hi - lo)
                 f2 = rc_diff_sq(x2)
             else:
                 hi = x2
                 x2 = x1
                 f2 = f1
-                x1 = hi - phi*(hi - lo)
+                x1 = hi - phi * (hi - lo)
                 f1 = rc_diff_sq(x1)
             if hi - lo < tol:
                 break
@@ -261,7 +242,7 @@ def _solve_risk_parity_two_assets(
         b1, b2 = 1.0, 1.0
     for _ in range(max_iter):
         u = 1.0 - w
-        rp = w*ret_e + u*ret_b
+        rp = w * ret_e + u * ret_b
         q = np.quantile(rp, tail)
         if risk_metric == 'ES':
             idx = rp <= q
@@ -278,7 +259,7 @@ def _solve_risk_parity_two_assets(
             break
         ge = max(abs(g_e), eps)
         gb = max(abs(g_b), eps)
-        w_new = (b1/ge) / ((b1/ge) + (b2/gb))
+        w_new = (b1 / ge) / ((b1 / ge) + (b2 / gb))
         w_new = min(max(w_new, 0.0), 1.0)
         if abs(w_new - w) < tol:
             w = w_new
@@ -294,7 +275,7 @@ def _erc_vol_n_assets(cov: np.ndarray, budget: np.ndarray, *, tol: float = 1e-6,
     """
     eps = 1e-12
     N = cov.shape[0]
-    w = np.full(N, 1.0/N, dtype=float)
+    w = np.full(N, 1.0 / N, dtype=float)
     b = np.maximum(budget.astype(float), 0.0)
     if b.sum() <= eps:
         b[:] = 1.0
@@ -304,7 +285,7 @@ def _erc_vol_n_assets(cov: np.ndarray, budget: np.ndarray, *, tol: float = 1e-6,
         w_new = (b / denom)
         s = w_new.sum()
         if s <= eps:
-            w_new = np.full(N, 1.0/N)
+            w_new = np.full(N, 1.0 / N)
         else:
             w_new /= s
         if np.max(np.abs(w_new - w)) < tol:
@@ -323,7 +304,7 @@ def _erc_tail_n_assets(R: np.ndarray, *, metric: Literal['ES', 'VaR'] = 'ES', al
     """
     eps = 1e-12
     T, N = R.shape
-    w = np.full(N, 1.0/N, dtype=float)
+    w = np.full(N, 1.0 / N, dtype=float)
     b = np.maximum(budget.astype(float), 0.0)
     if b.sum() <= eps:
         b[:] = 1.0
@@ -344,7 +325,7 @@ def _erc_tail_n_assets(R: np.ndarray, *, metric: Literal['ES', 'VaR'] = 'ES', al
         w_new = (b / g)
         s = w_new.sum()
         if s <= eps:
-            w_new = np.full(N, 1.0/N)
+            w_new = np.full(N, 1.0 / N)
         else:
             w_new /= s
         if np.max(np.abs(w_new - w)) < tol:
@@ -355,4 +336,26 @@ def _erc_tail_n_assets(R: np.ndarray, *, metric: Literal['ES', 'VaR'] = 'ES', al
 
 
 if __name__ == '__main__':
-    main()
+    # ========== 配置参数（仅需修改此处） ==========
+    DATA_FILE = '历史净值数据.xlsx'  # 历史净值数据文件路径
+    selected_assets = ['权益投资类', '固定收益类']  # 参与“自定义组合”的资产列表（支持多资产）
+    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'risk_parity'
+    manual_weights: Tuple[float, ...] = (0.5, 0.5)  # 与 selected_assets 等长
+    risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol'  # 风险平价度量
+    rp_alpha: float = 0.95  # ES/VaR 置信度（左尾 1-alpha）
+    rp_tol: float = 1e-6    # 迭代收敛阈值
+    rp_max_iter: int = 50   # 迭代上限
+    risk_budget: Tuple[float, ...] = (1.0, 1.0)  # 风险预算比例（与 selected_assets 等长）
+
+    # ========== 执行 ==========
+    run_custom_portfolio(
+        data_file=DATA_FILE,
+        selected_assets=selected_assets,
+        weight_mode=weight_mode,
+        manual_weights=manual_weights,
+        risk_metric=risk_metric,
+        rp_alpha=rp_alpha,
+        rp_tol=rp_tol,
+        rp_max_iter=rp_max_iter,
+        risk_budget=risk_budget,
+    )
