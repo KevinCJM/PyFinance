@@ -4,6 +4,7 @@
 - 使用线程池并发抓取 `fund_nav`。
 - 失败自动重试 n 次（带退避）。
 - 将结果合并保存为 Parquet 文件。
+- 速率限制：按每分钟不超过 80 次接口调用进行节流；若触发官方限流报错，暂停一段时间再继续。
 
 注意：参数在 `if __name__ == "__main__":` 下方直接设置（不使用环境变量）。
 """
@@ -14,9 +15,11 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional
+from collections import deque
 
 import pandas as pd
 import tushare as ts
+
 
 def ensure_output_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
@@ -31,8 +34,33 @@ def fetch_etf_list(token: str) -> pd.DataFrame:
     return df[cols].copy() if cols else df.copy()
 
 
-def fetch_nav_once(token: str, ts_code: str) -> Optional[pd.DataFrame]:
+class RateLimiter:
+    """简单的时间窗口限流（max_calls 次 / period 秒）。线程安全。"""
+
+    def __init__(self, max_calls: int, period: float) -> None:
+        self.max_calls = max_calls
+        self.period = period
+        self._dq = deque()  # 存放最近一次调用时间（monotonic 秒）
+
+    def acquire(self) -> None:
+        while True:
+            now = time.monotonic()
+            # 清理过期时间戳
+            while self._dq and now - self._dq[0] >= self.period:
+                self._dq.popleft()
+            if len(self._dq) < self.max_calls:
+                self._dq.append(now)
+                return
+            # 需要等待直到最早的一次过期
+            wait = self.period - (now - self._dq[0])
+            if wait > 0:
+                time.sleep(wait)
+
+
+def fetch_nav_once(token: str, ts_code: str, limiter: RateLimiter) -> Optional[pd.DataFrame]:
     pro = ts.pro_api(token)
+    # 限流：确保不超过 80 次/分钟
+    limiter.acquire()
     df = pro.fund_nav(ts_code=ts_code)
     if df is None or df.empty:
         return None
@@ -53,12 +81,14 @@ def fetch_nav_with_retry(
     name: str,
     max_retries: int,
     backoff_sec: float,
+    limiter: RateLimiter,
+    wait_on_rate_limit_sec: float,
 ) -> Optional[pd.DataFrame]:
     last_err: Optional[Exception] = None
     backoff = backoff_sec
     for attempt in range(1, max_retries + 1):
         try:
-            df = fetch_nav_once(token, ts_code)
+            df = fetch_nav_once(token, ts_code, limiter)
             if df is not None and not df.empty:
                 df["name"] = name
                 df = df.sort_values("nav_date").reset_index(drop=True)
@@ -67,6 +97,13 @@ def fetch_nav_with_retry(
             last_err = RuntimeError("empty response")
         except Exception as e:  # noqa: BLE001
             last_err = e
+            # 若触发官方限流报错，等待一段时间再继续
+            msg = str(last_err)
+            if "每分钟最多访问该接口80次" in msg or "doc_id=108" in msg:
+                print(
+                    f"[INFO] 触发接口限流，对 {ts_code}-{name} 暂停 {wait_on_rate_limit_sec}s 后重试。"
+                )
+                time.sleep(wait_on_rate_limit_sec)
         # 重试等待
         if attempt < max_retries:
             time.sleep(backoff)
@@ -75,6 +112,7 @@ def fetch_nav_with_retry(
     print(f"[WARN] 拉取 {ts_code} - {name} 失败，错误：{last_err}")
     return None
 
+
 def main(
     token: str,
     *,
@@ -82,11 +120,14 @@ def main(
     max_retries: int = 3,
     backoff_sec: float = 1.5,
     output_dir: str = os.path.join("data", "processed"),
+    max_calls_per_minute: int = 80,
+    wait_on_rate_limit_sec: float = 10.0,
 ) -> None:
     if not token:
         raise RuntimeError("未提供 Tushare token，请在 __main__ 中设置 token 参数。")
     ensure_output_dir(output_dir)
 
+    limiter = RateLimiter(max_calls=max_calls_per_minute, period=60.0)
     # 1) 获取 ETF 列表
     etf_info_df = fetch_etf_list(token)
     # 可选：保存元数据（便于排查），受 .gitignore 保护
@@ -97,7 +138,9 @@ def main(
 
     etf_dict: Dict[str, str] = {i: j for i, j in zip(etf_info_df.get("ts_code", []), etf_info_df.get("name", []))}
     total = len(etf_dict)
-    print(f"准备抓取 {total} 只 ETF 的净值数据，线程数={max_workers}，重试={max_retries}")
+    print(
+        f"准备抓取 {total} 只 ETF 的净值数据，线程数={max_workers}，重试={max_retries}，限流≤{max_calls_per_minute}/min"
+    )
 
     # 2) 并发抓取净值
     results: List[pd.DataFrame] = []
@@ -105,7 +148,14 @@ def main(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_code = {
             executor.submit(
-                fetch_nav_with_retry, token, code, name, max_retries, backoff_sec
+                fetch_nav_with_retry,
+                token,
+                code,
+                name,
+                max_retries,
+                backoff_sec,
+                limiter,
+                wait_on_rate_limit_sec,
             ): (code, name)
             for code, name in etf_dict.items()
         }
@@ -139,14 +189,14 @@ def main(
 
 if __name__ == "__main__":
     # 在此处配置运行参数（不使用环境变量）
-    TUSHARE_TOKEN = ""  # TODO: 在此填写你的 Tushare Pro 令牌
+    TUSHARE_TOKEN = "cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9"  # TODO: 在此填写你的 Tushare Pro 令牌
     MAX_WORKERS = 8
     MAX_RETRIES = 3
     RETRY_BACKOFF_SEC = 1.5
     OUTPUT_DIR = os.path.join("data", "processed")
 
     if not TUSHARE_TOKEN:
-        raise RuntimeError("请在 __main__ 下设置 TUSHARE_TOKEN");
+        raise RuntimeError("请在 __main__ 下设置 TUSHARE_TOKEN")
 
     main(
         token=TUSHARE_TOKEN,
