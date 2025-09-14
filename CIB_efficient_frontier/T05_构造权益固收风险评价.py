@@ -83,9 +83,23 @@ def main():
     # 0) 参数区：可按需调整
     equity_col = '权益投资类'
     bond_col = '固定收益类'
-    # 组合权重方法：'equal' 等权，'inverse_vol' 逆波动，'manual' 手工
-    weight_mode: Literal['equal', 'inverse_vol', 'manual'] = 'inverse_vol'
+    # 组合权重方法：
+    # - 'equal' 等权
+    # - 'inverse_vol' 逆波动（两资产时在风险度量为'vol'时与ERC等价）
+    # - 'manual' 手工指定权重
+    # - 'risk_parity' 风险平价（Equal Risk Contribution），按指定风险度量分配风险贡献
+    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'risk_parity'
     manual_weights: Tuple[float, float] = (0.5, 0.5)  # (w_equity, w_bond) 当 weight_mode='manual' 时生效
+
+    # 风险平价参数（仅当 weight_mode='risk_parity' 生效）
+    # - risk_metric: 'vol'|'ES'|'VaR'（组合风险度量：波动率/期望短缺/在险值）
+    # - rp_alpha: ES/VaR 的置信度（例如 0.95 -> 使用 5% 左尾）
+    # - rp_tol: 迭代收敛阈值
+    # - rp_max_iter: 迭代次数上限
+    risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol'
+    rp_alpha: float = 0.95
+    rp_tol: float = 1e-6
+    rp_max_iter: int = 50
 
     # 1) 加载与预处理
     hist_value = load_and_process_data()
@@ -120,10 +134,21 @@ def main():
         else:
             w_e = float(inv[equity_col] / s)
             w_b = float(inv[bond_col] / s)
+    elif weight_mode == 'risk_parity':
+        # 基于指定风险度量的两资产风险平价（等风险贡献）求权重
+        w_e, w_b = _solve_risk_parity_two_assets(
+            ret_e=ret[equity_col].values,
+            ret_b=ret[bond_col].values,
+            risk_metric=risk_metric,
+            alpha=rp_alpha,
+            tol=rp_tol,
+            max_iter=rp_max_iter
+        )
     else:
         raise ValueError(f'未知的 weight_mode: {weight_mode}')
 
-    print(f"使用权重: {equity_col}={w_e:.3f}, {bond_col}={w_b:.3f}")
+    mode_str = weight_mode if weight_mode != 'risk_parity' else f"risk_parity[{risk_metric}, alpha={rp_alpha}]"
+    print(f"使用权重({mode_str}): {equity_col}={w_e:.3f}, {bond_col}={w_b:.3f}")
 
     # 3.3 组合日收益与虚拟净值
     port_ret = w_e * ret[equity_col].values + w_b * ret[bond_col].values
@@ -135,6 +160,104 @@ def main():
 
     # 3.5 绘图
     plot_asset_trends(show_df, [equity_col, bond_col, '权益固收风险评价组合'], title='权益固收风险评价组合（虚拟净值）')
+
+
+def _solve_risk_parity_two_assets(
+    ret_e: np.ndarray,
+    ret_b: np.ndarray,
+    *,
+    risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol',
+    alpha: float = 0.95,
+    tol: float = 1e-6,
+    max_iter: int = 50,
+) -> Tuple[float, float]:
+    """
+    两资产风险平价（Equal Risk Contribution）权重求解。
+    - risk_metric='vol'：使用协方差矩阵，最小化 (RC_e - RC_b)^2（鲁棒的一维数值解）。
+    - risk_metric='ES'/'VaR'：历史模拟法，使用尾部样本子梯度做固定点迭代 w = g_b / (g_e + g_b)。
+    返回: (w_equity, w_bond)
+    """
+    eps = 1e-9
+    # 粗暴防护
+    if ret_e.shape[0] != ret_b.shape[0] or ret_e.shape[0] == 0:
+        return 0.5, 0.5
+
+    if risk_metric == 'vol':
+        # 协方差与相关
+        s1 = float(ret_e.std(ddof=1))
+        s2 = float(ret_b.std(ddof=1))
+        if s1 < eps and s2 < eps:
+            return 0.5, 0.5
+        rho = float(np.corrcoef(ret_e, ret_b)[0, 1]) if (s1 > eps and s2 > eps) else 0.0
+        # ERC 目标：最小化 (RC1 - RC2)^2，w∈[0,1]
+        def rc_diff_sq(w: float) -> float:
+            w = min(max(w, 0.0), 1.0)
+            u = 1.0 - w
+            # sigma_p
+            sp2 = (w*w*s1*s1) + (u*u*s2*s2) + (2.0*w*u*rho*s1*s2)
+            sp = np.sqrt(max(sp2, 0.0)) + eps
+            # Sigma*w 分量
+            a1 = w*s1*s1 + u*rho*s1*s2
+            a2 = u*s2*s2 + w*rho*s1*s2
+            RC1 = w * (a1 / sp)
+            RC2 = u * (a2 / sp)
+            d = RC1 - RC2
+            return float(d*d)
+        # 网格粗扫 + 局部细化（黄金分割）
+        grid = np.linspace(0.0, 1.0, 501)
+        vals = np.array([rc_diff_sq(x) for x in grid])
+        i = int(vals.argmin())
+        lo = max(0.0, grid[max(0, i-1)])
+        hi = min(1.0, grid[min(len(grid)-1, i+1)])
+        phi = (np.sqrt(5.0) - 1.0) / 2.0
+        x1 = hi - phi*(hi - lo)
+        x2 = lo + phi*(hi - lo)
+        f1 = rc_diff_sq(x1)
+        f2 = rc_diff_sq(x2)
+        for _ in range(60):
+            if f1 > f2:
+                lo = x1
+                x1 = x2
+                f1 = f2
+                x2 = lo + phi*(hi - lo)
+                f2 = rc_diff_sq(x2)
+            else:
+                hi = x2
+                x2 = x1
+                f2 = f1
+                x1 = hi - phi*(hi - lo)
+                f1 = rc_diff_sq(x1)
+            if hi - lo < tol:
+                break
+        w = float((lo + hi) * 0.5)
+        return w, 1.0 - w
+
+    # 历史 ES/VaR：固定点迭代（尾部子梯度）
+    tail = max(1e-4, 1.0 - float(alpha))
+    w = 0.5
+    for _ in range(max_iter):
+        u = 1.0 - w
+        rp = w*ret_e + u*ret_b
+        q = np.quantile(rp, tail)
+        if risk_metric == 'ES':
+            idx = rp <= q
+            if idx.sum() == 0:
+                break
+            g_e = -float(ret_e[idx].mean())
+            g_b = -float(ret_b[idx].mean())
+        else:  # VaR
+            j = int(np.abs(rp - q).argmin())
+            g_e = -float(ret_e[j])
+            g_b = -float(ret_b[j])
+        denom = g_e + g_b
+        if abs(denom) < eps:
+            break
+        w_new = min(max(g_b / denom, 0.0), 1.0)
+        if abs(w_new - w) < tol:
+            w = w_new
+            break
+        w = w_new
+    return w, 1.0 - w
 
 
 if __name__ == '__main__':
