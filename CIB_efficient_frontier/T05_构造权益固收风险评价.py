@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from typing import Literal, Tuple
+from plotly.subplots import make_subplots
 
 
 def plot_asset_trends(df, assets_to_plot=None, title='资产历史净值走势'):
@@ -39,6 +40,48 @@ def plot_asset_trends(df, assets_to_plot=None, title='资产历史净值走势')
         legend_title='图例'
     )
 
+    fig.show()
+
+
+def plot_timeseries_and_corr(df_nv: pd.DataFrame,
+                             df_ret: pd.DataFrame,
+                             title_ts: str = '净值走势',
+                             title_corr: str = '收益率相关性矩阵'):
+    """
+    在同一网页（单一 Figure）中，第一行展示净值时间序列，第二行展示收益率相关性热力图。
+    df_nv: 含所有要展示的净值序列（含组合）
+    df_ret: 与 df_nv 列对应的收益率序列（用于计算相关性）
+    """
+    print(f"\n正在生成图表: {title_ts} + {title_corr}...")
+    corr = df_ret.corr().fillna(0.0)
+    cols = list(corr.columns)
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=False,
+        vertical_spacing=0.1,
+        subplot_titles=(title_ts, title_corr)
+    )
+    # Row 1: timeseries
+    for col in df_nv.columns:
+        fig.add_trace(
+            go.Scatter(x=df_nv.index, y=df_nv[col], mode='lines', name=col),
+            row=1, col=1
+        )
+    # Row 2: correlation heatmap
+    fig.add_trace(
+        go.Heatmap(
+            z=corr.values, x=cols, y=cols,
+            colorscale='RdBu', zmid=0.0, zmin=-1.0, zmax=1.0,
+            colorbar=dict(title='corr')
+        ),
+        row=2, col=1
+    )
+    fig.update_layout(height=900, showlegend=True)
+    fig.update_xaxes(title_text='日期', row=1, col=1)
+    fig.update_yaxes(title_text='净值', row=1, col=1)
+    fig.update_xaxes(title_text='资产', row=2, col=1)
+    fig.update_yaxes(title_text='资产', row=2, col=1)
     fig.show()
 
 
@@ -148,8 +191,17 @@ def run_custom_portfolio(
     show_df = hist_value.loc[ret.index].copy()
     show_df['自定义组合'] = port_nv
 
-    # 3.5 绘图（全部资产 + 组合）
-    plot_asset_trends(show_df, None, title='全资产 + 自定义组合（虚拟净值）')
+    # 构建与 show_df 对齐的收益率矩阵，用于相关性
+    ret_all = hist_value.pct_change().dropna()
+    ret_all = ret_all.loc[ret.index]  # 对齐索引
+    ret_all['自定义组合'] = pd.Series(port_ret, index=ret.index)
+    # 只保留与展示净值同名的列（包括自定义组合）
+    ret_all = ret_all.loc[:, [c for c in show_df.columns if c in ret_all.columns]]
+
+    # 3.5 单一页面绘图：上-净值序列，下-相关性矩阵
+    plot_timeseries_and_corr(show_df, ret_all,
+                             title_ts='全资产 + 自定义组合（净值）',
+                             title_corr='全资产 + 自定义组合（收益率相关性）')
 
 
 def _solve_risk_parity_two_assets(
@@ -338,8 +390,8 @@ if __name__ == '__main__':
     # ========== 配置参数（仅需修改此处） ==========
     DATA_FILE = '历史净值数据.xlsx'  # 历史净值数据文件路径
     selected_assets = ['权益投资类', '固定收益类', '另类投资类']  # 参与“自定义组合”的资产列表（支持多资产）
-    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'risk_parity'
-    manual_weights: Tuple[float, ...] = (0.5, 0.5)  # 与 selected_assets 等长, 选择 weight_mode='manual' 时有效
+    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'manual'
+    manual_weights: Tuple[float, ...] = (0.3, 0.4, 0.3)  # 与 selected_assets 等长, 选择 weight_mode='manual' 时有效
     risk_metric: Literal['vol', 'ES', 'VaR'] = 'ES'  # 风险平价度量, 选择 weight_mode='risk_parity' 时有效
     rp_alpha: float = 0.95  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
     rp_tol: float = 1e-6  # 迭代收敛阈值, 选择 weight_mode='risk_parity' 时有效
