@@ -73,11 +73,29 @@ def plot_timeseries_and_corr(df_nv: pd.DataFrame,
         go.Heatmap(
             z=corr.values, x=cols, y=cols,
             colorscale='RdBu', zmid=0.0, zmin=-1.0, zmax=1.0,
-            colorbar=dict(title='corr')
+            colorbar=dict(
+                title='corr',
+                thickness=10,
+                lenmode='fraction', len=0.45,
+                y=0.22, yanchor='middle',
+                x=1.04, xanchor='left'      # 更紧贴绘图区，给右侧图例留出空间
+            )
         ),
         row=2, col=1
     )
-    fig.update_layout(height=900, showlegend=True)
+    fig.update_layout(
+        height=900,
+        showlegend=True,
+        # 右侧为竖直图例预留更宽空白
+        margin=dict(l=60, r=220, t=80, b=80),
+        legend=dict(
+            orientation='v',
+            yanchor='middle', y=0.5,
+            xanchor='left', x=1.18,
+            font=dict(size=10),
+            bgcolor='rgba(255,255,255,0.7)'
+        )
+    )
     fig.update_xaxes(title_text='日期', row=1, col=1)
     fig.update_yaxes(title_text='净值', row=1, col=1)
     fig.update_xaxes(title_text='资产', row=2, col=1)
@@ -390,7 +408,8 @@ if __name__ == '__main__':
     # ========== 配置参数（仅需修改此处） ==========
     DATA_FILE = '历史净值数据.xlsx'  # 历史净值数据文件路径
     selected_assets = ['权益投资类', '固定收益类', '另类投资类']  # 参与“自定义组合”的资产列表（支持多资产）
-    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'manual'
+    # 权重分配方式: 'equal' - 等权; 'inverse_vol' - 逆波动率; 'manual' - 手工指定; 'risk_parity' - 风险平价
+    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'inverse_vol'
     manual_weights: Tuple[float, ...] = (0.3, 0.4, 0.3)  # 与 selected_assets 等长, 选择 weight_mode='manual' 时有效
     risk_metric: Literal['vol', 'ES', 'VaR'] = 'ES'  # 风险平价度量, 选择 weight_mode='risk_parity' 时有效
     rp_alpha: float = 0.95  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
