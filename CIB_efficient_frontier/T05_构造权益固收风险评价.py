@@ -86,12 +86,13 @@ def plot_timeseries_and_corr(df_nv: pd.DataFrame,
     fig.update_layout(
         height=900,
         showlegend=True,
-        # 右侧为竖直图例预留更宽空白
-        margin=dict(l=60, r=220, t=80, b=80),
+        # 右侧预留空间用于图例（靠近上半页）
+        margin=dict(l=60, r=180, t=80, b=80),
         legend=dict(
             orientation='v',
-            yanchor='middle', y=0.5,
-            xanchor='left', x=1.18,
+            # 将图例固定在上半页右侧：使用整体坐标的上部区域
+            yanchor='top', y=0.98,
+            xanchor='left', x=1.02,
             font=dict(size=10),
             bgcolor='rgba(255,255,255,0.7)'
         )
@@ -409,8 +410,8 @@ if __name__ == '__main__':
     DATA_FILE = '历史净值数据.xlsx'  # 历史净值数据文件路径
     selected_assets = ['权益投资类', '固定收益类', '另类投资类']  # 参与“自定义组合”的资产列表（支持多资产）
     # 权重分配方式: 'equal' - 等权; 'inverse_vol' - 逆波动率; 'manual' - 手工指定; 'risk_parity' - 风险平价
-    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'inverse_vol'
-    manual_weights: Tuple[float, ...] = (0.3, 0.4, 0.3)  # 与 selected_assets 等长, 选择 weight_mode='manual' 时有效
+    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'manual'
+    manual_weights: Tuple[float, ...] = (0.2, 0.9, 0.3)  # 与 selected_assets 等长, 选择 weight_mode='manual' 时有效
     risk_metric: Literal['vol', 'ES', 'VaR'] = 'ES'  # 风险平价度量, 选择 weight_mode='risk_parity' 时有效
     rp_alpha: float = 0.95  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
     rp_tol: float = 1e-6  # 迭代收敛阈值, 选择 weight_mode='risk_parity' 时有效
