@@ -394,7 +394,7 @@ def run_pipeline(
     single_limits: List[Tuple[float, float]],
     multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
     seed: int = 12345,
-    num_samples: int = 200,
+    num_samples: int = 1000,
     step_size: float = 0.99,
     annual_trading_days: float = 252.0,
     drop_duplicates_decimals: int = 4,
@@ -488,8 +488,8 @@ if __name__ == "__main__":
 
     # 随机游走与指标参数
     RANDOM_SEED = 12345
-    NUM_SAMPLES = 200
-    STEP_SIZE = 0.99
+    NUM_SAMPLES = 10000
+    STEP_SIZE = 0.1
     TRADING_DAYS = 252.0
     DEDUP_DECIMALS = 4
 

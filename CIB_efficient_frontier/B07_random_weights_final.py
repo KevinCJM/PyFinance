@@ -807,6 +807,7 @@ def generate_constrained_portfolios(num_points: int, single_limits, multi_limits
 if __name__ == '__main__':
     ''' --- 1) 数据加载与预处理 --- '''
     hist_value = pd.read_excel('历史净值数据.xlsx', sheet_name='历史净值数据')
+    # hist_value = pd.read_excel('benchmark_index.xlsx')
     hist_value = hist_value.set_index('date')
     hist_value.index = pd.to_datetime(hist_value.index)
     hist_value = hist_value.dropna().sort_index(ascending=True)
@@ -836,7 +837,7 @@ if __name__ == '__main__':
     ''' --- 3) 扫描风险网格，刻准有效前沿 (锚点) --- '''
     print("开始刻画有效前沿（QCQP 逐风险扫描）...")
     risk_grid, W_frontier, R_frontier, S_frontier, w_minv, w_maxr = sweep_frontier_by_risk(
-        mu, Sigma, single_limits, multi_limits, n_grid=500
+        mu, Sigma, single_limits, multi_limits, n_grid=300
     )
     # 去支配，得到真正的有效锚点（按 σ 升序保持收益前缀上包络）
     idx = np.argsort(S_frontier)
@@ -849,7 +850,7 @@ if __name__ == '__main__':
 
     ''' --- 4) 以前沿锚点为种子：小步随机游走 + POCS (可选精度) 填厚前沿之下区域 --- '''
     # 选择精度：'0.1%' / '0.2%' / '0.5%' / None
-    precision_choice = '0.5%'  # <- 你可以改成 '0.2%'、'0.5%' 或 None（表示不量化）
+    precision_choice = None  # <- 你可以改成 '0.2%'、'0.5%' 或 None（表示不量化）
     print(f"开始填充前沿之下的可行空间（precision={precision_choice}) ...")
 
     W_below = random_walk_below_frontier(
@@ -952,5 +953,5 @@ if __name__ == '__main__':
     plot_efficient_frontier(
         scatter_points_data=scatter_data,
         title=f"QCQP 标准有效前沿 + 小步随机游走填充（precision={precision_choice}）",
-        # output_filename="efficient_frontier.html"
+        # output_filename="定死上下限20%区间.html"
     )
