@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-@File: B09_random_weights_customer_final.py
+@File: B04_proposed_alloc_final.py
 @Modify Time: 2025/9/11 18:34
 @Author: Kevin-Chen
 @Descriptions:

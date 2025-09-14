@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-@File: B07_random_weights_final.py
+@File: B02_proposed_alloc.py
 @Author: Kevin-Chen
 @Descriptions:
   1) 用 QCQP 逐风险扫描，刻准有效前沿（带线性约束与多资产联合约束）
@@ -611,7 +611,7 @@ if __name__ == '__main__':
         'C4': {
             '货币现金类': (0.00, 1.00),
             '固定收益类': (0.00, 1.00),
-            '混合策略类': (0.00, 0.35 * 1.2),
+            '混合策略类': (0.35, 0.35),
             '权益投资类': (0.00, 0.2 * 1.2),
             '另类投资类': (0.00, 0.05 * 1.2),
         },
@@ -803,7 +803,7 @@ if __name__ == '__main__':
     plot_efficient_frontier(
         scatter_points_data=scatter_data,
         title=f"全局与 C1~C6 等级：有效前沿（QCQP）+ 前沿下可行空间（随机游走+POCS）",
-        output_filename="efficient_frontier.html"
+        # output_filename="efficient_frontier.html"
     )
 
     ''' --- 9) 导出 Excel --- '''

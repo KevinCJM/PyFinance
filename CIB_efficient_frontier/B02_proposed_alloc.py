@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-@File: B07_random_weights_final.py
+@File: B02_proposed_alloc.py
 @Author: Kevin-Chen
 @Descriptions:
   1) 用 QCQP 逐风险扫描，刻准有效前沿（带线性约束与多资产联合约束）
