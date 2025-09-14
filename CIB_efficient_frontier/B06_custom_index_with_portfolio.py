@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 """
-@File: B09_random_weights_customer_final.py
+@File: B05_customer_index.py
 @Modify Time: 2025/9/11 18:34
 @Author: Kevin-Chen
 @Descriptions:
@@ -759,21 +759,60 @@ def sweep_frontier_by_risk_slqp(
     return grid[mask], W[mask], R[mask], S[mask]
 
 
-def sweep_frontier_by_risk_unified(port_daily: np.ndarray,
-                                   ret_spec: ReturnSpec, risk_spec: RiskSpec,
-                                   single_limits, multi_limits, n_grid=300):
-    # 统一判断 + 构造 μ、Σ
+def sweep_frontier_by_risk_unified(
+        port_daily: np.ndarray,
+        ret_spec: ReturnSpec, risk_spec: RiskSpec,
+        single_limits, multi_limits, n_grid=300):
+    """
+    统一入口：
+      - EXACT: 直接用 QCQP (精确 Markowitz) 扫描。
+      - APPROX: 先用 QCQP-Approx(线性化 μ、Σ) 扫描拿近似权重，再把这些权重作为 SLSQP 的热启动池做真口径精修。
+      - NONE: 使用多阶段 SLSQP（多起点 + 同温带 + 软惩罚 + 随机游走热启动）。
+    返回: grid, W, R, S
+    """
+    # 先尝试构造 (mu, Sigma) 及可解性标记
     mu, Sigma, tag, msg = build_mu_Sigma_for_qcqp(port_daily, ret_spec, risk_spec)
-    print("[INFO]", msg)
+    print(f"{str_time()} [INFO] {msg}")
 
-    if tag in (QCQPTag.EXACT, QCQPTag.APPROX):
-        # 走 QCQP（EXACT 精确；APPROX 为线性化近似）
-        grid, W, R, S, *_ = sweep_frontier_by_risk(mu, Sigma,
-                                                   single_limits, multi_limits, n_grid=n_grid)
+    # ===== 1) 精确 QCQP：直接返回 =====
+    if tag == QCQPTag.EXACT:
+        print(f"{str_time()} [INFO] 使用 QCQP (EXACT) 逐风险扫描前沿 ...")
+        grid, W, R, S, *_ = sweep_frontier_by_risk(
+            mu, Sigma, single_limits, multi_limits, n_grid=n_grid
+        )
         return grid, W, R, S
 
-    # 其它情况：走强化版 SLSQP（多起点 + 同温带 + 软惩罚 + 随机游走热启动）
-    print("[INFO] 使用 SLSQP（多起点 + 同温带 + 软惩罚 + 随机游走热启动）")
+    # ===== 2) 近似 QCQP：先拿近似解，再用 SLSQP 精修 =====
+    if tag == QCQPTag.APPROX:
+        print(f"{str_time()} [INFO] 使用 QCQP-Approx 先刻画近似前沿，产出热启动权重池 ...")
+        # 2.1 用线性化的 μ、Σ 做一遍 QCQP 扫描，得到近似前沿权重
+        grid_approx, W_approx, R_approx, S_approx, *_ = sweep_frontier_by_risk(
+            mu, Sigma, single_limits, multi_limits, n_grid=n_grid
+        )
+        # 2.2 用真口径计算近似权重的绩效，以便 SLSQP 选热启动
+        perf_approx = generate_alloc_perf_batch(port_daily, W_approx, ret_spec, risk_spec)
+        Sa = perf_approx['vol_annual'].to_numpy()
+        Ra = perf_approx['ret_annual'].to_numpy()
+        print(f"{str_time()} [INFO] QCQP-Approx 热启动池规模: {len(W_approx)}（将用于 SLSQP 精修）")
+
+        # 2.3 用 SLSQP 在真口径上做逐风险扫描；把近似解作为 hot_start_pool
+        grid, W, R, S = sweep_frontier_by_risk_slqp(
+            port_daily, ret_spec, risk_spec,
+            single_limits, multi_limits,
+            n_grid=n_grid,
+            # 同温带与惩罚参数可按需调；这里沿用默认的稳健配置
+            risk_band=5e-7,
+            rho_penalty=5e4,
+            n_starts=8,  # 适当增大起点数，让 SLSQP 有机会跳出局部
+            seed=2024,
+            hot_start_pool=W_approx,  # 关键：注入 QCQP-Approx 的前沿权重
+            hot_k=5  # 对每个目标风险，最多挑 5 个热启动进行尝试
+        )
+        print(f"{str_time()} [INFO] SLSQP 已基于 QCQP-Approx 热启动完成精修。")
+        return grid, W, R, S
+
+    # ===== 3) 完全不能 QCQP 的：走多阶段 SLSQP =====
+    print(f"{str_time()} [INFO] 使用多阶段 SLSQP（多起点 + 同温带 + 软惩罚 + 随机游走热启动）")
     grid, W, R, S = multistage_frontier_scan_slqp(
         port_daily, ret_spec, risk_spec,
         single_limits, multi_limits,
@@ -1887,8 +1926,8 @@ def run_level_layer(level: str,
 
 if __name__ == '__main__':
     # ---- 统一配置（可按需调整）----
-    RET_SPEC = ReturnSpec(kind="ew_roll_log", N=120, lam=0.94)
-    RISK_SPEC = RiskSpec(kind="ew_roll_log_std", N=120, lam=0.94, p=0.99)
+    RET_SPEC = ReturnSpec(kind="ew_roll_cum", N=120, lam=0.94)
+    RISK_SPEC = RiskSpec(kind="ew_roll_std", N=120, lam=0.94, p=0.99)
     ''' ---------------------------------- 可用指标:
 "total_cum",  # 总累计收益率: Π(1+R)-1
 "total_geom_annual",  # 总年化复利收益: (Π(1+R))**(252/T)-1
