@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from typing import Literal, Tuple
 
 
-def plot_asset_trends(df, assets_to_plot, title='资产历史净值走势'):
+def plot_asset_trends(df, assets_to_plot=None, title='资产历史净值走势'):
     """
     使用 Plotly 绘制资产历史净值的折线图。
 
@@ -16,6 +16,10 @@ def plot_asset_trends(df, assets_to_plot, title='资产历史净值走势'):
     """
     print(f"\n正在生成图表: {title}...")
     fig = go.Figure()
+
+    # 若未指定，则展示 DataFrame 中的所有资产列
+    if assets_to_plot is None:
+        assets_to_plot = list(df.columns)
 
     for asset in assets_to_plot:
         if asset in df.columns:
@@ -101,15 +105,14 @@ def main():
     rp_alpha: float = 0.95
     rp_tol: float = 1e-6
     rp_max_iter: int = 50
-    risk_budget: Tuple[float, float] = (1.0, 1.0)
+    risk_budget: Tuple[float, float] = (8.0, 1.0)
 
     # 1) 加载与预处理
     hist_value = load_and_process_data()
     hist_value = hist_value / hist_value.iloc[0, :]
 
-    # 2) 绘制五大类资产净值
-    assets_list = ['货币现金类', '固定收益类', '混合策略类', '权益投资类', '另类投资类']
-    plot_asset_trends(hist_value, assets_list, title='五大类资产历史净值走势')
+    # 2) 绘制所有资产净值
+    plot_asset_trends(hist_value, None, title='全资产历史净值走势')
 
     # 3) 构造“权益固收风险评价组合”
     # 3.1 计算日收益（按归一化净值的日度变化）
@@ -158,11 +161,12 @@ def main():
     port_nv = np.cumprod(1.0 + port_ret)
     port_nv = pd.Series(port_nv, index=ret.index, name='权益固收风险评价组合')
 
-    # 3.4 合并到一个 DataFrame 用于展示
-    show_df = pd.concat([sub.loc[ret.index, equity_col], sub.loc[ret.index, bond_col], port_nv], axis=1)
+    # 3.4 合并到一个 DataFrame 用于展示（所有资产 + 组合）
+    show_df = hist_value.loc[ret.index].copy()
+    show_df['权益固收风险评价组合'] = port_nv
 
-    # 3.5 绘图
-    plot_asset_trends(show_df, [equity_col, bond_col, '权益固收风险评价组合'], title='权益固收风险评价组合（虚拟净值）')
+    # 3.5 绘图（全部资产 + 组合）
+    plot_asset_trends(show_df, None, title='全资产 + 权益固收风险评价组合（虚拟净值）')
 
 
 def _solve_risk_parity_two_assets(
