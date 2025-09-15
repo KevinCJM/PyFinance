@@ -1724,7 +1724,7 @@ if __name__ == "__main__":
     ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
         # 第0轮：初始化方式二选一：
         0: {
-            "init_mode": "solver",  # "exploration" 随机探索 或 "solver" 求解器
+            "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
             # exploration 参数（当 init_mode=="exploration" 生效）：
             "samples": 300,
             "step_size": 0.99,
@@ -1749,9 +1749,9 @@ if __name__ == "__main__":
 
     # 是否启用“极端权重”种子，以及每个种子生成的数量
     EXTREME_SEED_CONFIG: Dict[str, Any] = {
-        "enable": False,
+        "enable": True,
         # 每个极端种子（例如 5 个大类 -> 5 个种子）生成多少权重
-        "samples_per_seed": 200,
+        "samples_per_seed": 100,
         # 可选步长：未指定时默认采用第1轮 step_size（否则 0.3）
         # "step_size": 0.3,
         # 其他可选项：projector_iters/projector_tol/projector_damping/seed/parallel_workers/use_numba

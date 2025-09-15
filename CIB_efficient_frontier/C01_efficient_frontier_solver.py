@@ -36,7 +36,7 @@ def log(msg: str) -> None:
 
 
 def load_returns_from_excel(
-    excel_path: str, sheet_name: str, assets_list: List[str]
+        excel_path: str, sheet_name: str, assets_list: List[str]
 ) -> Tuple[np.ndarray, List[str]]:
     """从 Excel 读取净值数据，生成日收益二维数组 (T,N)。"""
     log(f"加载数据: {excel_path} | sheet={sheet_name}")
@@ -74,10 +74,10 @@ def load_returns_from_excel(
 
 
 def compute_perf_arrays(
-    port_daily: np.ndarray,  # (T, N)
-    portfolio_allocs: np.ndarray,  # (M, N)
-    trading_days: float = 252.0,
-    ddof: int = 1,
+        port_daily: np.ndarray,  # (T, N)
+        portfolio_allocs: np.ndarray,  # (M, N)
+        trading_days: float = 252.0,
+        ddof: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     与仓库口径一致：对组合日收益 R_t = Σ w_i r_{t,i}，使用 log1p 年化。
@@ -98,14 +98,14 @@ def compute_perf_arrays(
 
 
 def compute_var_parametric_arrays(
-    port_daily: np.ndarray,
-    portfolio_allocs: np.ndarray,
-    *,
-    confidence: float = 0.95,
-    horizon_days: float = 1.0,
-    return_type: str = "simple",
-    ddof: int = 1,
-    clip_non_negative: bool = True,
+        port_daily: np.ndarray,
+        portfolio_allocs: np.ndarray,
+        *,
+        confidence: float = 0.95,
+        horizon_days: float = 1.0,
+        return_type: str = "simple",
+        ddof: int = 1,
+        clip_non_negative: bool = True,
 ) -> np.ndarray:
     """参数法 VaR（正态近似），返回 VaR 数组（非负）。"""
     confidence = float(confidence)
@@ -152,22 +152,22 @@ def cal_ef_mask(ret_annual: np.ndarray, risk_array: np.ndarray, eps: float = 1e-
 
 
 def plot_frontier(
-    risk_arr: np.ndarray,
-    ret_arr: np.ndarray,
-    weights: np.ndarray,
-    asset_names: List[str],
-    *,
-    title: str,
-    x_label: str,
-    show: bool = True,
-    save_html: str | None = None,
-    frontier_only: bool = True,
+        risk_arr: np.ndarray,
+        ret_arr: np.ndarray,
+        weights: np.ndarray,
+        asset_names: List[str],
+        *,
+        title: str,
+        x_label: str,
+        show: bool = True,
+        save_html: str | None = None,
+        frontier_only: bool = True,
 ):
     hover_assets = "<br>".join(
         [f"{name}: %{{customdata[{i}]:.1%}}" for i, name in enumerate(asset_names)]
     )
     hovertemplate = (
-        "年化风险: %{x:.2%}<br>" "年化收益率: %{y:.2%}<br><br>" "<b>资产权重</b><br>" + hover_assets + "<extra></extra>"
+            "年化风险: %{x:.2%}<br>" "年化收益率: %{y:.2%}<br><br>" "<b>资产权重</b><br>" + hover_assets + "<extra></extra>"
     )
 
     ef_mask = cal_ef_mask(ret_arr, risk_arr)
@@ -230,15 +230,15 @@ def _sigma_sqrt_psd(Sigma: np.ndarray) -> np.ndarray:
 
 
 def build_frontier_by_solver(
-    port_daily_returns: np.ndarray,
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    *,
-    risk_metric: str = "vol",  # "vol" 或 "var"
-    var_params: Dict[str, Any] | None = None,
-    n_interior: int = 100,
-    ridge: float = 1e-8,
-    solver: str = "ECOS",
+        port_daily_returns: np.ndarray,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        risk_metric: str = "vol",  # "vol" 或 "var"
+        var_params: Dict[str, Any] | None = None,
+        n_interior: int = 100,
+        ridge: float = 1e-8,
+        solver: str = "ECOS",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     - vol: QCQP（max μᵀw s.t. wᵀΣw ≤ r²）
@@ -390,16 +390,16 @@ def build_frontier_by_solver(
 # ===================== SLSQP 前沿构建（按展示口径直接优化） =====================
 
 def build_frontier_by_slsqp(
-    port_daily_returns: np.ndarray,
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    *,
-    risk_metric: str = "vol",  # "vol" 或 "var"
-    var_params: Dict[str, Any] | None = None,
-    n_interior: int = 100,
-    maxiter: int = 400,
-    tol: float = 1e-8,
-    verbose: bool = False,
+        port_daily_returns: np.ndarray,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        risk_metric: str = "vol",  # "vol" 或 "var"
+        var_params: Dict[str, Any] | None = None,
+        n_interior: int = 100,
+        maxiter: int = 400,
+        tol: float = 1e-8,
+        verbose: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     使用 SLSQP 直接在“展示口径”的收益/风险下优化并构造前沿：
@@ -442,10 +442,13 @@ def build_frontier_by_slsqp(
         idx = np.array(idx_tuple, dtype=int)
         if idx.size == 0:
             continue
+
         def make_lo(idx=idx, lo=lo):
             return dict(type='ineq', fun=lambda w, idx=idx, lo=lo: float(np.sum(w[idx]) - float(lo)))
+
         def make_hi(idx=idx, hi=hi):
             return dict(type='ineq', fun=lambda w, idx=idx, hi=hi: float(float(hi) - np.sum(w[idx])))
+
         group_ineqs.append(make_lo())
         group_ineqs.append(make_hi())
 
@@ -486,17 +489,22 @@ def build_frontier_by_slsqp(
 
     # 风险网格
     grid = np.linspace(rmin, rmax, int(n_interior) + 2)
+    r_span = float(rmax - rmin)
+    slack = max(1e-9, 1e-6 * r_span)
 
     W_list: List[np.ndarray] = []
     cur = w_riskmin.copy()
-    for r_cap in grid:
+    for k, r_cap in enumerate(grid):
         # 风险约束：risk(w) <= r_cap
         cons = [eq_sum] + group_ineqs + [
-            dict(type='ineq', fun=lambda w, r=r_cap: float(r - risk_disp_of(w)))
+            dict(type='ineq', fun=lambda w, r=r_cap, s=slack: float((r + s) - risk_disp_of(w)))
         ]
+        # 分段线性插值的 warm-start，有助于避免陷在局部最优
+        t = 0.0 if r_span <= 0 else float((r_cap - rmin) / r_span)
+        x0 = ((1.0 - t) * w_riskmin + t * w_retmax).astype(float)
         res = minimize(
             lambda w: -ret_disp_of(w),
-            x0=cur,
+            x0=x0 if k > 0 else cur,
             method='SLSQP',
             bounds=bounds,
             constraints=cons,
@@ -528,6 +536,7 @@ def build_frontier_by_slsqp(
         )
     return W, ret_disp.astype(np.float64, copy=False), risk_disp.astype(np.float64, copy=False)
 
+
 # ===================== 主流程 =====================
 
 if __name__ == "__main__":
@@ -550,14 +559,14 @@ if __name__ == "__main__":
         "clip_non_negative": True,
     }
     SOLVER_PARAMS: Dict[str, Any] = {
-        "n_interior": 100,
+        "n_interior": 1000,
         "solver": "ECOS",  # ECOS/SCS/MOSEK
         "ridge": 1e-8,
     }
 
     SHOW_PLOT = True
-    SAVE_HTML = "efficient_frontier_solver.html"  # 可设为 None 不落盘
-    USE_SLSQP = False  # 设为 True 切换为 SLSQP 直接按展示口径优化
+    SAVE_HTML = None  # 可设为 None 不落盘
+    USE_SLSQP = True  # 设为 True 切换为 SLSQP 直接按展示口径优化
 
     t0 = time.time()
     log("开始：读取数据")
@@ -570,7 +579,7 @@ if __name__ == "__main__":
             multi_limits=MULTI_LIMITS,
             risk_metric=RISK_METRIC,
             var_params=VAR_PARAMS,
-            n_interior=int(SOLVER_PARAMS.get("n_interior", 100)),
+            n_interior=int(SOLVER_PARAMS.get("n_interior", 1000)),
             ridge=float(SOLVER_PARAMS.get("ridge", 1e-8)),
             solver=str(SOLVER_PARAMS.get("solver", "ECOS")),
         )
@@ -581,8 +590,8 @@ if __name__ == "__main__":
             multi_limits=MULTI_LIMITS,
             risk_metric=RISK_METRIC,
             var_params=VAR_PARAMS,
-            n_interior=int(SOLVER_PARAMS.get("n_interior", 100)),
-            maxiter=400,
+            n_interior=int(SOLVER_PARAMS.get("n_interior", 1000)),
+            maxiter=5000,
             tol=1e-8,
             verbose=False,
         )

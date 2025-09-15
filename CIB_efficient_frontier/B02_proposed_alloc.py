@@ -850,7 +850,7 @@ if __name__ == '__main__':
 
     ''' --- 4) 以前沿锚点为种子：小步随机游走 + POCS (可选精度) 填厚前沿之下区域 --- '''
     # 选择精度：'0.1%' / '0.2%' / '0.5%' / None
-    precision_choice = None  # <- 你可以改成 '0.2%'、'0.5%' 或 None（表示不量化）
+    precision_choice = None  # <- 你可以改成 '0.1%'、'0.2%'、'0.5%' 或 None（表示不量化）
     print(f"开始填充前沿之下的可行空间（precision={precision_choice}) ...")
 
     W_below = random_walk_below_frontier(
