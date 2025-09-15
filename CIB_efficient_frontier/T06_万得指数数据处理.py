@@ -14,6 +14,7 @@ def read_data_and_prepare(excel_file_name: str = "万得指数数据.xlsx",
 
     # 识别数值列（除 date 外）
     value_cols = [c for c in index_df.columns if c != "date"]
+    print(f"识别到的数值列: \n{value_cols}")
 
     # 1) 统一为字符串后用正则去除逗号与空白字符
     tmp_vals = index_df[value_cols].astype(str).replace({r"[,\s]": ""}, regex=True)
@@ -64,6 +65,40 @@ def plot_lines(df: pd.DataFrame, title: str, y_tick_format: str | None, output_h
 
 
 if __name__ == '__main__':
+    # 构建大类的配置
+    config = {
+        "权益类": {
+            # 权重分配方式: 'equal'-等权; 'inverse_vol'-逆波动率; 'manual'-手工指定; 'risk_parity'-风险平价
+            'method': 'manual',
+            # 指定构建权重的成分名称（必须与数据中的列名一致）
+            'index_names': ['万得普通股票型基金指数', '万得股票策略私募指数', '万得QDII股票型基金指数'],
+            # 指定手工权重（仅当 method='manual' 时有效）
+            'manual_weights': [0., 0.3, 0.2],
+        },
+        "固收类": {
+            'method': 'equal',
+            'index_names': ['万得纯债型基金总指数', '万得短期纯债型基金指数', '万得中长期纯债型指数',
+                            '万得QDII债券型基金指数'],
+        },
+        "另类": {
+            'method': 'inverse_vol',
+            'index_names': ['伦敦金现', '南华商品指数', '万得管理期货私募指数'],
+        },
+        "货基指数": {
+            'method': 'equal',
+            'index_names': ['万得货币市场基金指数'],
+        },
+        "混合类": {
+            'method': 'risk_parity',
+            'index_names': ['万得混合型基金指数'],
+            'risk_metric': 'vol',  # 风险平价度量 ['vol', 'ES', 'VaR'], 选择 weight_mode='risk_parity' 时有效
+            'rp_alpha': 0.95,  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
+            'rp_tol': 1e-6,  # 迭代收敛阈值, 选择 weight_mode='risk_parity' 时有效
+            'rp_max_iter': 50,  # 迭代上限, 选择 weight_mode='risk_parity' 时有效
+            'risk_budget': (4.0, 2.0, 4.0),  # 风险预算比例 (与 selected_assets 等长), 选择 weight_mode='risk_parity' 时有效
+
+        }
+    }
     # 读取并处理数据
     nav_df = read_data_and_prepare()
     # 虚拟净值曲线（以 1 为起点）
