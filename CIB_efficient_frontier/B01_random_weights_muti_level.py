@@ -406,6 +406,67 @@ def compute_perf_arrays(
     return ret_annual, vol_annual
 
 
+def compute_var_parametric_arrays(
+        port_daily: np.ndarray,  # (T, N)
+        portfolio_allocs: np.ndarray,  # (M, N)
+        *,
+        confidence: float = 0.95,
+        horizon_days: float = 1.0,
+        return_type: str = "simple",  # "simple" 或 "log"
+        ddof: int = 1,
+        clip_non_negative: bool = True,
+) -> np.ndarray:
+    """
+    基于参数法（方差-协方差法，正态近似）计算投资组合 VaR（取非负值）。
+    - 使用简单收益或对数收益作为输入（可选），均按“持有期天数”做线性/平方根缩放。
+    - VaR 定义：VaR = max(0, -(mu_h + z * sigma_h))，z 为左尾分位数 z_{1-conf}（负数）。
+    返回形状为 (M,) 的 VaR 数组，对应每个权重向量。
+    """
+    # 安全性：限定参数范围
+    confidence = float(confidence)
+    confidence = min(max(confidence, 1e-6), 1 - 1e-6)
+    horizon_days = max(float(horizon_days), 1e-12)
+
+    # 组合日收益：R = port_daily @ W.T -> (T, M)
+    if port_daily.dtype != np.float32:
+        port_daily = port_daily.astype(np.float32, copy=False)
+    if portfolio_allocs.dtype != np.float32:
+        portfolio_allocs = portfolio_allocs.astype(np.float32, copy=False)
+
+    WT = np.ascontiguousarray(portfolio_allocs.T)  # (N, M)
+    R = port_daily @ WT  # (T, M)
+
+    if return_type == "log":
+        X = np.log1p(R)
+    else:
+        X = R
+
+    mu = X.mean(axis=0, dtype=np.float32)
+    sigma = X.std(axis=0, ddof=ddof)
+
+    # 持有期缩放：对数收益可加总（mu_h = mu*h，sigma_h = sigma*sqrt(h)）；
+    # 简单收益在小波动下同样常用 sqrt 法近似
+    h = float(horizon_days)
+    mu_h = mu * h
+    sigma_h = sigma * np.sqrt(h)
+
+    # 正态分布左尾分位
+    try:
+        from statistics import NormalDist
+
+        z = NormalDist().inv_cdf(1.0 - confidence)
+    except Exception:
+        # 兜底：95% 左尾近似 -1.64485，99% 左尾近似 -2.32635
+        z = -1.6448536269514722 if abs(confidence - 0.95) < 1e-6 else -2.3263478740408408
+
+    var_val = -(mu_h + z * sigma_h)
+    if clip_non_negative:
+        var_val = np.maximum(var_val, 0.0)
+    # 取绝对值（按需求）
+    var_val = np.abs(var_val).astype(np.float32, copy=False)
+    return var_val
+
+
 # ===================== 3) 绘图 =====================
 
 def plot_efficient_frontier_arrays(
@@ -416,6 +477,7 @@ def plot_efficient_frontier_arrays(
         asset_names: List[str],
         title: str = "约束随机游走生成的投资组合与有效前沿",
         show: bool = True,
+        x_label: str | None = None,
 ):
     # 自定义 hover：使用 customdata 避免 Python 循环拼接
     # customdata: 权重矩阵 (M, N)
@@ -461,7 +523,7 @@ def plot_efficient_frontier_arrays(
 
     fig.update_layout(
         title=title,
-        xaxis_title='年化波动率 (Annual Volatility)',
+        xaxis_title=(x_label or '年化波动率 (Annual Volatility)'),
         yaxis_title='年化收益率 (Annual Return)',
         legend_title='图例',
         hovermode='closest'
@@ -913,6 +975,8 @@ def multi_level_random_walk(
         step_decay: float = 1.0,
         dedup_decimals: int = 4,
         annual_trading_days: float = 252.0,
+        risk_metric: str = "vol",  # "vol" 或 "var"
+        var_params: Dict[str, Any] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     多层随机游走：
@@ -952,10 +1016,24 @@ def multi_level_random_walk(
     ret, vol = compute_perf_arrays(
         port_daily_returns, W, trading_days=annual_trading_days, ddof=1
     )
+    # 可选：改用 VaR 作为风险维度
+    if (risk_metric or "vol").lower() == "var":
+        vp = var_params or {}
+        risk_arr = compute_var_parametric_arrays(
+            port_daily_returns,
+            W,
+            confidence=float(vp.get("confidence", 0.95)),
+            horizon_days=float(vp.get("horizon_days", 1.0)),
+            return_type=str(vp.get("return_type", "simple")),
+            ddof=int(vp.get("ddof", 1)),
+            clip_non_negative=bool(vp.get("clip_non_negative", True)),
+        )
+    else:
+        risk_arr = vol
     finite_mask = np.isfinite(ret) & np.isfinite(vol)
     if not np.all(finite_mask):
         W, ret, vol = W[finite_mask], ret[finite_mask], vol[finite_mask]
-    ef_mask = cal_ef_mask(ret, vol)
+    ef_mask = cal_ef_mask(ret, risk_arr)
     log(
         f"[第0轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}"
     )
@@ -1001,7 +1079,21 @@ def multi_level_random_walk(
         finite_mask = np.isfinite(ret) & np.isfinite(vol)
         if not np.all(finite_mask):
             W, ret, vol = W[finite_mask], ret[finite_mask], vol[finite_mask]
-        ef_mask = cal_ef_mask(ret, vol)
+        # 更新风险度量
+        if (risk_metric or "vol").lower() == "var":
+            vp = var_params or {}
+            risk_arr = compute_var_parametric_arrays(
+                port_daily_returns,
+                W,
+                confidence=float(vp.get("confidence", 0.95)),
+                horizon_days=float(vp.get("horizon_days", 1.0)),
+                return_type=str(vp.get("return_type", "simple")),
+                ddof=int(vp.get("ddof", 1)),
+                clip_non_negative=bool(vp.get("clip_non_negative", True)),
+            )
+        else:
+            risk_arr = vol
+        ef_mask = cal_ef_mask(ret, risk_arr)
         log(
             f"[第{r}轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}"
         )
@@ -1009,7 +1101,7 @@ def multi_level_random_walk(
         # 步长衰减（如需）
         step_mid *= float(step_decay)
 
-    return W, ret, vol, ef_mask
+    return W, ret, (risk_arr if (risk_metric or "vol").lower() == "var" else vol), ef_mask
 
 
 def multi_level_random_walk_config(
@@ -1022,6 +1114,8 @@ def multi_level_random_walk_config(
         annual_trading_days: float = 252.0,
         global_seed: int = 12345,
         extreme_seed_config: Dict[str, Any] | None = None,
+        risk_metric: str = "vol",  # "vol" 或 "var"
+        var_params: Dict[str, Any] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     基于“字典配置”的多层随机游走：
@@ -1082,7 +1176,23 @@ def multi_level_random_walk_config(
     finite_mask = np.isfinite(ret) & np.isfinite(vol)
     if not np.all(finite_mask):
         W, ret, vol = W[finite_mask], ret[finite_mask], vol[finite_mask]
-    ef_mask = cal_ef_mask(ret, vol)
+    # 选择风险度量
+    if (risk_metric or "vol").lower() == "var":
+        vp = var_params or {}
+        risk_arr = compute_var_parametric_arrays(
+            port_daily_returns,
+            W,
+            confidence=float(vp.get("confidence", 0.95)),
+            horizon_days=float(vp.get("horizon_days", 1.0)),
+            return_type=str(vp.get("return_type", "simple")),
+            ddof=int(vp.get("ddof", 1)),
+            clip_non_negative=bool(vp.get("clip_non_negative", True)),
+        )
+        risk_name = f"VaR@{vp.get('confidence', 0.95)}({vp.get('return_type','simple')})"
+    else:
+        risk_arr = vol
+        risk_name = "波动率"
+    ef_mask = cal_ef_mask(ret, risk_arr)
     log(f"[第0轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}")
 
     # 额外：极端权重种子 -> 局部随机游走（可选）
@@ -1198,8 +1308,8 @@ def multi_level_random_walk_config(
 
         if "samples_total" in cfg:
             total = int(cfg.get("samples_total", 200))
-            # 直接复用上一轮已计算的波动率，避免重复矩阵乘法
-            seeds_vol = vol[ef_mask]
+            # 直接复用上一轮已计算的风险度量，避免重复矩阵乘法
+            seeds_vol = (risk_arr if (risk_metric or "vol").lower() == "var" else vol)[ef_mask]
             per_seed_quota = _assign_quota_by_vol_bins(
                 seeds_vol=seeds_vol,
                 samples_total=total,
@@ -1271,10 +1381,24 @@ def multi_level_random_walk_config(
                 for row in np.ascontiguousarray(np.round(new_W, dedup_decimals)):
                     seen.add(row.tobytes())
         log(f"[第{r}轮] 合并后有效权重数: {W.shape[0]}")
-        ef_mask = cal_ef_mask(ret, vol)
+        # 更新风险度量
+        if (risk_metric or "vol").lower() == "var":
+            vp = var_params or {}
+            risk_arr = compute_var_parametric_arrays(
+                port_daily_returns,
+                W,
+                confidence=float(vp.get("confidence", 0.95)),
+                horizon_days=float(vp.get("horizon_days", 1.0)),
+                return_type=str(vp.get("return_type", "simple")),
+                ddof=int(vp.get("ddof", 1)),
+                clip_non_negative=bool(vp.get("clip_non_negative", True)),
+            )
+        else:
+            risk_arr = vol
+        ef_mask = cal_ef_mask(ret, risk_arr)
         log(f"[第{r}轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}")
 
-    return W, ret, vol, ef_mask
+    return W, ret, (risk_arr if (risk_metric or "vol").lower() == "var" else vol), ef_mask
 
 
 def run_pipeline(
@@ -1287,6 +1411,8 @@ def run_pipeline(
         seed: int = 12345,
         rounds_config: Dict[int, Dict[str, Any]] | None = None,
         extreme_seed_config: Dict[str, Any] | None = None,
+        risk_metric: str = "vol",
+        var_params: Dict[str, Any] | None = None,
         # 公共参数
         annual_trading_days: float = 252.0,
         drop_duplicates_decimals: int = 4,
@@ -1308,7 +1434,7 @@ def run_pipeline(
     if rounds_config is None:
         raise ValueError("rounds_config 不能为空（仅支持字典配置模式）")
 
-    W, ret_annual, vol_annual, ef_mask = multi_level_random_walk_config(
+    W, ret_annual, risk_arr, ef_mask = multi_level_random_walk_config(
         port_daily_returns=port_daily_returns,
         single_limits=single_limits,
         multi_limits=multi_limits,
@@ -1317,6 +1443,8 @@ def run_pipeline(
         annual_trading_days=annual_trading_days,
         global_seed=seed,
         extreme_seed_config=extreme_seed_config,
+        risk_metric=risk_metric,
+        var_params=var_params,
     )
     if W.size == 0:
         log("多层（字典配置）流程未产出结果，终止。")
@@ -1324,14 +1452,22 @@ def run_pipeline(
 
     # 7) 绘图
     log("生成交互式图表...")
+    xlabel = '年化波动率 (Annual Volatility)'
+    if (risk_metric or "vol").lower() == "var":
+        vp = var_params or {}
+        conf = float(vp.get("confidence", 0.95))
+        h = float(vp.get("horizon_days", 1.0))
+        rtype = str(vp.get("return_type", "simple"))
+        xlabel = f"VaR@{conf:.2f}({rtype}, 持有期{h:g}天)"
     plot_efficient_frontier_arrays(
-        vol_all=vol_annual,
+        vol_all=risk_arr,
         ret_all=ret_annual,
         weights_all=W,
         ef_mask=ef_mask,
         asset_names=assets_list,
         title="约束随机游走生成的投资组合与有效前沿",
         show=show_plot,
+        x_label=xlabel,
     )
 
     log(f"流程完成，总耗时 {time.time() - overall_t0:.2f}s")
@@ -1371,10 +1507,20 @@ if __name__ == "__main__":
     EXTREME_SEED_CONFIG: Dict[str, Any] = {
         "enable": False,
         # 每个极端种子（例如 5 个大类 -> 5 个种子）生成多少权重
-        "samples_per_seed": 10000,
-        # 可选步长：未指定时默认采用第1轮 step_size
-        "step_size": 0.99,
+        "samples_per_seed": 200,
+        # 可选步长：未指定时默认采用第1轮 step_size（否则 0.3）
+        # "step_size": 0.3,
         # 其他可选项：projector_iters/projector_tol/projector_damping/seed/parallel_workers/use_numba
+    }
+
+    # 风险度量与 VaR 参数
+    RISK_METRIC = "var"  # 可选："vol"（波动率）或 "var"（参数法 VaR）
+    VAR_PARAMS: Dict[str, Any] = {
+        "confidence": 0.95,
+        "horizon_days": 1.0,
+        "return_type": "log",  # 或 "log"
+        "ddof": 1,
+        "clip_non_negative": True,  # 对“无下跌”情形，VaR 取 0
     }
 
     log("程序开始运行")
@@ -1387,6 +1533,8 @@ if __name__ == "__main__":
         seed=RANDOM_SEED,
         rounds_config=ROUNDS_CONFIG,
         extreme_seed_config=EXTREME_SEED_CONFIG,
+        risk_metric=RISK_METRIC,
+        var_params=VAR_PARAMS,
         # 公共参数
         annual_trading_days=TRADING_DAYS,
         drop_duplicates_decimals=DEDUP_DECIMALS,
