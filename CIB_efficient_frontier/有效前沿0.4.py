@@ -22,9 +22,6 @@ plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
 def generate_alloc_perf(portfolio_alloc: Dict) -> Dict:
     port_daily = hist_value_r.copy()
     port_daily = port_daily[portfolio_alloc.keys()]
-    # for asset in portfolio_alloc.keys():
-    #     port_daily[asset] = port_daily[asset] * portfolio_alloc[asset]
-    # port_daily['r'] = port_daily.sum(axis=1)
 
     port_daily.loc[:, 'r'] = port_daily[portfolio_alloc.keys()].values @ np.array(list(portfolio_alloc.values()))
 

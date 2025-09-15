@@ -111,7 +111,7 @@ def validate_weights_batch(
     return ok_sum & ok_single & ok_group
 
 
-# ===================== 1) POCS 约束投影（高速） =====================
+# ===================== 1) POCS 约束投影 =====================
 
 def _build_group_struct(
         multi_limits: Dict[Tuple[int, ...], Tuple[float, float]], n: int
@@ -378,7 +378,7 @@ def make_pocs_projector(
     return project
 
 
-# ===================== 2) 批量指标计算（高效） =====================
+# ===================== 2) 批量指标计算 =====================
 
 def compute_perf_arrays(
         port_daily: np.ndarray,  # (T, N)
@@ -406,7 +406,7 @@ def compute_perf_arrays(
     return ret_annual, vol_annual
 
 
-# ===================== 3) 绘图（纯数组 + hovertemplate） =====================
+# ===================== 3) 绘图 =====================
 
 def plot_efficient_frontier_arrays(
         vol_all: np.ndarray,
@@ -1063,8 +1063,6 @@ def multi_level_random_walk_config(
         p_damping = float(cfg.get("projector_damping", 1.0))
         r_seed = int(cfg.get("seed", global_seed))
 
-        per_seed_quota = None
-        desc = ""
         if "samples_total" in cfg:
             total = int(cfg.get("samples_total", 200))
             # 直接复用上一轮已计算的波动率，避免重复矩阵乘法
@@ -1080,7 +1078,8 @@ def multi_level_random_walk_config(
             zeros = int((per_seed_quota == 0).sum())
             desc = (
                 f"总量 {total}，按 vol 分桶分配（bins={int(cfg.get('vol_bins', 60))}, "
-                f"min={per_seed_quota.min()}, median={int(np.median(per_seed_quota))}, max={per_seed_quota.max()}, zeros={zeros})"
+                f"min={per_seed_quota.min()}, median={int(np.median(per_seed_quota))}, "
+                f"max={per_seed_quota.max()}, zeros={zeros})"
             )
         else:
             sps = int(cfg.get("samples_per_seed", 1)) or 1
