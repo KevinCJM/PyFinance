@@ -774,6 +774,161 @@ def deduplicate_weights(W: np.ndarray, decimals: int = 4) -> np.ndarray:
     return W[np.sort(uniq_idx)]
 
 
+# ===================== 权重量化（与 B02 一致语义） =====================
+
+def _parse_precision(choice: str) -> float:
+    """将 '0.1%'/'0.2%'/'0.5%' 或 '0.001' 解析为步长浮点数。"""
+    choice = str(choice).strip()
+    if choice.endswith('%'):
+        val = float(choice[:-1]) / 100.0
+    else:
+        val = float(choice)
+    return float(val)
+
+
+def _snap_to_grid_simplex(w: np.ndarray, step: float, single_limits: List[Tuple[float, float]]) -> np.ndarray | None:
+    """
+    将权重向量吸附到网格（步长 step）上，同时满足：单资产上下限与 sum=1。
+    采用最大余数法在整数格上分配，保持总和与边界。
+    说明：不处理组约束；组约束由外层 POCS-量化循环修复。
+    """
+    R = int(round(1.0 / step))
+    w = np.clip(w, 0.0, 1.0)
+    k_float = w / step
+    k_floor = np.floor(k_float).astype(np.int64)
+    frac = k_float - k_floor
+    lows = np.array([a for a, _ in single_limits], dtype=np.float64)
+    highs = np.array([b for _, b in single_limits], dtype=np.float64)
+    lo_units = np.ceil(lows / step - 1e-12).astype(np.int64)
+    hi_units = np.floor(highs / step + 1e-12).astype(np.int64)
+    k = np.clip(k_floor, lo_units, hi_units)
+    diff = R - int(k.sum())
+    if diff > 0:
+        cap = hi_units - k
+        idx = np.argsort(-frac)
+        for i in idx:
+            if diff == 0:
+                break
+            add = int(min(cap[i], diff))
+            if add > 0:
+                k[i] += add
+                diff -= add
+        if diff != 0:
+            return None
+    elif diff < 0:
+        cap = k - lo_units
+        idx = np.argsort(frac)
+        for i in idx:
+            if diff == 0:
+                break
+            sub = int(min(cap[i], -diff))
+            if sub > 0:
+                k[i] -= sub
+                diff += sub
+        if diff != 0:
+            return None
+    wq = k.astype(np.float64) / R
+    if (wq < lows - 1e-12).any() or (wq > highs + 1e-12).any():
+        return None
+    if not np.isclose(wq.sum(), 1.0, atol=1e-12):
+        return None
+    return wq
+
+
+def quantize_with_projection(
+    w: np.ndarray,
+    step: float,
+    single_limits: List[Tuple[float, float]],
+    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+    *,
+    projector=None,
+    rounds: int = 5,
+) -> np.ndarray | None:
+    """
+    迭代执行：
+      1) 约束投影（盒+sum=1+组） 2) 网格吸附（sum=1+单资产）
+    多轮循环后若收敛则返回量化后的可行权重；若失败返回 None。
+    """
+    if projector is None:
+        projector = make_pocs_projector(
+            single_limits=single_limits,
+            multi_limits=multi_limits,
+            max_iter=300,
+            tol=1e-10,
+            damping=0.9,
+        )
+    x = w.copy()
+    for _ in range(rounds):
+        x = projector(x)
+        if x is None:
+            return None
+        xq = _snap_to_grid_simplex(x, step, single_limits)
+        if xq is None:
+            return None
+        if np.max(np.abs(xq - x)) < step * 0.5:
+            return xq
+        x = xq
+    return x
+
+
+def _quantize_weights_batch_if_needed(
+    W: np.ndarray,
+    precision_choice: str | None,
+    single_limits: List[Tuple[float, float]],
+    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+    *,
+    rounds: int = 4,
+    use_numba: bool | None = None,
+    parallel_workers: int | None = None,
+) -> np.ndarray:
+    """按需对一批权重量化；失败的行丢弃。precision_choice=None 时原样返回。"""
+    if not precision_choice:
+        return W
+    step = _parse_precision(precision_choice)
+    if step <= 0 or step >= 1:
+        return W
+    if use_numba is None:
+        use_numba = HAS_NUMBA
+    projector = (
+        make_pocs_projector_numba if (use_numba and HAS_NUMBA) else make_pocs_projector
+    )(
+        single_limits=single_limits,
+        multi_limits=multi_limits,
+        max_iter=300,
+        tol=1e-10,
+        damping=0.9,
+    )
+
+    def _one(w: np.ndarray) -> np.ndarray | None:
+        return quantize_with_projection(
+            w, step, single_limits, multi_limits, projector=projector, rounds=rounds
+        )
+
+    out: list[np.ndarray] = []
+    M = W.shape[0]
+    if parallel_workers is None:
+        cpu = os.cpu_count() or 4
+        # 小批量串行更快，批量大时并行
+        parallel_workers = 0 if M < 64 else min(8, max(2, cpu // 2))
+    if parallel_workers and M > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=parallel_workers) as ex:
+            futures = [ex.submit(_one, w) for w in W]
+            for fu in as_completed(futures):
+                xq = fu.result()
+                if xq is not None:
+                    out.append(xq)
+    else:
+        for w in W:
+            xq = _one(w)
+            if xq is not None:
+                out.append(xq)
+    if not out:
+        return np.empty((0, W.shape[1]), dtype=np.float64)
+    return np.vstack(out).astype(np.float64, copy=False)
+
+
 def generate_extreme_weight_seeds(
         N: int,
         single_limits: List[Tuple[float, float]],
@@ -1307,6 +1462,7 @@ def multi_level_random_walk_config(
         extreme_seed_config: Dict[str, Any] | None = None,
         risk_metric: str = "vol",  # "vol" 或 "var"
         var_params: Dict[str, Any] | None = None,
+        precision_choice: str | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     基于“字典配置”的多层随机游走：
@@ -1379,6 +1535,9 @@ def multi_level_random_walk_config(
             projector_damping=p_damping,
             use_numba=bool(r0_cfg.get("use_numba", False)),
         )
+    # 可选：量化精度
+    if W.size and precision_choice:
+        W = _quantize_weights_batch_if_needed(W, precision_choice, single_limits, multi_limits)
     if W.size == 0:
         log("[第0轮] 未获得任何权重，终止。")
         return W, np.array([]), np.array([]), np.array([], dtype=bool)
@@ -1474,6 +1633,8 @@ def multi_level_random_walk_config(
                         mask_new = np.fromiter((row.tobytes() not in seen_local for row in Wc_new),
                                                count=Wc_new.shape[0], dtype=bool)
                         ext_W = ext_W[mask_new]
+                if ext_W.size and precision_choice:
+                    ext_W = _quantize_weights_batch_if_needed(ext_W, precision_choice, single_limits, multi_limits)
                 if ext_W.size:
                     # 去重、去已见、校验
                     ext_W = deduplicate_weights(ext_W, decimals=dedup_decimals)
@@ -1578,6 +1739,9 @@ def multi_level_random_walk_config(
             parallel_workers=int(cfg.get("parallel_workers", 0)) or None,
             use_numba=bool(cfg.get("use_numba", False)),
         )
+        # 可选：量化新权重
+        if new_W.size and precision_choice:
+            new_W = _quantize_weights_batch_if_needed(new_W, precision_choice, single_limits, multi_limits)
         if new_W.size == 0:
             log(f"[第{r}轮] 未生成新权重，提前停止。")
             break
@@ -1645,6 +1809,7 @@ def run_pipeline(
         extreme_seed_config: Dict[str, Any] | None = None,
         risk_metric: str = "vol",
         var_params: Dict[str, Any] | None = None,
+        precision_choice: str | None = None,
         # 公共参数
         annual_trading_days: float = 252.0,
         drop_duplicates_decimals: int = 4,
@@ -1677,6 +1842,7 @@ def run_pipeline(
         extreme_seed_config=extreme_seed_config,
         risk_metric=risk_metric,
         var_params=var_params,
+        precision_choice=precision_choice,
     )
     if W.size == 0:
         log("多层（字典配置）流程未产出结果，终止。")
@@ -1749,7 +1915,7 @@ if __name__ == "__main__":
 
     # 是否启用“极端权重”种子，以及每个种子生成的数量
     EXTREME_SEED_CONFIG: Dict[str, Any] = {
-        "enable": True,
+        "enable": False,
         # 每个极端种子（例如 5 个大类 -> 5 个种子）生成多少权重
         "samples_per_seed": 100,
         # 可选步长：未指定时默认采用第1轮 step_size（否则 0.3）
@@ -1761,10 +1927,14 @@ if __name__ == "__main__":
     RISK_METRIC = "var"  # 可选："vol"（波动率）或 "var"（参数法 VaR）
     VAR_PARAMS: Dict[str, Any] = {
         "confidence": 0.95,
-        "return_type": "log",  # 或 "log"
+        "horizon_days": 1.0,
+        "return_type": "log",  # 或 "simple"
         "ddof": 1,
         "clip_non_negative": True,  # 对“无下跌”情形，VaR 取 0
     }
+
+    # 权重精度（量化）选择：'0.1%'、'0.2%'、'0.5%' 或 None（不量化）
+    PRECISION_CHOICE: str | None = None
 
     log("程序开始运行")
     run_pipeline(
@@ -1778,6 +1948,7 @@ if __name__ == "__main__":
         extreme_seed_config=EXTREME_SEED_CONFIG,
         risk_metric=RISK_METRIC,
         var_params=VAR_PARAMS,
+        precision_choice=PRECISION_CHOICE,
         # 公共参数
         annual_trading_days=TRADING_DAYS,
         drop_duplicates_decimals=DEDUP_DECIMALS,
