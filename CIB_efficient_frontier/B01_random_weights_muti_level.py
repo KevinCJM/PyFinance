@@ -418,9 +418,26 @@ def compute_var_parametric_arrays(
 ) -> np.ndarray:
     """
     基于参数法（方差-协方差法，正态近似）计算投资组合 VaR（取非负值）。
-    - 使用简单收益或对数收益作为输入（可选），均按“持有期天数”做线性/平方根缩放。
-    - VaR 定义：VaR = max(0, -(mu_h + z * sigma_h))，z 为左尾分位数 z_{1-conf}（负数）。
-    返回形状为 (M,) 的 VaR 数组，对应每个权重向量。
+
+    参数：
+        port_daily : np.ndarray, shape (T, N)
+            每日资产收益数据，T 为时间长度，N 为资产数量。
+        portfolio_allocs : np.ndarray, shape (M, N)
+            投资组合权重矩阵，M 为组合数量，N 为资产数量。
+        confidence : float, default=0.95
+            置信水平，用于确定分位点，取值范围 (0, 1)。
+        horizon_days : float, default=1.0
+            风险持有期天数，用于缩放均值和标准差。
+        return_type : str, default="simple"
+            收益类型，可选 "simple"（简单收益）或 "log"（对数收益）。
+        ddof : int, default=1
+            计算标准差时的自由度调整参数。
+        clip_non_negative : bool, default=True
+            是否将 VaR 结果裁剪为非负值。
+
+    返回：
+        np.ndarray, shape (M,)
+            每个投资组合在指定置信水平下的 VaR 值。
     """
     # 安全性：限定参数范围
     confidence = float(confidence)
@@ -433,36 +450,38 @@ def compute_var_parametric_arrays(
     if portfolio_allocs.dtype != np.float32:
         portfolio_allocs = portfolio_allocs.astype(np.float32, copy=False)
 
-    WT = np.ascontiguousarray(portfolio_allocs.T)  # (N, M)
-    R = port_daily @ WT  # (T, M)
+    WT = np.ascontiguousarray(portfolio_allocs.T)  # 转置并确保内存连续 (N, M)
+    R = port_daily @ WT  # 得到每个组合在每个时间点的收益 (T, M)
 
+    # 根据收益类型选择使用简单收益或对数收益
     if return_type == "log":
         X = np.log1p(R)
     else:
         X = R
 
+    # 计算每组收益的均值和标准差
     mu = X.mean(axis=0, dtype=np.float32)
     sigma = X.std(axis=0, ddof=ddof)
 
-    # 持有期缩放：对数收益可加总（mu_h = mu*h，sigma_h = sigma*sqrt(h)）；
-    # 简单收益在小波动下同样常用 sqrt 法近似
+    # 持有期缩放：对数收益可加总；简单收益使用平方根法则近似
     h = float(horizon_days)
     mu_h = mu * h
     sigma_h = sigma * np.sqrt(h)
 
-    # 正态分布左尾分位
+    # 正态分布左尾分位数 z_{1 - confidence}
     try:
         from statistics import NormalDist
 
         z = NormalDist().inv_cdf(1.0 - confidence)
     except Exception:
-        # 兜底：95% 左尾近似 -1.64485，99% 左尾近似 -2.32635
-        z = -1.6448536269514722 if abs(confidence - 0.95) < 1e-6 else -2.3263478740408408
+        # 兜底：95% 左尾近似 -1.64485
+        z = -1.645
 
+    # 计算 VaR：VaR = max(0, -(mu_h + z * sigma_h))
     var_val = -(mu_h + z * sigma_h)
     if clip_non_negative:
         var_val = np.maximum(var_val, 0.0)
-    # 取绝对值（按需求）
+    # 取绝对值并转换为 float32 类型
     var_val = np.abs(var_val).astype(np.float32, copy=False)
     return var_val
 
@@ -479,8 +498,7 @@ def plot_efficient_frontier_arrays(
         show: bool = True,
         x_label: str | None = None,
 ):
-    # 自定义 hover：使用 customdata 避免 Python 循环拼接
-    # customdata: 权重矩阵 (M, N)
+    # 自定义 hover：使用 customdata 避免 Python 循环拼接; customdata: 权重矩阵 (M, N)
     hover_assets = "<br>".join([f"{name}: %{{customdata[{i}]:.1%}}" for i, name in enumerate(asset_names)])
     hovertemplate = (
             "年化波动率: %{x:.2%}<br>"
