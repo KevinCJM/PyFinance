@@ -521,6 +521,50 @@ def deduplicate_weights(W: np.ndarray, decimals: int = 4) -> np.ndarray:
     return W[np.sort(uniq_idx)]
 
 
+def generate_extreme_weight_seeds(
+        N: int,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        projector_iters: int = 200,
+        projector_tol: float = 1e-9,
+        projector_damping: float = 1.0,
+        use_numba: bool | None = None,
+        dedup_decimals: int = 8,
+) -> np.ndarray:
+    """
+    生成“极端权重”可行种子：对每个资产 i，构造 e_i（仅第 i 个权重为 1），
+    再投影到约束可行域，得到最多 N 个合法起点；若部分冲突导致重复/不可行，会自动去重/剔除。
+    """
+    if use_numba is None:
+        use_numba = HAS_NUMBA
+    projector = (
+        make_pocs_projector_numba if (use_numba and HAS_NUMBA) else make_pocs_projector
+    )(
+        single_limits=single_limits,
+        multi_limits=multi_limits,
+        max_iter=projector_iters,
+        tol=projector_tol,
+        damping=projector_damping,
+    )
+
+    seeds: List[np.ndarray] = []
+    for i in range(N):
+        v = np.zeros(N, dtype=np.float64)
+        v[i] = 1.0
+        x = projector(v)
+        if x is not None:
+            seeds.append(x)
+
+    if not seeds:
+        return np.empty((0, N), dtype=np.float64)
+
+    S = np.vstack(seeds).astype(np.float64, copy=False)
+    # 极端点之间可能因约束而投影为同一点，这里做一次去重
+    S = deduplicate_weights(S, decimals=dedup_decimals)
+    return S
+
+
 def generate_weights_random_walk(
         N: int,
         single_limits: List[Tuple[float, float]],
@@ -977,6 +1021,7 @@ def multi_level_random_walk_config(
         dedup_decimals: int = 4,
         annual_trading_days: float = 252.0,
         global_seed: int = 12345,
+        extreme_seed_config: Dict[str, Any] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     基于“字典配置”的多层随机游走：
@@ -987,6 +1032,8 @@ def multi_level_random_walk_config(
         - `samples_per_seed`：每个种子生成的数量；
         - `samples_total`：本轮总体目标数量（会均分到各种子并向上取整）。
         同样支持 projector 参数与 `seed`（若未给，沿用 global_seed 生成器）。
+      - 额外的 extreme_seed_config（可选，默认 None）：
+        {"enable": bool, "samples_per_seed": int, 可选 "step_size" 及 projector/seed/并行参数}
     返回：最终 (W, ret, vol, ef_mask)。
     """
     if not rounds_config:
@@ -1037,6 +1084,92 @@ def multi_level_random_walk_config(
         W, ret, vol = W[finite_mask], ret[finite_mask], vol[finite_mask]
     ef_mask = cal_ef_mask(ret, vol)
     log(f"[第0轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}")
+
+    # 额外：极端权重种子 -> 局部随机游走（可选）
+    if extreme_seed_config and bool(extreme_seed_config.get("enable", False)):
+        sps = int(extreme_seed_config.get("samples_per_seed", 0))
+        if sps > 0:
+            step_e = float(
+                extreme_seed_config.get(
+                    "step_size",
+                    float(rounds_config.get(1, {}).get("step_size", 0.3)),
+                )
+            )
+            p_iters_e = int(extreme_seed_config.get("projector_iters", 200))
+            p_tol_e = float(extreme_seed_config.get("projector_tol", 1e-9))
+            p_damping_e = float(extreme_seed_config.get("projector_damping", 1.0))
+            r_seed_e = int(extreme_seed_config.get("seed", global_seed))
+            parallel_e = int(extreme_seed_config.get("parallel_workers", 0)) or None
+            use_numba_e = bool(extreme_seed_config.get("use_numba", False))
+
+            log(
+                f"[极端种子] 生成并投影极端权重种子，"
+                f"每种子 {sps} 次，步长={step_e}"
+            )
+            extreme_seeds = generate_extreme_weight_seeds(
+                N=N,
+                single_limits=single_limits,
+                multi_limits=multi_limits,
+                projector_iters=p_iters_e,
+                projector_tol=p_tol_e,
+                projector_damping=p_damping_e,
+                use_numba=use_numba_e,
+                dedup_decimals=max(6, dedup_decimals),
+            )
+            if extreme_seeds.size:
+                log(f"[极端种子] 可行种子数: {extreme_seeds.shape[0]}")
+                # 从极端种子出发进行随机游走
+                rng_e = np.random.default_rng(r_seed_e)
+                per_seed_quota = np.full(extreme_seeds.shape[0], sps, dtype=int)
+                ext_W = generate_weights_from_seeds(
+                    seeds=extreme_seeds,
+                    single_limits=single_limits,
+                    multi_limits=multi_limits,
+                    rng=rng_e,
+                    per_seed_quota=per_seed_quota,
+                    samples_per_seed=1,
+                    step_size=step_e,
+                    projector_iters=p_iters_e,
+                    projector_tol=p_tol_e,
+                    projector_damping=p_damping_e,
+                    parallel_workers=parallel_e,
+                    use_numba=use_numba_e,
+                )
+                if ext_W.size:
+                    # 过滤与现有 W 重复的样本
+                    if W.size:
+                        seen_local: set[bytes] = set()
+                        Wc_seen = np.ascontiguousarray(np.round(W, dedup_decimals))
+                        for row in Wc_seen:
+                            seen_local.add(row.tobytes())
+                        Wc_new = np.ascontiguousarray(np.round(ext_W, dedup_decimals))
+                        mask_new = np.fromiter((row.tobytes() not in seen_local for row in Wc_new),
+                                               count=Wc_new.shape[0], dtype=bool)
+                        ext_W = ext_W[mask_new]
+                if ext_W.size:
+                    # 去重、去已见、校验
+                    ext_W = deduplicate_weights(ext_W, decimals=dedup_decimals)
+                    # 将已见集合在后面统一构建后去重；先暂存，稍后统一处理
+                    # 先直接按可行性过滤
+                    vmask_e = validate_weights_batch(ext_W, lows, highs, G, low_g, up_g, atol=1e-6)
+                    ext_W = ext_W[vmask_e]
+                    if ext_W.size:
+                        ret_e, vol_e = compute_perf_arrays(
+                            port_daily_returns, ext_W, trading_days=annual_trading_days, ddof=1
+                        )
+                        finite_e = np.isfinite(ret_e) & np.isfinite(vol_e)
+                        ext_W, ret_e, vol_e = ext_W[finite_e], ret_e[finite_e], vol_e[finite_e]
+                        if ext_W.size:
+                            W = np.vstack([W, ext_W])
+                            ret = np.concatenate([ret, ret_e])
+                            vol = np.concatenate([vol, vol_e])
+                            ef_mask = cal_ef_mask(ret, vol)
+                            log(
+                                f"[极端种子] 合并后有效权重数: {W.shape[0]}；"
+                                f"有效前沿点数: {int(ef_mask.sum())}/{ef_mask.size}"
+                            )
+            else:
+                log("[极端种子] 未生成任何可行极端种子，跳过。")
 
     # 后续轮次：按配置执行
     max_round = max(rounds_config.keys())
@@ -1153,6 +1286,7 @@ def run_pipeline(
         *,
         seed: int = 12345,
         rounds_config: Dict[int, Dict[str, Any]] | None = None,
+        extreme_seed_config: Dict[str, Any] | None = None,
         # 公共参数
         annual_trading_days: float = 252.0,
         drop_duplicates_decimals: int = 4,
@@ -1182,6 +1316,7 @@ def run_pipeline(
         dedup_decimals=drop_duplicates_decimals,
         annual_trading_days=annual_trading_days,
         global_seed=seed,
+        extreme_seed_config=extreme_seed_config,
     )
     if W.size == 0:
         log("多层（字典配置）流程未产出结果，终止。")
@@ -1206,7 +1341,7 @@ def run_pipeline(
 
 if __name__ == "__main__":
     # 主要参数（可按需调整）
-    EXCEL_PATH = "历史净值数据.xlsx"
+    EXCEL_PATH = "历史净值数据_万得指数.xlsx"
     SHEET_NAME = "历史净值数据"
     ASSETS = ["货币现金类", "固定收益类", "混合策略类", "权益投资类", "另类投资类"]
 
@@ -1232,6 +1367,16 @@ if __name__ == "__main__":
     # 是否显示图表（自测/批处理可为 False）
     SHOW_PLOT = True
 
+    # 是否启用“极端权重”种子，以及每个种子生成的数量
+    EXTREME_SEED_CONFIG: Dict[str, Any] = {
+        "enable": False,
+        # 每个极端种子（例如 5 个大类 -> 5 个种子）生成多少权重
+        "samples_per_seed": 10000,
+        # 可选步长：未指定时默认采用第1轮 step_size
+        "step_size": 0.99,
+        # 其他可选项：projector_iters/projector_tol/projector_damping/seed/parallel_workers/use_numba
+    }
+
     log("程序开始运行")
     run_pipeline(
         excel_path=EXCEL_PATH,
@@ -1241,6 +1386,7 @@ if __name__ == "__main__":
         multi_limits=MULTI_LIMITS,
         seed=RANDOM_SEED,
         rounds_config=ROUNDS_CONFIG,
+        extreme_seed_config=EXTREME_SEED_CONFIG,
         # 公共参数
         annual_trading_days=TRADING_DAYS,
         drop_duplicates_decimals=DEDUP_DECIMALS,
