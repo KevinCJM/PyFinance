@@ -78,7 +78,7 @@ def plot_timeseries_and_corr(df_nv: pd.DataFrame,
                 thickness=10,
                 lenmode='fraction', len=0.45,
                 y=0.22, yanchor='middle',
-                x=1.04, xanchor='left'      # 更紧贴绘图区，给右侧图例留出空间
+                x=1.04, xanchor='left'  # 更紧贴绘图区，给右侧图例留出空间
             )
         ),
         row=2, col=1
