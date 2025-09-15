@@ -31,6 +31,14 @@ if len(ret_df) > 0:
 
 print(ret_df.head())
 
+# 构造虚拟净值：所有产品起始净值为 1
+nav_df = (1.0 + ret_df).cumprod()
+if len(nav_df) > 0:
+    # 明确第一天为 1，并对缺失进行前向填充（缺失视为当日不变）
+    nav_df.iloc[0] = 1.0
+nav_df = nav_df.ffill()
+
+# 画图：净值曲线与日收益率与虚拟净值
 
 # 画图：净值曲线与日收益率
 def plot_lines(df: pd.DataFrame, title: str, y_tickformat: str | None, output_html: str):
@@ -56,3 +64,6 @@ plot_lines(index_df, title="万得指数：净值/点位曲线", y_tickformat=No
 
 # 日收益率曲线（百分比格式）
 plot_lines(ret_df, title="万得指数：日收益率", y_tickformat=".2%", output_html="万得指数_日收益率_交互图.html")
+
+# 虚拟净值曲线（以 1 为起点）
+plot_lines(nav_df, title="万得指数：虚拟净值（起始为1）", y_tickformat=None, output_html="万得指数_虚拟净值_交互图.html")
