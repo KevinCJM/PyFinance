@@ -189,7 +189,7 @@ def main(
 
 if __name__ == "__main__":
     # 在此处配置运行参数（不使用环境变量）
-    TUSHARE_TOKEN = "cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9"  # TODO: 在此填写你的 Tushare Pro 令牌
+    TUSHARE_TOKEN = "YOUR_TOKEN"  # TODO: 在此填写你的 Tushare Pro 令牌
     MAX_WORKERS = 8
     MAX_RETRIES = 3
     RETRY_BACKOFF_SEC = 1.5
