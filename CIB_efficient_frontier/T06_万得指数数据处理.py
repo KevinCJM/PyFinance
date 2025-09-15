@@ -317,7 +317,70 @@ def generate_custom_indices(original_nav_df: pd.DataFrame, config: dict) -> pd.D
     return result_df
 
 
+def smooth_cash_nav(cash_nav_series: pd.Series, lookback_days: int = 7) -> pd.Series:
+    """
+    对货币现金类产品的净值序列进行平滑处理，使其历史收益率贴近近期表现。
+    该逻辑源自 T04_货币现金产品收益率调整.py。
+
+    :param cash_nav_series: 原始的货币现金产品净值序列 (pd.Series)。
+    :param lookback_days: 用于计算基准收益率的回看天数，默认为7天。
+    :return: 调整后的净值序列 (pd.Series)。
+    """
+    print(f"  > 开始对序列进行平滑处理 (基准天数: {lookback_days})...")
+
+    # 1. 复制并确保数据有效
+    nav = cash_nav_series.copy()
+    if nav.empty or nav.isnull().all() or len(nav.dropna()) < lookback_days:
+        print("  > (警告: 净值序列数据不足或为空，跳过平滑处理)")
+        return cash_nav_series
+
+    # 2. 计算单日收益率序列
+    nav_daily_ret = nav.pct_change(1)
+
+    # 3. 以最后N日收益率均值作为基准
+    benchmark_ret = nav_daily_ret.iloc[-lookback_days:].mean()
+
+    # 4. 用基准除以前面所有的日收益率序列，得到权重序列
+    # 为避免除以零，将0收益率替换为一个极小值
+    weights = benchmark_ret / nav_daily_ret.replace(0, 1e-12)
+
+    # 5. 补齐权重序列的空值（只用历史数据，不用未来数据）
+    weights = weights.ffill().fillna(1)  # 前向填充，首位用1
+
+    # 6. 用权重数据乘以日度收益率序列，得到调整后的日度收益率序列
+    adj_daily_ret = nav_daily_ret * weights
+
+    # 7. 计算调整后的净值序列
+    # 找到第一个有效值的索引和值，作为计算的起点
+    first_valid_idx = nav.first_valid_index()
+    first_valid_val = nav[first_valid_idx]
+
+    # 从起点开始累乘
+    adj_nav = (1 + adj_daily_ret.fillna(0)).cumprod() * first_valid_val
+
+    # 8. 对齐回原始索引并填充
+    adj_nav = adj_nav.reindex(nav.index).ffill()
+
+    # 如果原始序列的第一个值是1.0，确保调整后也从1.0开始
+    if nav.iloc[0] == 1.0:
+        first_adj_val = adj_nav.dropna().iloc[0]
+        if first_adj_val > 0:
+            adj_nav = adj_nav / first_adj_val
+
+    # 最后的填充
+    adj_nav = adj_nav.fillna(1.0)
+
+    print("  > 平滑处理完成。")
+    return adj_nav
+
+
 if __name__ == '__main__':
+    # --- 参数控制 ---
+    # 是否对“货基指数”进行收益率平滑处理
+    SMOOTH_CASH_INDEX = True
+    # 用于平滑处理的基准天数
+    SMOOTH_LOOKBACK_DAYS = 7
+
     # 构建大类的配置
     config = {
         "权益类": {
@@ -356,6 +419,15 @@ if __name__ == '__main__':
 
     # 根据 config 生成大类资产
     custom_nav_df = generate_custom_indices(nav_df, config)
+
+    # (可选) 对“货基指数”进行平滑处理
+    if SMOOTH_CASH_INDEX and "货基指数" in custom_nav_df.columns:
+        print("\n正在对'货基指数'进行收益率平滑处理...")
+        custom_nav_df['货基指数'] = smooth_cash_nav(
+            custom_nav_df['货基指数'],
+            lookback_days=SMOOTH_LOOKBACK_DAYS
+        )
+        print("'货基指数'平滑处理完成。")
 
     # 绘制组合图表
     if not custom_nav_df.empty:
