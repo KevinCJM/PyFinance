@@ -176,7 +176,7 @@ if HAS_NUMBA:
             max_iter: int,
             tol: float,
             damping: float,
-    ) -> Tuple[boolean, np.ndarray]:
+    ) -> Tuple[bool, np.ndarray]:
         x = v.copy()
 
         # 初始盒约束 + sum=1
