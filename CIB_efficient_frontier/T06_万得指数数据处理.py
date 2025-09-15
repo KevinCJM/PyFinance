@@ -144,22 +144,46 @@ def _erc_vol_n_assets(cov: np.ndarray, budget: np.ndarray, *, tol: float = 1e-6,
     """
     N资产下基于波动率(协方差)的风险平价（等/配比风险贡献）迭代解：
     固定点迭代： w_i <- (b_i / (Σw)_i)，再归一化到 simplex。
+
+    参数:
+        cov: np.ndarray, shape=(N, N)
+            资产收益率的协方差矩阵
+        budget: np.ndarray, shape=(N,)
+            每个资产的目标风险贡献比例（预算分配）
+        tol: float, optional, default=1e-6
+            迭代收敛的容忍度阈值
+        max_iter: int, optional, default=200
+            最大迭代次数
+
+    返回:
+        np.ndarray, shape=(N,)
+            满足风险平价条件的资产权重向量
     """
     eps = 1e-12
     N = cov.shape[0]
+    # 初始化等权重向量
     w = np.full(N, 1.0 / N, dtype=float)
+    # 确保预算分配非负
     b = np.maximum(budget.astype(float), 0.0)
+    # 如果预算分配总和接近0，则设为等权重
     if b.sum() <= eps:
         b[:] = 1.0
+
+    # 固定点迭代求解风险平价权重
     for _ in range(max_iter):
+        # 计算协方差矩阵与当前权重的乘积
         sw = cov @ w
+        # 防止除零错误，设置分母下限
         denom = np.maximum(sw, eps)
+        # 根据风险平价公式更新权重
         w_new = (b / denom)
+        # 归一化权重使其和为1
         s = w_new.sum()
         if s <= eps:
             w_new = np.full(N, 1.0 / N)
         else:
             w_new /= s
+        # 检查收敛条件
         if np.max(np.abs(w_new - w)) < tol:
             w = w_new
             break
@@ -384,7 +408,7 @@ if __name__ == '__main__':
     # 构建大类的配置
     config = {
         "权益类": {
-            # 权重分配方式: 'equal'-等权; 'inverse_vol'-逆波动率; 'manual'-手工指定; 'risk_parity'-风险平价
+            # 权重分配方式: 'equal'-等权; 'manual'-手工指定; 'risk_parity'-风险平价
             'method': 'manual',
             # 指定构建权重的成分名称（必须与数据中的列名一致）
             'index_names': ['万得普通股票型基金指数', '万得股票策略私募指数', '万得QDII股票型基金指数'],

@@ -486,6 +486,179 @@ def compute_var_parametric_arrays(
     return var_val
 
 
+# ===================== 2.5) 基于求解器的前沿（用于初始种子） =====================
+def build_frontier_by_risk_grid(
+        port_daily_returns: np.ndarray,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        risk_metric: str = "vol",  # "vol" 或 "var"
+        var_params: Dict[str, Any] | None = None,
+        n_grid: int = 150,
+        ridge: float = 1e-8,
+        solver: str = "ECOS",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    使用凸优化求解在线性权重约束下的有效前沿点集，作为初始种子。
+    - 当 risk_metric="vol" 时，问题为 QCQP/二阶锥：max μᵀw s.t. wᵀΣw ≤ r²
+    - 当 risk_metric="var" 时，使用参数法 VaR（正态近似）建模为 SOCP：
+        VaR(w) = α√h·s − h·μᵀw；约束 VaR(w) ≤ r，且 wᵀΣw ≤ s²
+    返回： (W, ret_annual, risk_array)
+    注意：本函数在内部仅在需要时 import cvxpy，若缺失将抛出可读错误信息。
+    """
+    try:
+        import cvxpy as cp
+    except Exception as e:
+        raise RuntimeError("需要安装 cvxpy 以使用求解器初始化功能: pip install cvxpy") from e
+
+    # 简单收益下的 μ 与协方差；Σ 做轻微 ridge 保证 PSD
+    r = port_daily_returns.astype(np.float64, copy=False)
+    mu = r.mean(axis=0)
+    Sigma = np.cov(r, rowvar=False, ddof=1)
+    Sigma = ((Sigma + Sigma.T) * 0.5) + float(ridge) * np.eye(Sigma.shape[0])
+    N = Sigma.shape[0]
+
+    # 构造 Σ^{1/2}，用于二阶锥约束：||Σ^{1/2} w||_2 ≤ s;   优先 Cholesky；若失败则用特征分解稳健构造
+    try:
+        Sigma_sqrt = np.linalg.cholesky(Sigma)
+    except np.linalg.LinAlgError:
+        vals, vecs = np.linalg.eigh(Sigma)
+        vals = np.clip(vals, 0.0, None)
+        Sigma_sqrt = (vecs * np.sqrt(vals)) @ vecs.T
+
+    lows = np.array([a for a, _ in single_limits], dtype=float)
+    highs = np.array([b for _, b in single_limits], dtype=float)
+
+    def add_group_constraints(cons, w_var):
+        for idx_tuple, (lo, hi) in multi_limits.items():
+            idx = list(idx_tuple)
+            if idx:
+                cons += [cp.sum(w_var[idx]) >= float(lo), cp.sum(w_var[idx]) <= float(hi)]
+        return cons
+
+    # 端点：最大收益（LP/QP 的线性目标）
+    w1 = cp.Variable(N)
+    cons1 = [cp.sum(w1) == 1, w1 >= lows, w1 <= highs]
+    cons1 = add_group_constraints(cons1, w1)
+    prob1 = cp.Problem(cp.Maximize(mu @ w1), cons1)
+    prob1.solve(solver=getattr(cp, solver, cp.ECOS), verbose=False)
+    if w1.value is None:
+        log("[求解器初始化] 无法求得最大收益点，放弃求解器初始化。")
+        return np.empty((0, N)), np.array([]), np.array([])
+    w_retmax = np.asarray(w1.value, dtype=float)
+
+    # 端点：最小风险
+    risk_metric = (risk_metric or "vol").lower()
+    if risk_metric == "vol":
+        w2 = cp.Variable(N)
+        cons2 = [cp.sum(w2) == 1, w2 >= lows, w2 <= highs]
+        cons2 = add_group_constraints(cons2, w2)
+        prob2 = cp.Problem(cp.Minimize(cp.quad_form(w2, Sigma)), cons2)
+        prob2.solve(solver=getattr(cp, solver, cp.ECOS), verbose=False)
+        if w2.value is None:
+            log("[求解器初始化] 无法求得最小方差点，放弃求解器初始化。")
+            return np.empty((0, N)), np.array([]), np.array([])
+        w_riskmin = np.asarray(w2.value, dtype=float)
+    else:
+        # VaR 参数
+        vp = var_params or {}
+        from statistics import NormalDist
+
+        alpha = abs(NormalDist().inv_cdf(1.0 - float(vp.get("confidence", 0.95))))
+        sqrt_h = float(vp.get("horizon_days", 1.0)) ** 0.5
+        h = float(vp.get("horizon_days", 1.0))
+
+        w2 = cp.Variable(N)
+        s2 = cp.Variable(nonneg=True)
+        cons2 = [cp.sum(w2) == 1, w2 >= lows, w2 <= highs,
+                 cp.norm(Sigma_sqrt @ w2, 2) <= s2]
+        cons2 = add_group_constraints(cons2, w2)
+        obj2 = cp.Minimize(alpha * sqrt_h * s2 - h * (mu @ w2))
+        prob2 = cp.Problem(obj2, cons2)
+        prob2.solve(solver=getattr(cp, solver, cp.ECOS), verbose=False)
+        if w2.value is None:
+            log("[求解器初始化] 无法求得最小 VaR 点，放弃求解器初始化。")
+            return np.empty((0, N)), np.array([]), np.array([])
+        w_riskmin = np.asarray(w2.value, dtype=float)
+
+    # 风险端点
+    if risk_metric == "vol":
+        def risk_of(wv: np.ndarray) -> float:
+            return float(np.sqrt(wv @ Sigma @ wv))
+    else:
+        vp = var_params or {}
+        from statistics import NormalDist
+
+        alpha = abs(NormalDist().inv_cdf(1.0 - float(vp.get("confidence", 0.95))))
+        sqrt_h = float(vp.get("horizon_days", 1.0)) ** 0.5
+        h = float(vp.get("horizon_days", 1.0))
+
+        def risk_of(wv: np.ndarray) -> float:
+            sigma = float(np.sqrt(max(wv @ Sigma @ wv, 0.0)))
+            muw = float(mu @ wv)
+            return max(0.0, alpha * sqrt_h * sigma - h * muw)
+
+    r_min = risk_of(w_riskmin)
+    r_max = risk_of(w_retmax)
+    if r_max < r_min:
+        r_max = r_min
+
+    # 风险栅格
+    grid = np.linspace(r_min, r_max, int(n_grid))
+    W = []
+
+    for r_cap in grid:
+        ww = cp.Variable(N)
+        cons = [cp.sum(ww) == 1, ww >= lows, ww <= highs]
+        cons = add_group_constraints(cons, ww)
+        if risk_metric == "vol":
+            cons += [cp.quad_form(ww, Sigma) <= (float(r_cap) ** 2)]
+            obj = cp.Maximize(mu @ ww)
+            prob = cp.Problem(obj, cons)
+        else:
+            vp = var_params or {}
+            from statistics import NormalDist
+
+            alpha = abs(NormalDist().inv_cdf(1.0 - float(vp.get("confidence", 0.95))))
+            sqrt_h = float(vp.get("horizon_days", 1.0)) ** 0.5
+            h = float(vp.get("horizon_days", 1.0))
+
+            ss = cp.Variable(nonneg=True)
+            cons += [cp.norm(Sigma_sqrt @ ww, 2) <= ss]
+            cons += [alpha * sqrt_h * ss - h * (mu @ ww) <= float(r_cap)]
+            obj = cp.Maximize(h * (mu @ ww))
+            prob = cp.Problem(obj, cons)
+
+        prob.solve(solver=getattr(cp, solver, cp.ECOS), verbose=False)
+        if ww.value is not None:
+            W.append(np.asarray(ww.value, dtype=float))
+
+    if not W:
+        return np.empty((0, N)), np.array([]), np.array([])
+
+    W = np.vstack(W).astype(np.float64, copy=False)
+    # 回算年化收益与风险（口径使用现有函数）
+    ret_ann, vol_ann = compute_perf_arrays(
+        port_daily_returns.astype(np.float32, copy=False),
+        W.astype(np.float32, copy=False),
+        trading_days=252.0, ddof=1,
+    )
+    if risk_metric == "vol":
+        risk_arr = vol_ann
+    else:
+        vp = var_params or {}
+        risk_arr = compute_var_parametric_arrays(
+            port_daily_returns.astype(np.float32, copy=False),
+            W.astype(np.float32, copy=False),
+            confidence=float(vp.get("confidence", 0.95)),
+            horizon_days=float(vp.get("horizon_days", 1.0)),
+            return_type=str(vp.get("return_type", "simple")),
+            ddof=int(vp.get("ddof", 1)),
+            clip_non_negative=bool(vp.get("clip_non_negative", True)),
+        )
+    return W, ret_ann, risk_arr
+
+
 # ===================== 3) 绘图 =====================
 
 def plot_efficient_frontier_arrays(
@@ -1138,8 +1311,12 @@ def multi_level_random_walk_config(
     """
     基于“字典配置”的多层随机游走：
     - rounds_config: { 轮次: { 参数... } }
-      - 第0轮（大步长）：需包含 `samples`（总采样数）与 `step_size`；可选 projector 参数：
-        `projector_iters`/`projector_tol`/`projector_damping`/`seed`。
+      - 第0轮（初始化）：两种模式
+        a) 随机探索（exploration，默认）：需包含 `samples`（总采样数）与 `step_size`；可选
+           `projector_iters`/`projector_tol`/`projector_damping`/`seed`/`use_numba`。
+        b) 求解器（solver）：设置 `init_mode="solver"`，并在 `solver_params` 中配置
+           `n_grid`（风险栅格点数）、`solver`（ECOS/SCS/MOSEK）、`ridge` 等；
+           风险度量由 `risk_metric`/`var_params` 控制（波动率或参数法 VaR）。
       - 第1..N轮（中步长）：包含 `step_size`，以下二选一：
         - `samples_per_seed`：每个种子生成的数量；
         - `samples_total`：本轮总体目标数量（会均分到各种子并向上取整）。
@@ -1157,28 +1334,51 @@ def multi_level_random_walk_config(
     lows = np.array([a for a, _ in single_limits], dtype=np.float64)
     highs = np.array([b for _, b in single_limits], dtype=np.float64)
 
-    # Round 0：大步长
+    # Round 0：初始化（两种模式：exploration/solver）
     r0_cfg = rounds_config.get(0, {})
-    init_samples = int(r0_cfg.get("samples", 200))
-    init_step = float(r0_cfg.get("step_size", 0.99))
-    p_iters = int(r0_cfg.get("projector_iters", 200))
-    p_tol = float(r0_cfg.get("projector_tol", 1e-9))
-    p_damping = float(r0_cfg.get("projector_damping", 1.0))
-    seed0 = int(r0_cfg.get("seed", global_seed))
+    init_mode = str(r0_cfg.get("init_mode", "exploration")).lower()
+    if init_mode == "solver":
+        sp = dict(r0_cfg.get("solver_params", {}))
+        n_grid = int(sp.get("n_grid", 150))
+        ridge = float(sp.get("ridge", 1e-8))
+        solver_name = str(sp.get("solver", "ECOS"))
+        log(f"[第0轮] 求解器初始化前沿点: grid={n_grid}, risk={risk_metric}, solver={solver_name}")
+        try:
+            W, ret, risk_arr = build_frontier_by_risk_grid(
+                port_daily_returns=port_daily_returns,
+                single_limits=single_limits,
+                multi_limits=multi_limits,
+                risk_metric=risk_metric,
+                var_params=var_params,
+                n_grid=n_grid,
+                ridge=ridge,
+                solver=solver_name,
+            )
+        except Exception as e:
+            log(f"[第0轮] 求解器初始化失败：{e}. 回退到随机探索。")
+            init_mode = "exploration"
 
-    log(f"[第0轮] 大步长探索: samples={init_samples}, step={init_step}")
-    W = generate_weights_random_walk(
-        N=N,
-        single_limits=single_limits,
-        multi_limits=multi_limits,
-        seed=seed0,
-        num_samples=init_samples,
-        step_size=init_step,
-        projector_iters=p_iters,
-        projector_tol=p_tol,
-        projector_damping=p_damping,
-        use_numba=bool(r0_cfg.get("use_numba", False)),
-    )
+    if init_mode != "solver":
+        init_samples = int(r0_cfg.get("samples", 200))
+        init_step = float(r0_cfg.get("step_size", 0.99))
+        p_iters = int(r0_cfg.get("projector_iters", 200))
+        p_tol = float(r0_cfg.get("projector_tol", 1e-9))
+        p_damping = float(r0_cfg.get("projector_damping", 1.0))
+        seed0 = int(r0_cfg.get("seed", global_seed))
+
+        log(f"[第0轮] 大步长探索: samples={init_samples}, step={init_step}")
+        W = generate_weights_random_walk(
+            N=N,
+            single_limits=single_limits,
+            multi_limits=multi_limits,
+            seed=seed0,
+            num_samples=init_samples,
+            step_size=init_step,
+            projector_iters=p_iters,
+            projector_tol=p_tol,
+            projector_damping=p_damping,
+            use_numba=bool(r0_cfg.get("use_numba", False)),
+        )
     if W.size == 0:
         log("[第0轮] 未获得任何权重，终止。")
         return W, np.array([]), np.array([]), np.array([], dtype=bool)
@@ -1206,7 +1406,7 @@ def multi_level_random_walk_config(
             ddof=int(vp.get("ddof", 1)),
             clip_non_negative=bool(vp.get("clip_non_negative", True)),
         )
-        risk_name = f"VaR@{vp.get('confidence', 0.95)}({vp.get('return_type','simple')})"
+        risk_name = f"VaR@{vp.get('confidence', 0.95)}({vp.get('return_type', 'simple')})"
     else:
         risk_arr = vol
         risk_name = "波动率"
@@ -1291,7 +1491,21 @@ def multi_level_random_walk_config(
                             W = np.vstack([W, ext_W])
                             ret = np.concatenate([ret, ret_e])
                             vol = np.concatenate([vol, vol_e])
-                            ef_mask = cal_ef_mask(ret, vol)
+                            # 更新风险度量与前沿
+                            if (risk_metric or "vol").lower() == "var":
+                                vp2 = var_params or {}
+                                risk_arr = compute_var_parametric_arrays(
+                                    port_daily_returns,
+                                    W,
+                                    confidence=float(vp2.get("confidence", 0.95)),
+                                    horizon_days=float(vp2.get("horizon_days", 1.0)),
+                                    return_type=str(vp2.get("return_type", "simple")),
+                                    ddof=int(vp2.get("ddof", 1)),
+                                    clip_non_negative=bool(vp2.get("clip_non_negative", True)),
+                                )
+                            else:
+                                risk_arr = vol
+                            ef_mask = cal_ef_mask(ret, risk_arr)
                             log(
                                 f"[极端种子] 合并后有效权重数: {W.shape[0]}；"
                                 f"有效前沿点数: {int(ef_mask.sum())}/{ef_mask.size}"
@@ -1508,7 +1722,19 @@ if __name__ == "__main__":
     RANDOM_SEED = 12345
     # 字典式多轮配置（参数含义见 multi_level_random_walk_config 注释）
     ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
-        0: {"samples": 300, "step_size": 0.99},
+        # 第0轮：初始化方式二选一：
+        0: {
+            "init_mode": "solver",  # "exploration" 随机探索 或 "solver" 求解器
+            # exploration 参数（当 init_mode=="exploration" 生效）：
+            "samples": 300,
+            "step_size": 0.99,
+            # solver 参数（当 init_mode=="solver" 生效）：
+            "solver_params": {
+                "n_grid": 300,
+                "solver": "ECOS",  # ECOS/SCS/MOSEK
+                "ridge": 1e-8,
+            },
+        },
         1: {"samples_total": 1000, "step_size": 0.1, "vol_bins": 100, "parallel_workers": 100},
         2: {"samples_total": 2000, "step_size": 0.1, "vol_bins": 200, "parallel_workers": 100},
         3: {"samples_total": 3000, "step_size": 0.05, "vol_bins": 300, "parallel_workers": 100},
