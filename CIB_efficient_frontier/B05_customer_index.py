@@ -283,17 +283,17 @@ def _mu_Sigma_for_ewma_simple_qcqp(port_daily: np.ndarray, N: int, lam: float) -
     Rw = R[-N:]  # 取窗口
     mu_day = (Rw * w[:, None]).sum(axis=0)  # 加权日均
     X = Rw - mu_day  # 去中心
-    Sigma_day = np.tensordot(w, np.einsum('ti,tj->tij', X, X), axes=(0, 0))  # 加权协方差（日频）
+    covariance_day = np.tensordot(w, np.einsum('ti,tj->tij', X, X), axes=(0, 0))  # 加权协方差（日频）
 
     mu = mu_day * TRADING_DAYS
-    Sigma = Sigma_day * TRADING_DAYS
+    covariance_matrix = covariance_day * TRADING_DAYS
 
     # 轻度 PSD 投影
-    S = 0.5 * (Sigma + Sigma.T)
+    S = 0.5 * (covariance_matrix + covariance_matrix.T)
     vals, vecs = np.linalg.eigh(S)
     vals = np.clip(vals, 1e-12, None)
-    Sigma_psd = (vecs * vals) @ vecs.T
-    return mu.astype(np.float64), Sigma_psd.astype(np.float64)
+    covariance_psd = (vecs * vals) @ vecs.T
+    return mu.astype(np.float64), covariance_psd.astype(np.float64)
 
 
 def _mu_Sigma_for_simple_qcqp(port_daily: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -303,25 +303,25 @@ def _mu_Sigma_for_simple_qcqp(port_daily: np.ndarray) -> tuple[np.ndarray, np.nd
     """
     R = port_daily.astype(np.float64)  # [T, n] 普通日收益
     mu = R.mean(axis=0) * TRADING_DAYS
-    Sigma = np.cov(R, rowvar=False, ddof=1) * TRADING_DAYS
+    covariance_matrix = np.cov(R, rowvar=False, ddof=1) * TRADING_DAYS
     # 轻度 PSD 投影
-    S = 0.5 * (Sigma + Sigma.T)
+    S = 0.5 * (covariance_matrix + covariance_matrix.T)
     vals, vecs = np.linalg.eigh(S)
     vals = np.clip(vals, 1e-12, None)
-    Sigma_psd = (vecs * vals) @ vecs.T
-    return mu.astype(np.float64), Sigma_psd.astype(np.float64)
+    covariance_psd = (vecs * vals) @ vecs.T
+    return mu.astype(np.float64), covariance_psd.astype(np.float64)
 
 
 def _mu_Sigma_for_log_qcqp(port_daily: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     L = np.log(_safe_one_plus(port_daily))  # [T,n]
     mu = L.mean(axis=0) * TRADING_DAYS
-    Sigma = np.cov(L, rowvar=False, ddof=1) * TRADING_DAYS
+    covariance_matrix = np.cov(L, rowvar=False, ddof=1) * TRADING_DAYS
     # 轻度 PSD 投影
-    S = 0.5 * (Sigma + Sigma.T)
+    S = 0.5 * (covariance_matrix + covariance_matrix.T)
     vals, vecs = np.linalg.eigh(S)
     vals = np.clip(vals, 1e-12, None)
-    Sigma_psd = (vecs * vals) @ vecs.T
-    return mu.astype(np.float64), Sigma_psd.astype(np.float64)
+    covariance_psd = (vecs * vals) @ vecs.T
+    return mu.astype(np.float64), covariance_psd.astype(np.float64)
 
 
 def _mu_Sigma_for_ewma_log_qcqp(port_daily: np.ndarray, N: int, lam: float) -> tuple[np.ndarray, np.ndarray]:
@@ -343,14 +343,14 @@ def _mu_Sigma_for_ewma_log_qcqp(port_daily: np.ndarray, N: int, lam: float) -> t
     mu_d = (Lw * w[:, None]).sum(axis=0)  # 日频均值
     X = Lw - mu_d  # 去中心
     # 逐日外积的加权和
-    Sigma = np.tensordot(w, np.einsum('ti,tj->tij', X, X), axes=(0, 0)) * TRADING_DAYS
+    covariance_matrix = np.tensordot(w, np.einsum('ti,tj->tij', X, X), axes=(0, 0)) * TRADING_DAYS
 
     # 轻度 PSD 投影
-    S = 0.5 * (Sigma + Sigma.T)
+    S = 0.5 * (covariance_matrix + covariance_matrix.T)
     vals, vecs = np.linalg.eigh(S)
     vals = np.clip(vals, 1e-12, None)
-    Sigma_psd = (vecs * vals) @ vecs.T
-    return mu.astype(np.float64), Sigma_psd.astype(np.float64)
+    covariance_psd = (vecs * vals) @ vecs.T
+    return mu.astype(np.float64), covariance_psd.astype(np.float64)
 
 
 class QCQPTag(str, Enum):
@@ -397,7 +397,7 @@ def build_mu_Sigma_for_qcqp(
         risk_spec: RiskSpec
 ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], QCQPTag, str]:
     """
-    返回 (mu, Sigma, tag, msg)
+    返回 (mu, covariance_matrix, tag, msg)
     tag: EXACT / APPROX / NONE
     msg: 说明信息（用于日志提示）
     """
@@ -406,13 +406,13 @@ def build_mu_Sigma_for_qcqp(
     if tag == QCQPTag.EXACT:
         # 精确 Markowitz：mean_simple + std/std_annual
         if ret_spec.kind == "mean_simple" and risk_spec.kind in ("std", "std_annual"):
-            mu, Sigma = _mu_Sigma_for_simple_qcqp(port_daily)
-            return mu, Sigma, tag, "[QCQP] 精确 Markowitz (mean_simple + std*)"
+            mu, covariance_matrix = _mu_Sigma_for_simple_qcqp(port_daily)
+            return mu, covariance_matrix, tag, "[QCQP] 精确 Markowitz (mean_simple + std*)"
 
         # 精确 Markowitz：ew_roll_mean_simple + ew_roll_std (N/λ 对齐)
         if ret_spec.kind == "ew_roll_mean_simple" and risk_spec.kind == "ew_roll_std":
-            mu, Sigma = _mu_Sigma_for_ewma_simple_qcqp(port_daily, ret_spec.N, ret_spec.lam)
-            return mu, Sigma, tag, "[QCQP] 精确 Markowitz (EWMA simple mean + EWMA std)"
+            mu, covariance_matrix = _mu_Sigma_for_ewma_simple_qcqp(port_daily, ret_spec.N, ret_spec.lam)
+            return mu, covariance_matrix, tag, "[QCQP] 精确 Markowitz (EWMA simple mean + EWMA std)"
 
     if tag == QCQPTag.APPROX:
         # 近似一：log 口径（与现有实现保持一致）
@@ -421,13 +421,13 @@ def build_mu_Sigma_for_qcqp(
 
             if ret_spec.kind == "ew_roll_log" and risk_spec.kind == "ew_roll_log_std":
                 if (ret_spec.N == risk_spec.N) and (ret_spec.lam == risk_spec.lam):
-                    mu, Sigma = _mu_Sigma_for_ewma_log_qcqp(port_daily, ret_spec.N, ret_spec.lam)
-                    return mu, Sigma, tag, "[QCQP-Approx] 采用 EWMA-log 线性化近似 (N/λ 对齐)"
+                    mu, covariance_matrix = _mu_Sigma_for_ewma_log_qcqp(port_daily, ret_spec.N, ret_spec.lam)
+                    return mu, covariance_matrix, tag, "[QCQP-Approx] 采用 EWMA-log 线性化近似 (N/λ 对齐)"
                 else:
                     return None, None, QCQPTag.NONE, "[QCQP-Approx] EWMA N/λ 未对齐，放弃近似"
             else:
-                mu, Sigma = _mu_Sigma_for_log_qcqp(port_daily)
-                return mu, Sigma, tag, "[QCQP-Approx] 采用 log 线性化近似"
+                mu, covariance_matrix = _mu_Sigma_for_log_qcqp(port_daily)
+                return mu, covariance_matrix, tag, "[QCQP-Approx] 采用 log 线性化近似"
 
     return None, None, QCQPTag.NONE, "[QCQP] 该指标组合无法用 QCQP 表达"
 
@@ -783,15 +783,15 @@ def sweep_frontier_by_risk_unified(
       - NONE: 使用多阶段 SLSQP（多起点 + 同温带 + 软惩罚 + 随机游走热启动）。
     返回: grid, W, R, S
     """
-    # 先尝试构造 (mu, Sigma) 及可解性标记
-    mu, Sigma, tag, msg = build_mu_Sigma_for_qcqp(port_daily, ret_spec, risk_spec)
+    # 先尝试构造 (mu, covariance_matrix) 及可解性标记
+    mu, covariance_matrix, tag, msg = build_mu_Sigma_for_qcqp(port_daily, ret_spec, risk_spec)
     print(f"{str_time()} [INFO] {msg}")
 
     # ===== 1) 精确 QCQP：直接返回 =====
     if tag == QCQPTag.EXACT:
         print(f"{str_time()} [INFO] 使用 QCQP (EXACT) 逐风险扫描前沿 ...")
         grid, W, R, S, *_ = sweep_frontier_by_risk(
-            mu, Sigma, single_limits, multi_limits, n_grid=n_grid
+            mu, covariance_matrix, single_limits, multi_limits, n_grid=n_grid
         )
         return grid, W, R, S
 
@@ -800,7 +800,7 @@ def sweep_frontier_by_risk_unified(
         print(f"{str_time()} [INFO] 使用 QCQP-Approx 先刻画近似前沿，产出热启动权重池 ...")
         # 2.1 用线性化的 μ、Σ 做一遍 QCQP 扫描，得到近似前沿权重
         grid_approx, W_approx, R_approx, S_approx, *_ = sweep_frontier_by_risk(
-            mu, Sigma, single_limits, multi_limits, n_grid=n_grid
+            mu, covariance_matrix, single_limits, multi_limits, n_grid=n_grid
         )
         # 2.2 用真口径计算近似权重的绩效，以便 SLSQP 选热启动
         perf_approx = generate_alloc_perf_batch(port_daily, W_approx, ret_spec, risk_spec)
@@ -1082,13 +1082,13 @@ def project_baseline_to_level(w_base: np.ndarray, level_limits: List[Tuple[float
 '''
 
 
-def port_stats(W: np.ndarray, mu: np.ndarray, Sigma: np.ndarray):
+def port_stats(W: np.ndarray, mu: np.ndarray, covariance_matrix: np.ndarray):
     if W.ndim == 1:
         ret = float(W @ mu)
-        vol = float(np.sqrt(W @ Sigma @ W))
+        vol = float(np.sqrt(W @ covariance_matrix @ W))
         return np.array([ret]), np.array([vol])
     rets = W @ mu
-    vols = np.sqrt(np.einsum('ij,jk,ik->i', W, Sigma, W))
+    vols = np.sqrt(np.einsum('ij,jk,ik->i', W, covariance_matrix, W))
     return rets, vols
 
 
@@ -1103,16 +1103,47 @@ def port_RS_by_spec(port_daily: np.ndarray, w: np.ndarray,
     return return_metric(R, ret_spec), risk_metric(R, risk_spec)
 
 
-def solve_min_variance(Sigma, single_limits, multi_limits):
-    n = Sigma.shape[0]
+def solve_min_variance(covariance_matrix, single_limits, multi_limits):
+    """
+    求解最小方差投资组合优化问题
+
+    该函数通过凸优化方法求解在给定约束条件下的最小方差投资组合权重分配问题。
+    目标是最小化投资组合的方差，即 min w^T * covariance_matrix * w，其中 covariance_matrix 为资产协方差矩阵。
+
+    参数:
+        covariance_matrix: numpy.ndarray, shape (n, n)
+            资产收益率的协方差矩阵
+        single_limits: list of tuples
+            单个资产的权重约束，每个元素为(下限, 上限)的元组
+        multi_limits: dict
+            多个资产组合的权重约束，键为资产索引的可迭代对象，值为(下限, 上限)的元组
+
+    返回值:
+        numpy.ndarray
+            最优投资组合权重向量
+    """
+    # 获取资产数量
+    n = covariance_matrix.shape[0]
+
+    # 定义优化变量（投资组合权重）
     w = cp.Variable(n)
+
+    # 构建约束条件列表
     cons = [cp.sum(w) == 1]
+
+    # 添加单个资产的边界约束
     for i, (lo, hi) in enumerate(single_limits):
         cons += [w[i] >= lo, w[i] <= hi]
+
+    # 添加多个资产组合的约束
     for idxs, (low, up) in multi_limits.items():
         cons += [cp.sum(w[list(idxs)]) >= low, cp.sum(w[list(idxs)]) <= up]
-    prob = cp.Problem(cp.Minimize(cp.quad_form(w, Sigma)), cons)
+
+    # 构建并求解优化问题
+    prob = cp.Problem(cp.Minimize(cp.quad_form(w, covariance_matrix)), cons)
     prob.solve(solver=cp.ECOS, warm_start=True, abstol=1e-8, reltol=1e-8, feastol=1e-8)
+
+    # 返回最优解
     return w.value
 
 
@@ -1129,10 +1160,10 @@ def solve_max_return(mu, single_limits, multi_limits):
     return w.value
 
 
-def solve_max_return_at_risk(mu, Sigma, s_target, single_limits, multi_limits, w0=None):
+def solve_max_return_at_risk(mu, covariance_matrix, s_target, single_limits, multi_limits, w0=None):
     n = mu.size
     w = cp.Variable(n)
-    cons = [cp.sum(w) == 1, cp.quad_form(w, Sigma) <= float(s_target ** 2)]
+    cons = [cp.sum(w) == 1, cp.quad_form(w, covariance_matrix) <= float(s_target ** 2)]
     for i, (lo, hi) in enumerate(single_limits):
         cons += [w[i] >= lo, w[i] <= hi]
     for idxs, (low, up) in multi_limits.items():
@@ -1147,33 +1178,33 @@ def solve_max_return_at_risk(mu, Sigma, s_target, single_limits, multi_limits, w
     return w.value
 
 
-def sweep_frontier_by_risk(mu, Sigma, single_limits, multi_limits, n_grid=300):
+def sweep_frontier_by_risk(mu, covariance_matrix, single_limits, multi_limits, n_grid=300):
     """逐风险扫描得到前沿曲线。"""
-    w_minv = solve_min_variance(Sigma, single_limits, multi_limits)
+    w_minv = solve_min_variance(covariance_matrix, single_limits, multi_limits)
     w_maxr = solve_max_return(mu, single_limits, multi_limits)
-    _, s_min = port_stats(w_minv, mu, Sigma)
+    _, s_min = port_stats(w_minv, mu, covariance_matrix)
     s_min = s_min[0]
-    _, s_max = port_stats(w_maxr, mu, Sigma)
+    _, s_max = port_stats(w_maxr, mu, covariance_matrix)
     s_max = np.maximum(s_min, s_max).item()
 
     grid = np.linspace(s_min, s_max, n_grid)
     W = []
     w0 = w_minv
     for s in grid:
-        w = solve_max_return_at_risk(mu, Sigma, s, single_limits, multi_limits, w0=w0)
+        w = solve_max_return_at_risk(mu, covariance_matrix, s, single_limits, multi_limits, w0=w0)
         W.append(w)
         w0 = w
     W = np.asarray(W)
-    R, S = port_stats(W, mu, Sigma)
+    R, S = port_stats(W, mu, covariance_matrix)
     return grid, W, R, S, w_minv, w_maxr
 
 
-def compute_frontier_anchors(mu: np.ndarray, Sigma: np.ndarray,
+def compute_frontier_anchors(mu: np.ndarray, covariance_matrix: np.ndarray,
                              single_limits, multi_limits,
                              n_grid: int = 200) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """返回 (W_anchors, R_anchors, S_anchors)。"""
     _, W_frontier, R_frontier, S_frontier, _, _ = sweep_frontier_by_risk(
-        mu, Sigma, single_limits, multi_limits, n_grid=n_grid
+        mu, covariance_matrix, single_limits, multi_limits, n_grid=n_grid
     )
     idx = np.argsort(S_frontier)
     S_sorted, R_sorted, W_sorted = S_frontier[idx], R_frontier[idx], W_frontier[idx]
@@ -1766,7 +1797,7 @@ def random_walk_frontier_explore(
 
 def run_global_layer(cfg: Dict[str, Any],
                      assets_list: List[str],
-                     mu: np.ndarray, Sigma: np.ndarray,
+                     mu: np.ndarray, covariance_matrix: np.ndarray,
                      port_daily_returns: np.ndarray,
                      single_limits_global, multi_limits_global) -> tuple[
     pd.DataFrame, List[Dict[str, Any]], pd.DataFrame]:
@@ -1774,7 +1805,7 @@ def run_global_layer(cfg: Dict[str, Any],
     # 前沿（锚点）
     print(f"{str_time()} [资产配置全局层] 计算全局有效前沿锚点...")
     # _, W_frontier, R_frontier, S_frontier, *_ = sweep_frontier_by_risk(
-    #     mu, Sigma, single_limits_global, multi_limits_global, n_grid=cfg['n_grid']
+    #     mu, covariance_matrix, single_limits_global, multi_limits_global, n_grid=cfg['n_grid']
     # )
     _, W_frontier, R_frontier, S_frontier = sweep_frontier_by_risk_unified(
         port_daily_returns, RET_SPEC, RISK_SPEC,
@@ -1840,7 +1871,7 @@ def run_level_layer(level: str,
                     limits_lv,
                     multi_limits_lv,
                     assets_list: List[str],
-                    mu: np.ndarray, Sigma: np.ndarray,
+                    mu: np.ndarray, covariance_matrix: np.ndarray,
                     port_daily_returns: np.ndarray,
                     base_alloc_map: Dict[str, Dict[str, float]]) -> tuple[List[Dict[str, Any]], pd.DataFrame]:
     """计算单个等级：作图数据与导出 DataFrame（中文列名）。"""
@@ -1851,7 +1882,7 @@ def run_level_layer(level: str,
     # 1) 前沿锚点
     print(f"{str_time()} [资产配置等级层] 处理等级: {level}  计算有效前沿锚点...")
     # W_anchors_lv, _, _ = compute_frontier_anchors(
-    #     mu, Sigma, single_limits=limits_lv, multi_limits=multi_limits_lv, n_grid=cfg_lv['n_grid']
+    #     mu, covariance_matrix, single_limits=limits_lv, multi_limits=multi_limits_lv, n_grid=cfg_lv['n_grid']
     # )
     grid, W_frontier, R_frontier, S_frontier = sweep_frontier_by_risk_unified(
         port_daily_returns, RET_SPEC, RISK_SPEC,
@@ -2037,7 +2068,7 @@ if __name__ == '__main__':
     # ---- 运行：加载数据 ----
     print(f"{str_time()} [加载数据] ... ")
     assets_list = CONFIG["assets_list"]
-    hist_df, port_daily_returns, mu, Sigma = load_returns_from_excel(
+    hist_df, port_daily_returns, mu, covariance_matrix = load_returns_from_excel(
         CONFIG["input_excel"], CONFIG["sheet_name"], assets_list, CONFIG["rename_map"]
     )
 
@@ -2051,7 +2082,7 @@ if __name__ == '__main__':
     print(f"{str_time()} [资产配置全局层]")
     glb_cfg = CONFIG["global_layer"] | {"n_grid": CONFIG["global_layer"]["n_grid"]}
     full_df_glb, scatter_data, df_anchor_glb = run_global_layer(
-        glb_cfg, assets_list, mu, Sigma,
+        glb_cfg, assets_list, mu, covariance_matrix,
         port_daily_returns, single_limits_global, multi_limits_global
     )
     print(f"{str_time()} [资产配置全局层] 量化与导出视图构建...")
@@ -2079,7 +2110,7 @@ if __name__ == '__main__':
         multi_limits_lv = {}  # 如需等级专属组约束，在此填写
         lv_scatter, lv_export_df = run_level_layer(
             level, lv_cfg, limits_lv, multi_limits_lv,
-            assets_list, mu, Sigma, port_daily_returns,
+            assets_list, mu, covariance_matrix, port_daily_returns,
             CONFIG["proposed_alloc_base"]
         )
         scatter_data.extend(lv_scatter)
