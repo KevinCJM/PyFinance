@@ -410,13 +410,13 @@ if __name__ == '__main__':
     DATA_FILE = '历史净值数据.xlsx'  # 历史净值数据文件路径
     selected_assets = ['权益投资类', '固定收益类', '另类投资类']  # 参与“自定义组合”的资产列表（支持多资产）
     # 权重分配方式: 'equal' - 等权; 'inverse_vol' - 逆波动率; 'manual' - 手工指定; 'risk_parity' - 风险平价
-    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'manual'
+    weight_mode: Literal['equal', 'inverse_vol', 'manual', 'risk_parity'] = 'risk_parity'
     manual_weights: Tuple[float, ...] = (0.2, 0.9, 0.3)  # 与 selected_assets 等长, 选择 weight_mode='manual' 时有效
-    risk_metric: Literal['vol', 'ES', 'VaR'] = 'ES'  # 风险平价度量, 选择 weight_mode='risk_parity' 时有效
+    risk_metric: Literal['vol', 'ES', 'VaR'] = 'vol'  # 风险平价度量, 选择 weight_mode='risk_parity' 时有效
     rp_alpha: float = 0.95  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
     rp_tol: float = 1e-6  # 迭代收敛阈值, 选择 weight_mode='risk_parity' 时有效
     rp_max_iter: int = 50  # 迭代上限, 选择 weight_mode='risk_parity' 时有效
-    risk_budget: Tuple[float, ...] = (9.0, 1.0, 5.0)  # 风险预算比例 (与 selected_assets 等长), 选择 weight_mode='risk_parity' 时有效
+    risk_budget: Tuple[float, ...] = (4.0, 2.0, 4.0)  # 风险预算比例 (与 selected_assets 等长), 选择 weight_mode='risk_parity' 时有效
 
     # ========== 执行 ==========
     run_custom_portfolio(

@@ -25,13 +25,15 @@ def ensure_output_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def fetch_etf_list(token: str) -> pd.DataFrame:
+def fetch_etf_list(output_dir, token: str) -> pd.DataFrame:
     pro = ts.pro_api(token)
     df = pro.fund_basic(market="E")
     # 规范列名 & 保留常用字段
     keep = ["ts_code", "name", "management", "found_date"]
     cols = [c for c in keep if c in df.columns]
-    return df[cols].copy() if cols else df.copy()
+    df = df[cols].copy() if cols else df
+    df.to_parquet(os.path.join(output_dir, "etf_info_df.parquet"))
+    return df
 
 
 class RateLimiter:
@@ -76,13 +78,13 @@ def fetch_nav_once(token: str, ts_code: str, limiter: RateLimiter) -> Optional[p
 
 
 def fetch_nav_with_retry(
-    token: str,
-    ts_code: str,
-    name: str,
-    max_retries: int,
-    backoff_sec: float,
-    limiter: RateLimiter,
-    wait_on_rate_limit_sec: float,
+        token: str,
+        ts_code: str,
+        name: str,
+        max_retries: int,
+        backoff_sec: float,
+        limiter: RateLimiter,
+        wait_on_rate_limit_sec: float,
 ) -> Optional[pd.DataFrame]:
     last_err: Optional[Exception] = None
     backoff = backoff_sec
@@ -114,14 +116,14 @@ def fetch_nav_with_retry(
 
 
 def main(
-    token: str,
-    *,
-    max_workers: int = 8,
-    max_retries: int = 3,
-    backoff_sec: float = 1.5,
-    output_dir: str = os.path.join("data", "processed"),
-    max_calls_per_minute: int = 80,
-    wait_on_rate_limit_sec: float = 10.0,
+        token: str,
+        *,
+        max_workers: int = 8,
+        max_retries: int = 3,
+        backoff_sec: float = 1.5,
+        output_dir: str = os.path.join("data", "processed"),
+        max_calls_per_minute: int = 80,
+        wait_on_rate_limit_sec: float = 10.0,
 ) -> None:
     if not token:
         raise RuntimeError("未提供 Tushare token，请在 __main__ 中设置 token 参数。")
@@ -129,14 +131,15 @@ def main(
 
     limiter = RateLimiter(max_calls=max_calls_per_minute, period=60.0)
     # 1) 获取 ETF 列表
-    etf_info_df = fetch_etf_list(token)
+    etf_info_df = fetch_etf_list(output_dir, token)
     # 可选：保存元数据（便于排查），受 .gitignore 保护
     try:
         etf_info_df.to_excel(os.path.join(output_dir, "etf_info_df.xlsx"), index=False)
     except Exception as e:  # noqa: BLE001
         print(f"[WARN] 写入 ETF 基本信息 Excel 失败：{e}")
 
-    etf_dict: Dict[str, str] = {i: j for i, j in zip(etf_info_df.get("ts_code", []), etf_info_df.get("name", []))}
+    etf_dict: Dict[str, str] = {i: j for i, j in zip(
+        etf_info_df.get("ts_code", []), etf_info_df.get("name", []))}
     total = len(etf_dict)
     print(
         f"准备抓取 {total} 只 ETF 的净值数据，线程数={max_workers}，重试={max_retries}，限流≤{max_calls_per_minute}/min"
