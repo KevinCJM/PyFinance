@@ -159,6 +159,19 @@ class RiskSpec:
 
 
 def _safe_one_plus(x: np.ndarray) -> np.ndarray:
+    """
+    计算1+x的安全版本，避免结果过小导致数值不稳定。
+
+    该函数通过将1+x的结果限制在最小值1e-12以上，防止出现接近零的数值，
+    从而提高数值计算的稳定性。
+
+    参数:
+        x (np.ndarray): 输入的数值数组
+
+    返回值:
+        np.ndarray: 经过安全处理的1+x结果数组，所有元素都大于等于1e-12
+    """
+    # 使用clip函数限制1+x的最小值为1e-12，防止数值过小
     return np.clip(1.0 + x, 1e-12, None)
 
 

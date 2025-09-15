@@ -302,16 +302,50 @@ def port_stats(W: np.ndarray, mu: np.ndarray, Sigma: np.ndarray):
 
 
 def solve_min_variance(Sigma, single_limits, multi_limits):
+    """
+    求解最小方差投资组合优化问题
+
+    该函数通过凸优化方法求解在给定约束条件下的最小方差投资组合权重分配问题。
+    目标是最小化投资组合的方差，约束条件包括权重和为1、单个资产权重限制以及
+    多个资产组合的权重限制。
+
+    参数:
+        Sigma: numpy.ndarray, shape (n, n)
+            资产收益率的协方差矩阵
+        single_limits: list of tuples
+            每个资产的权重上下限约束，格式为 [(low_0, high_0), (low_1, high_1), ...]
+        multi_limits: dict
+            多资产组合的权重约束，键为资产索引的可迭代对象，值为(low, up)元组
+            表示这些资产权重和的上下限
+
+    返回值:
+        numpy.ndarray
+            最优投资组合权重向量
+    """
+    # 获取资产数量
     n = Sigma.shape[0]
+
+    # 定义优化变量（投资组合权重）
     w = cp.Variable(n)
+
+    # 添加权重和为1的约束
     cons = [cp.sum(w) == 1]
+
+    # 添加单个资产权重的上下限约束
     for i, (lo, hi) in enumerate(single_limits):
         cons += [w[i] >= lo, w[i] <= hi]
+
+    # 添加多资产组合权重和的约束
     for idxs, (low, up) in multi_limits.items():
         cons += [cp.sum(w[list(idxs)]) >= low, cp.sum(w[list(idxs)]) <= up]
+
+    # 构建并求解优化问题, 目标函数：最小化二次型 w^T * Sigma * w（即投资组合方差）
     prob = cp.Problem(cp.Minimize(cp.quad_form(w, Sigma)), cons)
     prob.solve(solver=cp.ECOS, warm_start=True, abstol=1e-8, reltol=1e-8, feastol=1e-8)
+
+    # 返回最优权重值
     return w.value
+
 
 
 def solve_max_return(mu, single_limits, multi_limits):
