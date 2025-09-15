@@ -335,7 +335,7 @@ if __name__ == '__main__':
         },
         "另类": {
             'method': 'equal',
-            'index_names': ['伦敦金现', '南华商品指数', '万得管理期货私募指数', '万得另类投资基金总指数'],
+            'index_names': ['伦敦金现', '南华商品指数', '万得另类投资基金总指数'],
         },
         "货基指数": {
             'method': 'equal',
@@ -363,3 +363,5 @@ if __name__ == '__main__':
     else:
         print("\n没有生成任何大类资产，仅绘制原始指数图。")
         plot_lines(nav_df, title="万得指数：虚拟净值（起始为1）", y_tick_format=None, output_html=None)
+
+    custom_nav_df.to_excel("历史净值数据_万得指数.xlsx", sheet_name="历史净值数据")
