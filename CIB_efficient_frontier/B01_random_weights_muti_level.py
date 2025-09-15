@@ -1535,7 +1535,6 @@ if __name__ == "__main__":
     RISK_METRIC = "var"  # 可选："vol"（波动率）或 "var"（参数法 VaR）
     VAR_PARAMS: Dict[str, Any] = {
         "confidence": 0.95,
-        "horizon_days": 1.0,
         "return_type": "log",  # 或 "log"
         "ddof": 1,
         "clip_non_negative": True,  # 对“无下跌”情形，VaR 取 0
