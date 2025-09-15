@@ -414,8 +414,12 @@ if __name__ == '__main__':
             'risk_budget': (1, 5, 10),  # 风险预算比例 (与 selected_assets 等长), 选择 weight_mode='risk_parity' 时有效
         }
     }
+
+    # excel 参数
+    excel_name = '万得指数数据.xlsx'
+    sheet_name = '万得原始数据'
     # 读取并处理数据
-    nav_df = read_data_and_prepare()
+    nav_df = read_data_and_prepare(excel_name, sheet_name)
 
     # 根据 config 生成大类资产
     custom_nav_df = generate_custom_indices(nav_df, config)
