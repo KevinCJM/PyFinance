@@ -283,10 +283,10 @@ def main(json_input, excel_name, sheet_name):
         )
         print(f"无约束市场组合的随机权重计算完成. 权重数: {W_unc.shape[0]}")
         res_dict['market'] = {
-            'weights': W_unc,
-            'ret_annual': ret_annual_unc,
-            'risk_arr': risk_arr_unc,
-            'ef_mask': ef_mask_unc,
+            'weights': W_unc.tolist(),
+            'ret_annual': ret_annual_unc.tolist(),
+            'risk_arr': risk_arr_unc.tolist(),
+            'ef_mask': ef_mask_unc.tolist(),
         }
     else:
         print("无需计算无无约束市场组合的有效前沿和配置空间")
@@ -314,10 +314,10 @@ def main(json_input, excel_name, sheet_name):
                 precision_choice=PRECISION_CHOICE,
             )
             random_weight_dict[k] = {
-                'weights': W,
-                'ret_annual': ret_annual,
-                'risk_arr': risk_arr,
-                'ef_mask': ef_mask
+                'weights': W.tolist(),
+                'ret_annual': ret_annual.tolist(),
+                'risk_arr': risk_arr.tolist(),
+                'ef_mask': ef_mask.tolist()
             }
             print(f"标准组合 {k} 的随机权重计算完成. 权重数: {W.shape[0]}")
         # 存储结果
@@ -343,10 +343,10 @@ def main(json_input, excel_name, sheet_name):
         )
         print(f"客户持仓组合的随机权重计算完成. 权重数: {W_hold.shape[0]}")
         res_dict['user'] = {
-            'weights': W_hold,
-            'ret_annual': ret_annual_hold,
-            'risk_arr': risk_arr_hold,
-            'ef_mask': ef_mask_hold,
+            'weights': W_hold.tolist(),
+            'ret_annual': ret_annual_hold.tolist(),
+            'risk_arr': risk_arr_hold.tolist(),
+            'ef_mask': ef_mask_hold.tolist(),
         }
     else:
         print("无客户持仓的相关输入，跳过计算有效前沿和可配置空间。")
@@ -386,7 +386,7 @@ def main(json_input, excel_name, sheet_name):
 
 
 if __name__ == '__main__':
-    ''' 0) 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------- '''
+    ''' 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------- '''
     # 字典格式入参
     dict_input = {
         'asset_list': [
@@ -447,5 +447,6 @@ if __name__ == '__main__':
     excel_path = '历史净值数据_万得指数.xlsx'
     excel_sheet = '历史净值数据'
 
+    ''' 开始计算, 调用主程序 ------------------------------------------------------------------------------- '''
     json_res = main(json_str, excel_path, excel_sheet)
     print("\n最终返回的结果 Json 字符串为：\n", json_res)
