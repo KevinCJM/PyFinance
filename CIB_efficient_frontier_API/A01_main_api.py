@@ -92,7 +92,7 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
             lambda r: format_hover_text(r, f"{k} 组合", asset_list), axis=1)
         level_ef_mask = v['ef_mask']
         scatter_points_data.append({
-            "data": df_level[~level_ef_mask].sample(n=min(2000, len(df_level[~level_ef_mask]))),
+            "data": df_level,
             "name": f"{k}-随机点", "color": color, "size": 3, "opacity": 0.5,
         })
         scatter_points_data.append({
@@ -107,7 +107,7 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
     df_hold['hover_text'] = df_hold.apply(
         lambda r: format_hover_text(r, "客户持仓约束", asset_list), axis=1)
     scatter_points_data.append({
-        "data": df_hold[~ef_mask_hold].sample(n=min(2000, len(df_hold[~ef_mask_hold]))),
+        "data": df_hold,
         "name": "客户持仓-随机点", "color": "purple", "size": 3, "opacity": 0.5,
     })
     scatter_points_data.append({
@@ -130,7 +130,7 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
         lambda r: format_hover_text(r, f"标准-{r['name']}", asset_list), axis=1)
     scatter_points_data.append({
         "data": df_standard_points,
-        "name": "标准组合点", "color": "gold", "size": 5, "opacity": 1.0, "symbol": "star",
+        "name": "标准组合点", "color": "gold", "size": 8, "opacity": 1.0, "symbol": "star",
         "marker_line": dict(width=1, color='black')
     })
 
@@ -146,7 +146,7 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
         lambda r: format_hover_text(r, "客户当前持仓", asset_list), axis=1)
     scatter_points_data.append({
         "data": df_user_point,
-        "name": "客户当前持仓", "color": "cyan", "size": 5, "opacity": 1.0, "symbol": "diamond",
+        "name": "客户当前持仓", "color": "cyan", "size": 9, "opacity": 1.0, "symbol": "diamond",
         "marker_line": dict(width=1, color='black')
     })
     return scatter_points_data
@@ -219,7 +219,7 @@ if __name__ == '__main__':
             "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
             # exploration 参数（当 init_mode=="exploration" 生效）：
             "samples": 100000,
-            "step_size": 0.5,
+            "step_size": 0.1,
             # solver 参数（当 init_mode=="solver" 生效）：
             "solver_params": {
                 "n_grid": 1000,
