@@ -189,7 +189,23 @@ if __name__ == '__main__':
         }
         print(f"标准组合 {k} 的随机权重计算完成. 权重数: {W.shape[0]}")
 
-    ''' 5) 绘图展示 ------------------------------------------------------------------------------------------------- '''
+    ''' 5) 计算客户持仓的随机权重和有效前沿 ----------------------------------------------------------------------------- '''
+    print(f"计算客户持仓组合的随机权重. 单资产约束: {single_limit_hold}; 多资产约束: {multi_limit_hold}")
+    (W_hold, ret_annual_hold, risk_arr_hold, ef_mask_hold) = multi_level_random_walk_config(
+        port_daily_returns=returns,
+        single_limits=single_limit_hold,
+        multi_limits=multi_limit_hold,
+        rounds_config=ROUNDS_CONFIG,
+        dedup_decimals=DEDUP_DECIMALS,
+        annual_trading_days=TRADING_DAYS,
+        global_seed=RANDOM_SEED,
+        extreme_seed_config=EXTREME_SEED_CONFIG,
+        risk_metric=RISK_METRIC,
+        var_params=VAR_PARAMS,
+        precision_choice=PRECISION_CHOICE,
+    )
+
+    ''' 6) 绘图展示 ------------------------------------------------------------------------------------------------- '''
     print("\n开始准备绘图数据...")
     scatter_points_data = list()  # 重新初始化用于绘图的点云数据
 
