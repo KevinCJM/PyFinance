@@ -1902,7 +1902,7 @@ if __name__ == "__main__":
             },
         },
         1: {"samples_total": 1000, "step_size": 0.1, "vol_bins": 100, "parallel_workers": 100},
-        2: {"samples_total": 2000, "step_size": 0.1, "vol_bins": 200, "parallel_workers": 100},
+        2: {"samples_total": 2000, "step_size": 0.8, "vol_bins": 200, "parallel_workers": 100},
         3: {"samples_total": 3000, "step_size": 0.05, "vol_bins": 300, "parallel_workers": 100},
         4: {"samples_total": 4000, "step_size": 0.03, "vol_bins": 400, "parallel_workers": 100},
         5: {"samples_total": 5000, "step_size": 0.01, "vol_bins": 500, "parallel_workers": 100},
