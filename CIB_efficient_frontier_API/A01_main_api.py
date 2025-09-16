@@ -441,11 +441,12 @@ if __name__ == '__main__':
             }
         }
     }
+    # excel信息
+    excel_path = '历史净值数据_万得指数.xlsx'
+    excel_sheet = '历史净值数据'
     # 字典转Json, 模拟输入的Json参数
     json_str = json.dumps(dict_input, ensure_ascii=False)
     print(json_str)
-    excel_path = '历史净值数据_万得指数.xlsx'
-    excel_sheet = '历史净值数据'
 
     ''' 开始计算, 调用主程序 ------------------------------------------------------------------------------------- '''
     json_res = main(json_str, excel_path, excel_sheet)
