@@ -58,6 +58,100 @@ def calculate_single_port_metrics(weights_array, daily_returns, annual_trading_d
     return annual_ret, annual_risk
 
 
+def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, ef_mask_unc,
+                              random_weight_dict, W_hold, ret_annual_hold, risk_arr_hold, standard_proportion,
+                              ef_mask_hold, user_holding, returns, trading_days, var_params, risk_metric):
+    scatter_points_data = list()  # 重新初始化用于绘图的点云数据
+
+    # a) 处理无约束组合
+    df_unc = pd.DataFrame(W_unc, columns=asset_list)
+    df_unc['ret_annual'] = ret_annual_unc
+    df_unc['risk_arr'] = risk_arr_unc
+    df_unc['hover_text'] = df_unc.apply(
+        lambda r: format_hover_text(r, "无约束组合", asset_list), axis=1)
+
+    # 无约束 - 随机点 (抽样以避免浏览器卡顿)
+    scatter_points_data.append({
+        "data": df_unc[~ef_mask_unc].sample(n=min(2000, len(df_unc[~ef_mask_unc]))),
+        "name": "无约束-随机点", "color": "black", "size": 3, "opacity": 0.5,
+    })
+    # 无约束 - 有效前沿
+    scatter_points_data.append({
+        "data": df_unc[ef_mask_unc],
+        "name": "无约束-有效前沿", "color": "black", "size": 3, "opacity": 0.9,
+    })
+
+    # b) 处理各标准组合的 frontier
+    level_colors = {'C1': '#1f77b4', 'C2': '#ff7f0e', 'C3': 'grey', 'C4': 'green', 'C5': 'blue', 'C6': 'red'}
+    for k, v in random_weight_dict.items():
+        color = level_colors.get(k, 'black')
+        df_level = pd.DataFrame(v['weights'], columns=asset_list)
+        df_level['ret_annual'] = v['ret_annual']
+        df_level['risk_arr'] = v['risk_arr']
+        df_level['hover_text'] = df_level.apply(
+            lambda r: format_hover_text(r, f"{k} 组合", asset_list), axis=1)
+        level_ef_mask = v['ef_mask']
+        scatter_points_data.append({
+            "data": df_level[~level_ef_mask].sample(n=min(2000, len(df_level[~level_ef_mask]))),
+            "name": f"{k}-随机点", "color": color, "size": 3, "opacity": 0.5,
+        })
+        scatter_points_data.append({
+            "data": df_level[level_ef_mask],
+            "name": f"{k}-有效前沿", "color": color, "size": 3, "opacity": 0.9,
+        })
+
+    # c) 处理客户持仓组合的 frontier
+    df_hold = pd.DataFrame(W_hold, columns=asset_list)
+    df_hold['ret_annual'] = ret_annual_hold
+    df_hold['risk_arr'] = risk_arr_hold
+    df_hold['hover_text'] = df_hold.apply(
+        lambda r: format_hover_text(r, "客户持仓约束", asset_list), axis=1)
+    scatter_points_data.append({
+        "data": df_hold[~ef_mask_hold].sample(n=min(2000, len(df_hold[~ef_mask_hold]))),
+        "name": "客户持仓-随机点", "color": "purple", "size": 3, "opacity": 0.5,
+    })
+    scatter_points_data.append({
+        "data": df_hold[ef_mask_hold],
+        "name": "客户持仓-有效前沿", "color": "purple", "size": 3, "opacity": 1.0,
+    })
+
+    # d) 处理标准组合点
+    standard_points = []
+    for name, w_dict in standard_proportion.items():
+        weights = np.array([w_dict.get(asset, 0.0) for asset in asset_list])
+        ret, risk = calculate_single_port_metrics(weights, returns,
+                                                  trading_days, risk_metric, var_params)
+        point_data = {'name': name, 'ret_annual': ret, 'risk_arr': risk}
+        for asset, w in w_dict.items():
+            point_data[asset] = w
+        standard_points.append(point_data)
+    df_standard_points = pd.DataFrame(standard_points)
+    df_standard_points['hover_text'] = df_standard_points.apply(
+        lambda r: format_hover_text(r, f"标准-{r['name']}", asset_list), axis=1)
+    scatter_points_data.append({
+        "data": df_standard_points,
+        "name": "标准组合点", "color": "gold", "size": 5, "opacity": 1.0, "symbol": "star",
+        "marker_line": dict(width=1, color='black')
+    })
+
+    # e) 处理客户当前持仓点
+    user_weights_dict = user_holding['StandardProportion']
+    user_weights_arr = np.array([user_weights_dict.get(asset, 0.0) for asset in asset_list])
+    user_ret, user_risk = calculate_single_port_metrics(user_weights_arr, returns,
+                                                        trading_days, risk_metric,
+                                                        var_params)
+    df_user_point_data = {'ret_annual': user_ret, 'risk_arr': user_risk, **user_weights_dict}
+    df_user_point = pd.DataFrame([df_user_point_data])
+    df_user_point['hover_text'] = df_user_point.apply(
+        lambda r: format_hover_text(r, "客户当前持仓", asset_list), axis=1)
+    scatter_points_data.append({
+        "data": df_user_point,
+        "name": "客户当前持仓", "color": "cyan", "size": 5, "opacity": 1.0, "symbol": "diamond",
+        "marker_line": dict(width=1, color='black')
+    })
+    return scatter_points_data
+
+
 if __name__ == '__main__':
     ''' 0) 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------- '''
     # 字典格式入参
@@ -124,8 +218,8 @@ if __name__ == '__main__':
         0: {
             "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
             # exploration 参数（当 init_mode=="exploration" 生效）：
-            "samples": 10000,
-            "step_size": 0.1,
+            "samples": 100000,
+            "step_size": 0.5,
             # solver 参数（当 init_mode=="solver" 生效）：
             "solver_params": {
                 "n_grid": 1000,
@@ -133,10 +227,10 @@ if __name__ == '__main__':
                 "ridge": 1e-8,
             },
         },
-        1: {"samples_total": 10000, "step_size": 0.1, "vol_bins": 1000, "parallel_workers": 100},
-        2: {"samples_total": 20000, "step_size": 0.8, "vol_bins": 2000, "parallel_workers": 100},
-        3: {"samples_total": 30000, "step_size": 0.05, "vol_bins": 3000, "parallel_workers": 100},
-        4: {"samples_total": 40000, "step_size": 0.01, "vol_bins": 4000, "parallel_workers": 100},
+        1: {"samples_total": 1000, "step_size": 0.1, "vol_bins": 100, "parallel_workers": 100},
+        2: {"samples_total": 2000, "step_size": 0.8, "vol_bins": 200, "parallel_workers": 100},
+        3: {"samples_total": 3000, "step_size": 0.05, "vol_bins": 300, "parallel_workers": 100},
+        4: {"samples_total": 4000, "step_size": 0.01, "vol_bins": 400, "parallel_workers": 100},
     }
     TRADING_DAYS = 252.0  # 年化换算用交易天数
     DEDUP_DECIMALS = 2  # 在“权重去重”时对每行权重进行四舍五入保留的小数位数
@@ -248,92 +342,16 @@ if __name__ == '__main__':
 
     ''' 6) 绘图展示 ------------------------------------------------------------------------------------------------- '''
     print("\n开始准备绘图数据...")
-    scatter_points_data = list()  # 重新初始化用于绘图的点云数据
-
-    # a) 处理无约束组合
-    df_unc = pd.DataFrame(W_unc, columns=asset_list)
-    df_unc['ret_annual'] = ret_annual_unc
-    df_unc['risk_arr'] = risk_arr_unc
-    df_unc['hover_text'] = df_unc.apply(
-        lambda r: format_hover_text(r, "无约束组合", asset_list), axis=1)
-
-    # 无约束 - 随机点 (抽样以避免浏览器卡顿)
-    scatter_points_data.append({
-        "data": df_unc[~ef_mask_unc].sample(n=min(2000, len(df_unc[~ef_mask_unc]))),
-        "name": "无约束-随机点", "color": "black", "size": 3, "opacity": 0.5,
-    })
-    # 无约束 - 有效前沿
-    scatter_points_data.append({
-        "data": df_unc[ef_mask_unc],
-        "name": "无约束-有效前沿", "color": "black", "size": 3, "opacity": 0.9,
-    })
-
-    # b) 处理各标准组合的 frontier
-    level_colors = {'C1': '#1f77b4', 'C2': '#ff7f0e', 'C3': 'grey', 'C4': 'green', 'C5': 'blue', 'C6': 'red'}
-    for k, v in random_weight_dict.items():
-        color = level_colors.get(k, 'black')
-        df_level = pd.DataFrame(v['weights'], columns=asset_list)
-        df_level['ret_annual'] = v['ret_annual']
-        df_level['risk_arr'] = v['risk_arr']
-        df_level['hover_text'] = df_level.apply(lambda r: format_hover_text(r, f"{k} 组合", asset_list), axis=1)
-        level_ef_mask = v['ef_mask']
-        scatter_points_data.append({
-            "data": df_level[~level_ef_mask].sample(n=min(2000, len(df_level[~level_ef_mask]))),
-            "name": f"{k}-随机点", "color": color, "size": 3, "opacity": 0.5,
-        })
-        scatter_points_data.append({
-            "data": df_level[level_ef_mask],
-            "name": f"{k}-有效前沿", "color": color, "size": 3, "opacity": 0.9,
-        })
-
-    # c) 处理客户持仓组合的 frontier
-    df_hold = pd.DataFrame(W_hold, columns=asset_list)
-    df_hold['ret_annual'] = ret_annual_hold
-    df_hold['risk_arr'] = risk_arr_hold
-    df_hold['hover_text'] = df_hold.apply(lambda r: format_hover_text(r, "客户持仓约束", asset_list), axis=1)
-    scatter_points_data.append({
-        "data": df_hold[~ef_mask_hold].sample(n=min(2000, len(df_hold[~ef_mask_hold]))),
-        "name": "客户持仓-随机点", "color": "purple", "size": 3, "opacity": 0.5,
-    })
-    scatter_points_data.append({
-        "data": df_hold[ef_mask_hold],
-        "name": "客户持仓-有效前沿", "color": "purple", "size": 3, "opacity": 1.0,
-    })
-
-    # d) 处理标准组合点
-    standard_points = []
-    for name, w_dict in standard_proportion.items():
-        weights = np.array([w_dict.get(asset, 0.0) for asset in asset_list])
-        ret, risk = calculate_single_port_metrics(weights, returns, TRADING_DAYS, RISK_METRIC, VAR_PARAMS)
-        point_data = {'name': name, 'ret_annual': ret, 'risk_arr': risk}
-        for asset, w in w_dict.items():
-            point_data[asset] = w
-        standard_points.append(point_data)
-    df_standard_points = pd.DataFrame(standard_points)
-    df_standard_points['hover_text'] = df_standard_points.apply(
-        lambda r: format_hover_text(r, f"标准-{r['name']}", asset_list), axis=1)
-    scatter_points_data.append({
-        "data": df_standard_points,
-        "name": "标准组合点", "color": "gold", "size": 5, "opacity": 1.0, "symbol": "star",
-        "marker_line": dict(width=1, color='black')
-    })
-
-    # e) 处理客户当前持仓点
-    user_weights_dict = user_holding['StandardProportion']
-    user_weights_arr = np.array([user_weights_dict.get(asset, 0.0) for asset in asset_list])
-    user_ret, user_risk = calculate_single_port_metrics(user_weights_arr, returns, TRADING_DAYS, RISK_METRIC,
-                                                        VAR_PARAMS)
-    df_user_point_data = {'ret_annual': user_ret, 'risk_arr': user_risk, **user_weights_dict}
-    df_user_point = pd.DataFrame([df_user_point_data])
-    df_user_point['hover_text'] = df_user_point.apply(lambda r: format_hover_text(r, "客户当前持仓", asset_list),
-                                                      axis=1)
-    scatter_points_data.append({
-        "data": df_user_point,
-        "name": "客户当前持仓", "color": "cyan", "size": 5, "opacity": 1.0, "symbol": "diamond",
-        "marker_line": dict(width=1, color='black')
-    })
-
-    # f) 调用绘图函数
+    # 创建绘图数据
+    scatter_points_data = create_scatter_point_data(asset_list, W_unc, ret_annual_unc,
+                                                    risk_arr_unc, ef_mask_unc,
+                                                    random_weight_dict,
+                                                    W_hold, ret_annual_hold,
+                                                    risk_arr_hold, standard_proportion,
+                                                    ef_mask_hold, user_holding,
+                                                    returns, TRADING_DAYS,
+                                                    VAR_PARAMS, RISK_METRIC)
+    # 调用绘图函数
     plot_efficient_frontier(
         scatter_points_data,
         title="各约束下的有效前沿对比",
