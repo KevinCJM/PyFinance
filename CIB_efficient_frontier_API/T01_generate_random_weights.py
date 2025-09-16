@@ -374,25 +374,35 @@ def compute_perf_arrays(
         portfolio_allocs: np.ndarray,  # (M, N)
         trading_days: float = 252.0,
         ddof: int = 1,
+        return_type: str = "log",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    返回 (ret_annual, vol_annual)，保持原逻辑（精确 log1p）：
-    R = port_daily @ portfolio_allocs.T；对每列做 log1p 后统计均值与标准差并年化。
-    为提升 BLAS 效率，将权重转置为 C 连续内存。
+    计算年化收益和年化波动率，支持对数或简单收益率口径。
+    - return_type="log": 计算年化对数收益率 (算术平均)
+    - return_type="simple": 计算年化简单收益率 (几何平均)
     """
-    # 使用 float32 优先（SIMD/内存带宽更友好）；保持原公式(log1p)不变
+    # 使用 float32 优先（SIMD/内存带宽更友好）
     if port_daily.dtype != np.float32:
         port_daily = port_daily.astype(np.float32, copy=False)
     if portfolio_allocs.dtype != np.float32:
         portfolio_allocs = portfolio_allocs.astype(np.float32, copy=False)
 
     T = port_daily.shape[0]
-    WT = np.ascontiguousarray(portfolio_allocs.T)  # (N, M) 连续内存利于 GEMM
-    R = port_daily @ WT  # (T, M)
-    np.log1p(R, out=R)
-    ret_annual = (R.sum(axis=0, dtype=np.float32) / float(T)) * float(trading_days)
-    vol_annual = R.std(axis=0, ddof=ddof) * np.sqrt(float(trading_days))
-    return ret_annual, vol_annual
+    WT = np.ascontiguousarray(portfolio_allocs.T)
+    R = port_daily @ WT  # (T, M) daily simple returns
+
+    if return_type == "log":
+        np.log1p(R, out=R)  # R becomes log returns
+        ret_annual = (R.sum(axis=0, dtype=np.float32) / float(T)) * float(trading_days)
+        vol_annual = R.std(axis=0, ddof=ddof) * np.sqrt(float(trading_days))
+    else:  # "simple"
+        mu = R.mean(axis=0, dtype=np.float32)
+        sigma = R.std(axis=0, ddof=ddof)
+        # 简单收益率使用几何方式年化
+        ret_annual = (1 + mu) ** float(trading_days) - 1
+        vol_annual = sigma * np.sqrt(float(trading_days))
+
+    return ret_annual.astype(np.float64, copy=False), vol_annual.astype(np.float64, copy=False)
 
 
 def compute_var_parametric_arrays(
@@ -476,6 +486,154 @@ def compute_var_parametric_arrays(
 
 
 # ===================== 2.5) 基于求解器的前沿（用于初始种子） =====================
+def _build_frontier_by_risk_grid_slsqp(
+        port_daily_returns: np.ndarray,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        risk_metric: str = "vol",
+        var_params: Dict[str, Any] | None = None,
+        n_grid: int = 150,
+        annual_trading_days: float = 252.0,
+        ddof: int = 1,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    使用 scipy.optimize.minimize(method='SLSQP') 构建有效前沿。
+    """
+    try:
+        from scipy.optimize import minimize
+    except ImportError as e:
+        raise RuntimeError("需要安装 scipy 以使用 SLSQP 求解器: pip install scipy") from e
+
+    N = port_daily_returns.shape[1]
+    w0 = np.full(N, 1.0 / N, dtype=np.float64)
+
+    # 目标函数与风险函数 (非向量化，用于优化器)
+    def _ann_log_ret_func(w: np.ndarray) -> float:
+        w = np.asarray(w, dtype=np.float64)
+        Rt = port_daily_returns @ w
+        Xt = np.log1p(Rt)
+        return float(Xt.mean()) * annual_trading_days
+
+    if risk_metric == "vol":
+        def _risk_func_raw(w: np.ndarray) -> float:
+            w = np.asarray(w, dtype=np.float64)
+            Rt = port_daily_returns @ w
+            Xt = np.log1p(Rt)
+            return float(Xt.std(ddof=ddof)) * np.sqrt(annual_trading_days)
+    else:  # 'var'
+        vp = var_params or {}
+        confidence = float(vp.get("confidence", 0.95))
+        horizon_days = float(vp.get("horizon_days", 1.0))
+        return_type = str(vp.get("return_type", "simple"))
+        try:
+            from statistics import NormalDist
+            z_score = NormalDist().inv_cdf(1.0 - confidence)
+        except Exception:
+            z_score = -1.645
+
+        def _risk_func_raw(w: np.ndarray) -> float:
+            w = np.asarray(w, dtype=np.float64)
+            Rt = port_daily_returns @ w
+            if return_type == "log":
+                X = np.log1p(Rt)
+            else:
+                X = Rt
+            mu = X.mean()
+            sigma = X.std(ddof=ddof)
+            h = float(horizon_days)
+            mu_h = mu * h
+            sigma_h = sigma * np.sqrt(h)
+            return -(mu_h + z_score * sigma_h)
+
+    # 约束
+    bounds = single_limits
+    cons = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+    for idx_tuple, (lo, hi) in multi_limits.items():
+        idx = list(idx_tuple)
+        if idx:
+            # SLSQP 的 'ineq' 约束是 >= 0
+            cons.append({'type': 'ineq', 'fun': lambda w, i=idx, l=lo: np.sum(w[i]) - l})
+            cons.append({'type': 'ineq', 'fun': lambda w, i=idx, h=hi: h - np.sum(w[i])})
+
+    # 端点：最小风险
+    res_min_risk = minimize(_risk_func_raw, w0, method='SLSQP', bounds=bounds, constraints=cons,
+                            options={'ftol': 1e-12, 'maxiter': 800})
+    if not res_min_risk.success:
+        log("[求解器初始化-SLSQP] 无法求得最小风险点，放弃。")
+        return np.empty((0, N)), np.array([]), np.array([])
+    w_riskmin = res_min_risk.x
+
+    # 端点：最大收益
+    res_max_ret = minimize(lambda w: -_ann_log_ret_func(w), w0, method='SLSQP', bounds=bounds, constraints=cons,
+                           options={'ftol': 1e-12, 'maxiter': 800})
+    if not res_max_ret.success:
+        log("[求解器初始化-SLSQP] 无法求得最大收益点，放弃。")
+        return np.empty((0, N)), np.array([]), np.array([])
+    w_retmax = res_max_ret.x
+
+    r_min_raw = _risk_func_raw(w_riskmin)
+    r_max_raw = _risk_func_raw(w_retmax)
+    if r_max_raw < r_min_raw:
+        r_max_raw, r_min_raw = r_min_raw, r_max_raw
+
+    # 风险栅格
+    grid = np.linspace(r_min_raw, r_max_raw, int(n_grid))
+    W: List[np.ndarray] = []
+    w_prev = w_riskmin.copy()
+
+    for r_cap in grid:
+        cons_scan = cons + [{'type': 'eq', 'fun': lambda w, rc=r_cap: _risk_func_raw(w) - rc}]
+        res = minimize(lambda w: -_ann_log_ret_func(w), w_prev, method='SLSQP', bounds=bounds, constraints=cons_scan,
+                       options={'ftol': 1e-12, 'maxiter': 800, 'disp': False})
+
+        if res.success:
+            w_star = res.x
+            W.append(w_star)
+            w_prev = w_star.copy()
+        else:
+            # 若等式约束失败，尝试松弛为不等式+惩罚项
+            lam = 100.0
+
+            def obj_relax(w):
+                ret = _ann_log_ret_func(w)
+                slack = max(0.0, _risk_func_raw(w) - r_cap)
+                return -ret + lam * (slack ** 2)
+
+            res2 = minimize(obj_relax, w_prev, method='SLSQP', bounds=bounds, constraints=cons,
+                            options={'ftol': 1e-12, 'maxiter': 800, 'disp': False})
+            if res2.success:
+                w_star = res2.x
+                W.append(w_star)
+                w_prev = w_star.copy()
+
+    if not W:
+        return np.empty((0, N)), np.array([]), np.array([])
+
+    W_arr = np.vstack(W).astype(np.float64, copy=False)
+
+    # 批量回算指标
+    ret_ann, vol_ann = compute_perf_arrays(
+        port_daily_returns.astype(np.float32, copy=False),
+        W_arr.astype(np.float32, copy=False),
+        trading_days=annual_trading_days, ddof=ddof,
+    )
+    if risk_metric == "vol":
+        risk_arr = vol_ann
+    else:
+        vp = var_params or {}
+        risk_arr = compute_var_parametric_arrays(
+            port_daily_returns.astype(np.float32, copy=False),
+            W_arr.astype(np.float32, copy=False),
+            confidence=float(vp.get("confidence", 0.95)),
+            horizon_days=float(vp.get("horizon_days", 1.0)),
+            return_type=str(vp.get("return_type", "simple")),
+            ddof=ddof,
+            clip_non_negative=bool(vp.get("clip_non_negative", True)),
+        )
+    return W_arr, ret_ann, risk_arr
+
+
 def build_frontier_by_risk_grid(
         port_daily_returns: np.ndarray,
         single_limits: List[Tuple[float, float]],
@@ -489,16 +647,31 @@ def build_frontier_by_risk_grid(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     使用凸优化求解在线性权重约束下的有效前沿点集，作为初始种子。
-    - 当 risk_metric="vol" 时，问题为 QCQP/二阶锥：max μᵀw s.t. wᵀΣw ≤ r²
-    - 当 risk_metric="var" 时，使用参数法 VaR（正态近似）建模为 SOCP：
-        VaR(w) = α√h·s − h·μᵀw；约束 VaR(w) ≤ r，且 wᵀΣw ≤ s²
+    - 当 `solver` 为 "SLSQP" 时，使用 `scipy.optimize.minimize` 进行非线性优化。
+    - 其他 `solver` (如 "ECOS", "SCS") 使用 `cvxpy`：
+        - 当 risk_metric="vol" 时，问题为 QCQP/二阶锥：max μᵀw s.t. wᵀΣw ≤ r²
+        - 当 risk_metric="var" 时，使用参数法 VaR（正态近似）建模为 SOCP：
+            VaR(w) = α√h·s − h·μᵀw；约束 VaR(w) ≤ r，且 wᵀΣw ≤ s²
     返回： (W, ret_annual, risk_array)
     注意：本函数在内部仅在需要时 import cvxpy，若缺失将抛出可读错误信息。
     """
+    if str(solver).upper() == "SLSQP":
+        # cvxpy 版本硬编码了 trading_days=252.0 和 ddof=1，为保持一致性这里也传入同样的值
+        return _build_frontier_by_risk_grid_slsqp(
+            port_daily_returns=port_daily_returns,
+            single_limits=single_limits,
+            multi_limits=multi_limits,
+            risk_metric=risk_metric,
+            var_params=var_params,
+            n_grid=n_grid,
+            annual_trading_days=252.0,
+            ddof=1,
+        )
+
     try:
         import cvxpy as cp
     except Exception as e:
-        raise RuntimeError("需要安装 cvxpy 以使用求解器初始化功能: pip install cvxpy") from e
+        raise RuntimeError(f"需要安装 cvxpy 以使用 {solver} 求解器: pip install cvxpy") from e
 
     # 简单收益下的 μ 与协方差；Σ 做轻微 ridge 保证 PSD
     r = port_daily_returns.astype(np.float64, copy=False)
@@ -532,7 +705,7 @@ def build_frontier_by_risk_grid(
     prob1 = cp.Problem(cp.Maximize(mu @ w1), cons1)
     prob1.solve(solver=getattr(cp, solver, cp.ECOS), verbose=False)
     if w1.value is None:
-        log("[求解器初始化] 无法求得最大收益点，放弃求解器初始化。")
+        log(f"[求解器初始化-{solver}] 无法求得最大收益点，放弃求解器初始化。")
         return np.empty((0, N)), np.array([]), np.array([])
     w_retmax = np.asarray(w1.value, dtype=float)
 
@@ -545,7 +718,7 @@ def build_frontier_by_risk_grid(
         prob2 = cp.Problem(cp.Minimize(cp.quad_form(w2, Sigma)), cons2)
         prob2.solve(solver=getattr(cp, solver, cp.ECOS), verbose=False)
         if w2.value is None:
-            log("[求解器初始化] 无法求得最小方差点，放弃求解器初始化。")
+            log(f"[求解器初始化-{solver}] 无法求得最小方差点，放弃求解器初始化。")
             return np.empty((0, N)), np.array([]), np.array([])
         w_riskmin = np.asarray(w2.value, dtype=float)
     else:
@@ -566,7 +739,7 @@ def build_frontier_by_risk_grid(
         prob2 = cp.Problem(obj2, cons2)
         prob2.solve(solver=getattr(cp, solver, cp.ECOS), verbose=False)
         if w2.value is None:
-            log("[求解器初始化] 无法求得最小 VaR 点，放弃求解器初始化。")
+            log(f"[求解器初始化-{solver}] 无法求得最小 VaR 点，放弃求解器初始化。")
             return np.empty((0, N)), np.array([]), np.array([])
         w_riskmin = np.asarray(w2.value, dtype=float)
 
@@ -590,7 +763,7 @@ def build_frontier_by_risk_grid(
     r_min = risk_of(w_riskmin)
     r_max = risk_of(w_retmax)
     if r_max < r_min:
-        r_max = r_min
+        r_max, r_min = r_min, r_max
 
     # 风险栅格
     grid = np.linspace(r_min, r_max, int(n_grid))
@@ -648,7 +821,47 @@ def build_frontier_by_risk_grid(
     return W, ret_ann, risk_arr
 
 
-# ===================== 4) 数据与流程函数 =====================
+# ===================== 3) 数据与流程函数 =====================
+
+def load_returns_from_excel(
+        excel_path: str,
+        sheet_name: str,
+        assets_list: List[str],
+) -> Tuple[np.ndarray, List[str]]:
+    """从 Excel 读取净值数据，生成日收益二维数组 (T,N)。"""
+    log(f"加载数据: {excel_path} | sheet={sheet_name}")
+    df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    df = df.set_index("date")
+    df.index = pd.to_datetime(df.index)
+    df = df.dropna().sort_index(ascending=True)
+    df = df.rename(
+        {
+            "货基指数": "货币现金类",
+            "固收类": "固定收益类",
+            "混合类": "混合策略类",
+            "权益类": "权益投资类",
+            "另类": "另类投资类",
+            "安逸型": "C1",
+            "谨慎型": "C2",
+            "稳健型": "C3",
+            "增长型": "C4",
+            "进取型": "C5",
+            "激进型": "C6",
+        },
+        axis=1,
+    )
+
+    # 若部分资产列不存在，报错以避免静默问题
+    missing = [c for c in assets_list if c not in df.columns]
+    if missing:
+        raise ValueError(f"缺少列: {missing}")
+
+    hist_ret_df = df[assets_list].pct_change().dropna()
+    # 全局采用 float32，以获得更好的吞吐（矩阵乘法/缓存）
+    arr = hist_ret_df.values.astype(np.float32, copy=False)
+    log(f"数据加载完成，样本天数={arr.shape[0]}，资产数={arr.shape[1]}")
+    return arr, assets_list
+
 
 def deduplicate_weights(W: np.ndarray, decimals: int = 4) -> np.ndarray:
     """按小数位去重行权重矩阵，减少后续计算量。"""
@@ -659,7 +872,7 @@ def deduplicate_weights(W: np.ndarray, decimals: int = 4) -> np.ndarray:
     return W[np.sort(uniq_idx)]
 
 
-# ===================== 权重量化 =====================
+# ===================== 4) 权重量化 =====================
 
 def _parse_precision(choice: str) -> float:
     """将 '0.1%'/'0.2%'/'0.5%' 或 '0.001' 解析为步长浮点数。"""
@@ -1356,7 +1569,7 @@ def multi_level_random_walk_config(
         a) 随机探索（exploration，默认）：需包含 `samples`（总采样数）与 `step_size`；可选
            `projector_iters`/`projector_tol`/`projector_damping`/`seed`/`use_numba`。
         b) 求解器（solver）：设置 `init_mode="solver"`，并在 `solver_params` 中配置
-           `n_grid`（风险栅格点数）、`solver`（ECOS/SCS/MOSEK）、`ridge` 等；
+           `n_grid`（风险栅格点数）、`solver`（ECOS/SCS/MOSEK/SLSQP）、`ridge` 等；
            风险度量由 `risk_metric`/`var_params` 控制（波动率或参数法 VaR）。
       - 第1..N轮（中步长）：包含 `step_size`，以下二选一：
         - `samples_per_seed`：每个种子生成的数量；
@@ -1682,7 +1895,7 @@ def multi_level_random_walk_config(
     return W, ret, (risk_arr if (risk_metric or "vol").lower() == "var" else vol), ef_mask
 
 
-# ===================== 4) 主流程 =====================
+# ===================== 5) 主流程 =====================
 
 if __name__ == "__main__":
     overall_t0 = time.time()
@@ -1703,14 +1916,14 @@ if __name__ == "__main__":
     ROUNDS_CONFIG: Dict[int, Dict[str, Any]] = {
         # 第0轮：初始化方式二选一：
         0: {
-            "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
+            "init_mode": "solver",  # "exploration" 随机探索 或 "solver" 求解器
             # exploration 参数（当 init_mode=="exploration" 生效）：
             "samples": 100,
             "step_size": 0.99,
             # solver 参数（当 init_mode=="solver" 生效）：
             "solver_params": {
                 "n_grid": 100,
-                "solver": "ECOS",  # ECOS/SCS/MOSEK
+                "solver": "SLSQP",  # ECOS/SCS/MOSEK/SLSQP
                 "ridge": 1e-8,
             },
         },
@@ -1746,6 +1959,8 @@ if __name__ == "__main__":
 
     # 权重精度（量化）选择：'0.1%'、'0.2%'、'0.5%' 或 None（不量化）
     PRECISION_CHOICE: str | None = None
+
+    log("程序开始运行")
 
     ''' 1) ------------------------- 数据读取 ------------------------- '''
     port_daily_returns, assets_list = load_returns_from_excel(

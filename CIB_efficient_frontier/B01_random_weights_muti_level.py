@@ -385,25 +385,35 @@ def compute_perf_arrays(
         portfolio_allocs: np.ndarray,  # (M, N)
         trading_days: float = 252.0,
         ddof: int = 1,
+        return_type: str = "log",
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    返回 (ret_annual, vol_annual)，保持原逻辑（精确 log1p）：
-    R = port_daily @ portfolio_allocs.T；对每列做 log1p 后统计均值与标准差并年化。
-    为提升 BLAS 效率，将权重转置为 C 连续内存。
+    计算年化收益和年化波动率，支持对数或简单收益率口径。
+    - return_type="log": 计算年化对数收益率 (算术平均)
+    - return_type="simple": 计算年化简单收益率 (几何平均)
     """
-    # 使用 float32 优先（SIMD/内存带宽更友好）；保持原公式(log1p)不变
+    # 使用 float32 优先（SIMD/内存带宽更友好）
     if port_daily.dtype != np.float32:
         port_daily = port_daily.astype(np.float32, copy=False)
     if portfolio_allocs.dtype != np.float32:
         portfolio_allocs = portfolio_allocs.astype(np.float32, copy=False)
 
     T = port_daily.shape[0]
-    WT = np.ascontiguousarray(portfolio_allocs.T)  # (N, M) 连续内存利于 GEMM
-    R = port_daily @ WT  # (T, M)
-    np.log1p(R, out=R)
-    ret_annual = (R.sum(axis=0, dtype=np.float32) / float(T)) * float(trading_days)
-    vol_annual = R.std(axis=0, ddof=ddof) * np.sqrt(float(trading_days))
-    return ret_annual, vol_annual
+    WT = np.ascontiguousarray(portfolio_allocs.T)
+    R = port_daily @ WT  # (T, M) daily simple returns
+
+    if return_type == "log":
+        np.log1p(R, out=R)  # R becomes log returns
+        ret_annual = (R.sum(axis=0, dtype=np.float32) / float(T)) * float(trading_days)
+        vol_annual = R.std(axis=0, ddof=ddof) * np.sqrt(float(trading_days))
+    else:  # "simple"
+        mu = R.mean(axis=0, dtype=np.float32)
+        sigma = R.std(axis=0, ddof=ddof)
+        # 简单收益率使用几何方式年化
+        ret_annual = (1 + mu) ** float(trading_days) - 1
+        vol_annual = sigma * np.sqrt(float(trading_days))
+
+    return ret_annual.astype(np.float64, copy=False), vol_annual.astype(np.float64, copy=False)
 
 
 def compute_var_parametric_arrays(
