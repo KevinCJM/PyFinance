@@ -836,13 +836,13 @@ def _snap_to_grid_simplex(w: np.ndarray, step: float, single_limits: List[Tuple[
 
 
 def quantize_with_projection(
-    w: np.ndarray,
-    step: float,
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    *,
-    projector=None,
-    rounds: int = 5,
+        w: np.ndarray,
+        step: float,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        projector=None,
+        rounds: int = 5,
 ) -> np.ndarray | None:
     """
     迭代执行：
@@ -872,14 +872,14 @@ def quantize_with_projection(
 
 
 def _quantize_weights_batch_if_needed(
-    W: np.ndarray,
-    precision_choice: str | None,
-    single_limits: List[Tuple[float, float]],
-    multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-    *,
-    rounds: int = 4,
-    use_numba: bool | None = None,
-    parallel_workers: int | None = None,
+        W: np.ndarray,
+        precision_choice: str | None,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        *,
+        rounds: int = 4,
+        use_numba: bool | None = None,
+        parallel_workers: int | None = None,
 ) -> np.ndarray:
     """按需对一批权重量化；失败的行丢弃。precision_choice=None 时原样返回。"""
     if not precision_choice:
@@ -1797,83 +1797,10 @@ def multi_level_random_walk_config(
     return W, ret, (risk_arr if (risk_metric or "vol").lower() == "var" else vol), ef_mask
 
 
-def run_pipeline(
-        excel_path: str,
-        sheet_name: str,
-        assets_list: List[str],
-        single_limits: List[Tuple[float, float]],
-        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-        *,
-        seed: int = 12345,
-        rounds_config: Dict[int, Dict[str, Any]] | None = None,
-        extreme_seed_config: Dict[str, Any] | None = None,
-        risk_metric: str = "vol",
-        var_params: Dict[str, Any] | None = None,
-        precision_choice: str | None = None,
-        # 公共参数
-        annual_trading_days: float = 252.0,
-        drop_duplicates_decimals: int = 4,
-        show_plot: bool = True,
-) -> None:
-    """
-    端到端执行：数据 -> 权重 -> 指标 -> 前沿 -> 绘图。
-    仅支持字典式 rounds_config 配置多轮参数。
-    """
-    overall_t0 = time.time()
-
-    # 1) 数据
-    port_daily_returns, assets_list = load_returns_from_excel(
-        excel_path, sheet_name, assets_list
-    )
-    T, N = port_daily_returns.shape
-    log(f"数据准备完成：T={T}, N={N}")
-
-    if rounds_config is None:
-        raise ValueError("rounds_config 不能为空（仅支持字典配置模式）")
-
-    W, ret_annual, risk_arr, ef_mask = multi_level_random_walk_config(
-        port_daily_returns=port_daily_returns,
-        single_limits=single_limits,
-        multi_limits=multi_limits,
-        rounds_config=rounds_config,
-        dedup_decimals=drop_duplicates_decimals,
-        annual_trading_days=annual_trading_days,
-        global_seed=seed,
-        extreme_seed_config=extreme_seed_config,
-        risk_metric=risk_metric,
-        var_params=var_params,
-        precision_choice=precision_choice,
-    )
-    if W.size == 0:
-        log("多层（字典配置）流程未产出结果，终止。")
-        return
-
-    # 7) 绘图
-    log("生成交互式图表...")
-    xlabel = '年化波动率 (Annual Volatility)'
-    if (risk_metric or "vol").lower() == "var":
-        vp = var_params or {}
-        conf = float(vp.get("confidence", 0.95))
-        h = float(vp.get("horizon_days", 1.0))
-        rtype = str(vp.get("return_type", "simple"))
-        xlabel = f"VaR@{conf:.2f}({rtype}, 持有期{h:g}天)"
-    plot_efficient_frontier_arrays(
-        vol_all=risk_arr,
-        ret_all=ret_annual,
-        weights_all=W,
-        ef_mask=ef_mask,
-        asset_names=assets_list,
-        title="约束随机游走生成的投资组合与有效前沿",
-        show=show_plot,
-        x_label=xlabel,
-    )
-
-    log(f"流程完成，总耗时 {time.time() - overall_t0:.2f}s")
-
-
 # ===================== 4) 主流程 =====================
 
 if __name__ == "__main__":
+    overall_t0 = time.time()
     # 主要参数（可按需调整）
     EXCEL_PATH = "历史净值数据_万得指数.xlsx"
     SHEET_NAME = "历史净值数据"
@@ -1935,21 +1862,52 @@ if __name__ == "__main__":
     PRECISION_CHOICE: str | None = None
 
     log("程序开始运行")
-    run_pipeline(
-        excel_path=EXCEL_PATH,
-        sheet_name=SHEET_NAME,
-        assets_list=ASSETS,
+
+    ''' 1) ------------------------- 数据读取 ------------------------- '''
+    port_daily_returns, assets_list = load_returns_from_excel(
+        EXCEL_PATH, SHEET_NAME, ASSETS
+    )
+    T, N = port_daily_returns.shape
+    log(f"数据准备完成：T={T}, N={N}")
+
+    ''' 2) ------------------------- 权重计算 ------------------------- '''
+    (W,  # 最终权重数组
+     ret_annual,  # 对应的收益度量 (年化对数收益)
+     risk_arr,  # 对应的风险度量（波动率或 VaR）
+     ef_mask  # 有效前沿掩码
+     ) = multi_level_random_walk_config(
+        port_daily_returns=port_daily_returns,
         single_limits=SINGLE_LIMITS,
         multi_limits=MULTI_LIMITS,
-        seed=RANDOM_SEED,
         rounds_config=ROUNDS_CONFIG,
+        dedup_decimals=DEDUP_DECIMALS,
+        annual_trading_days=TRADING_DAYS,
+        global_seed=RANDOM_SEED,
         extreme_seed_config=EXTREME_SEED_CONFIG,
         risk_metric=RISK_METRIC,
         var_params=VAR_PARAMS,
         precision_choice=PRECISION_CHOICE,
-        # 公共参数
-        annual_trading_days=TRADING_DAYS,
-        drop_duplicates_decimals=DEDUP_DECIMALS,
-        show_plot=SHOW_PLOT,
     )
+
+    ''' 3) ------------------------- 绘图展示 ------------------------- '''
+    log("生成交互式图表...")
+    x_label = '年化波动率 (Annual Volatility)'
+    if (RISK_METRIC or "vol").lower() == "var":
+        vp = VAR_PARAMS or {}
+        conf = float(vp.get("confidence", 0.95))
+        h = float(vp.get("horizon_days", 1.0))
+        rtype = str(vp.get("return_type", "simple"))
+        x_label = f"VaR@{conf:.2f}({rtype}, 持有期{h:g}天)"
+    plot_efficient_frontier_arrays(
+        vol_all=risk_arr,
+        ret_all=ret_annual,
+        weights_all=W,
+        ef_mask=ef_mask,
+        asset_names=assets_list,
+        title="约束随机游走生成的投资组合与有效前沿",
+        show=SHOW_PLOT,
+        x_label=x_label,
+    )
+
+    log(f"流程完成，总耗时 {time.time() - overall_t0:.2f}s")
     log("程序结束")

@@ -99,8 +99,8 @@ def maximize_return(R: np.ndarray) -> Tuple[np.ndarray, float, float]:
     res = minimize(obj, w0, method='SLSQP', bounds=BOUNDS, constraints=cons,
                    options={'maxiter': 800, 'ftol': 1e-12, 'disp': False})
     w = res.x
-    w = np.maximum(w, 0.0);
-    s = w.sum();
+    w = np.maximum(w, 0.0)
+    s = w.sum()
     w = (w / s) if s > 0 else np.full(N, 1.0 / N)
     risk_raw = var_log_raw(w, R)
     ret_ann = annualized_log_return(w, R)
