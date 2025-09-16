@@ -1801,7 +1801,8 @@ def multi_level_random_walk_config(
 
 if __name__ == "__main__":
     overall_t0 = time.time()
-    # 主要参数（可按需调整）
+    ''' 0) ------------------------- 参数配置 ------------------------- '''
+    # EXCEL参数
     EXCEL_PATH = "历史净值数据_万得指数.xlsx"
     SHEET_NAME = "历史净值数据"
     ASSETS = ["货币现金类", "固定收益类", "混合策略类", "权益投资类", "另类投资类"]
