@@ -72,7 +72,7 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
 
     # 无约束 - 随机点 (抽样以避免浏览器卡顿)
     scatter_points_data.append({
-        "data": df_unc[~ef_mask_unc].sample(n=min(2000, len(df_unc[~ef_mask_unc]))),
+        "data": df_unc,
         "name": "无约束-随机点", "color": "black", "size": 3, "opacity": 0.5,
     })
     # 无约束 - 有效前沿
