@@ -59,37 +59,69 @@ if __name__ == '__main__':
     import numpy as np
     import pandas as pd
 
+    asset_list = ["货币现金类", "固定收益类", "混合策略类", "权益投资类", "另类投资类"]
+    num_assets = len(asset_list)
+
+    def format_hover_text(row, title):
+        text = f"<b>{title}</b><br>收益率: {row['ret_annual']:.2%}<br>波动率: {row['vol_annual']:.2%}"
+        text += "<br><br><b>--权重--</b><br>"
+        for asset in asset_list:
+            if asset in row:
+                text += f"{asset}: {row[asset]:.2%}<br>"
+        return text.strip('<br>')
+
     # 1. 生成随机投资组合数据 (点云)
     num_portfolios = 2500
     vols = np.random.uniform(0.1, 0.35, num_portfolios)
     rets = vols * np.random.uniform(0.3, 0.9, num_portfolios) + np.random.normal(0, 0.03, num_portfolios)
 
+    weights = np.random.rand(num_portfolios, num_assets)
+    weights /= weights.sum(axis=1, keepdims=True)
+
     random_portfolios_df = pd.DataFrame({
         'vol_annual': vols,
         'ret_annual': rets,
-        'hover_text': [f"随机组合<br>收益率: {r:.2%}<br>波动率: {v:.2%}" for r, v in zip(rets, vols)]
     })
+    for i, asset in enumerate(asset_list):
+        random_portfolios_df[asset] = weights[:, i]
+
+    random_portfolios_df['hover_text'] = random_portfolios_df.apply(lambda row: format_hover_text(row, "随机组合"), axis=1)
 
     # 2. 生成有效前沿数据 (曲线)
     frontier_vols = np.linspace(0.1, 0.35, 100)
     frontier_rets = 1.5 * (frontier_vols - 0.09) ** 2 + 0.05  # A simple parabola
 
+    # 模拟前沿上的权重变化
+    frontier_weights = np.random.rand(100, num_assets) + 0.5
+    trend = np.linspace(-1, 1, 100)[:, np.newaxis]
+    frontier_weights[:, -2:] += trend * 0.8  # 增加高风险资产权重
+    frontier_weights[:, :2] -= trend * 0.8  # 降低低风险资产权重
+    frontier_weights = np.clip(frontier_weights, 0, None)
+    frontier_weights /= frontier_weights.sum(axis=1, keepdims=True)
+
     efficient_frontier_df = pd.DataFrame({
         'vol_annual': frontier_vols,
         'ret_annual': frontier_rets,
-        'hover_text': [f"有效前沿<br>收益率: {r:.2%}<br>波动率: {v:.2%}" for r, v in zip(frontier_rets, frontier_vols)]
     })
+    for i, asset in enumerate(asset_list):
+        efficient_frontier_df[asset] = frontier_weights[:, i]
+    efficient_frontier_df['hover_text'] = efficient_frontier_df.apply(lambda row: format_hover_text(row, "有效前沿"),
+                                                                    axis=1)
 
     # 3. 找到并标记特殊点
     # 最小波动率点
     min_vol_point_df = efficient_frontier_df.iloc[[efficient_frontier_df['vol_annual'].idxmin()]].copy()
-    min_vol_point_df['hover_text'] = f"波动最小组合<br>收益率: {min_vol_point_df['ret_annual'].iloc[0]:.2%}<br>波动率: {min_vol_point_df['vol_annual'].iloc[0]:.2%}"
+    min_vol_point_df['hover_text'] = format_hover_text(min_vol_point_df.iloc[0], "波动最小组合")
 
     # 夏普率最大点 (模拟一个)
     risk_free_rate = 0.02
     sharpe_ratios = (efficient_frontier_df['ret_annual'] - risk_free_rate) / efficient_frontier_df['vol_annual']
-    max_sharpe_point_df = efficient_frontier_df.iloc[[sharpe_ratios.idxmax()]].copy()
-    max_sharpe_point_df['hover_text'] = f"夏普率最大组合<br>收益率: {max_sharpe_point_df['ret_annual'].iloc[0]:.2%}<br>波动率: {max_sharpe_point_df['vol_annual'].iloc[0]:.2%}<br>夏普率: {sharpe_ratios.max():.2f}"
+    max_sharpe_idx = sharpe_ratios.idxmax()
+    max_sharpe_point_df = efficient_frontier_df.iloc[[max_sharpe_idx]].copy()
+
+    max_sharpe_hover_text = format_hover_text(max_sharpe_point_df.iloc[0], "夏普率最大组合")
+    max_sharpe_hover_text += f"<br><b>夏普率: {sharpe_ratios.loc[max_sharpe_idx]:.2f}</b>"
+    max_sharpe_point_df['hover_text'] = max_sharpe_hover_text
 
     # 4. 组装 scatter_points_data
     scatter_points_data = [
@@ -131,8 +163,12 @@ if __name__ == '__main__':
     current_portfolio = pd.DataFrame({
         'vol_annual': [0.18],
         'ret_annual': [0.08],
-        'hover_text': ['当前组合<br>收益率: 8.00%<br>波动率: 18.00%']
     })
+    current_weights = [0.1, 0.2, 0.2, 0.4, 0.1]
+    for asset, weight in zip(asset_list, current_weights):
+        current_portfolio[asset] = weight
+    current_portfolio['hover_text'] = current_portfolio.apply(lambda row: format_hover_text(row, "当前组合"), axis=1)
+
     scatter_points_data.append({
         "data": current_portfolio,
         "name": "当前组合",
@@ -149,4 +185,3 @@ if __name__ == '__main__':
         title='模拟有效前沿与投资组合',
         output_filename=None
     )
-    print("已生成示例图表: efficient_frontier_example.html")

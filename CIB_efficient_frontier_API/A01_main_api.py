@@ -6,11 +6,26 @@
 @Descriptions: 
 """
 import json
+import pandas as pd
+import plotly.colors
+
+from T04_show_plt import plot_efficient_frontier
 from T02_other_tools import load_returns_from_excel
 from T01_generate_random_weights import multi_level_random_walk_config
 from T03_weight_limit_cal import level_weight_limit_cal, hold_weight_limit_cal
 
+
+# 帮助函数：生成悬停文本
+def format_hover_text(row, title, a_list):
+    text = f"<b>{title}</b><br>年化收益率: {row['ret_annual']:.2%}<br>年化风险: {row['risk_arr']:.2%}"
+    text += "<br><br><b>--权重--</b><br>"
+    for asset in a_list:
+        text += f"{asset}: {row[asset]:.2%}<br>"
+    return text.strip('<br>')
+
+
 if __name__ == '__main__':
+    ''' 0) 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------- '''
     # 字典格式入参
     dict_input = {
         'asset_list': [
@@ -54,8 +69,6 @@ if __name__ == '__main__':
             }
         }
     }
-
-    ''' 0) 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------- '''
     # 字典转Json, 模拟输入的Json参数
     json_str = json.dumps(dict_input, ensure_ascii=False)
     print(json_str)
@@ -67,13 +80,13 @@ if __name__ == '__main__':
     ROUNDS_CONFIG = {
         # 第0轮：初始化方式二选一：
         0: {
-            "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
+            "init_mode": "solver",  # "exploration" 随机探索 或 "solver" 求解器
             # exploration 参数（当 init_mode=="exploration" 生效）：
             "samples": 300,
             "step_size": 0.99,
             # solver 参数（当 init_mode=="solver" 生效）：
             "solver_params": {
-                "n_grid": 300,
+                "n_grid": 5000,
                 "solver": "SLSQP",  # ECOS/SCS/MOSEK/SLSQP
                 "ridge": 1e-8,
             },
@@ -115,6 +128,8 @@ if __name__ == '__main__':
     excel_path = '历史净值数据_万得指数.xlsx'
     excel_sheet = '历史净值数据'
     returns, assets = load_returns_from_excel(excel_path, excel_sheet, asset_list)
+    # 用于绘图的点云数据
+    scatter_points_data = list()
 
     ''' 2) 计算约束 ----------------------------------------------------------------------------------------------- '''
     # 计算标准组合的约束
@@ -131,11 +146,7 @@ if __name__ == '__main__':
     ''' 3) 计算无约束的市场组合的随机权重和有效前沿 --------------------------------------------------------------------- '''
     single_limit = [(0.0, 1.0)] * len(asset_list)
     print(f"计算无约束的市场组合随机权重. 单资产约束: {single_limit}")
-    (W,  # 最终权重数组
-     ret_annual,  # 对应的收益度量 (年化对数收益)
-     risk_arr,  # 对应的风险度量（波动率或 VaR）
-     ef_mask  # 有效前沿掩码
-     ) = multi_level_random_walk_config(
+    (W_unc, ret_annual_unc, risk_arr_unc, ef_mask_unc) = multi_level_random_walk_config(
         port_daily_returns=returns,
         single_limits=single_limit,
         multi_limits={},
@@ -148,7 +159,7 @@ if __name__ == '__main__':
         var_params=VAR_PARAMS,
         precision_choice=PRECISION_CHOICE,
     )
-    print(f"无约束市场组合的随机权重计算完成. 权重数: {W.shape[0]}")
+    print(f"无约束市场组合的随机权重计算完成. 权重数: {W_unc.shape[0]}")
 
     ''' 4) 计算标准组合的随机权重和有效前沿 ---------------------------------------------------------------------------- '''
     # 循环计算各个标准组合的随机权重以及权重对应的收益率和波动率
@@ -157,11 +168,7 @@ if __name__ == '__main__':
         single_limit = v['single_limit']
         multi_limit = v['multi_limit']
         print(f"计算标准组合 {k} 的随机权重. 单资产约束: {single_limit}; 多资产约束: {multi_limit}")
-        (W,  # 最终权重数组
-         ret_annual,  # 对应的收益度量 (年化对数收益)
-         risk_arr,  # 对应的风险度量（波动率或 VaR）
-         ef_mask  # 有效前沿掩码
-         ) = multi_level_random_walk_config(
+        (W, ret_annual, risk_arr, ef_mask) = multi_level_random_walk_config(
             port_daily_returns=returns,
             single_limits=single_limit,
             multi_limits=multi_limit,
@@ -181,3 +188,62 @@ if __name__ == '__main__':
             'ef_mask': ef_mask
         }
         print(f"标准组合 {k} 的随机权重计算完成. 权重数: {W.shape[0]}")
+
+    ''' 5) 绘图展示 ------------------------------------------------------------------------------------------------- '''
+    print("\n开始准备绘图数据...")
+    scatter_points_data = list()  # 重新初始化用于绘图的点云数据
+
+    # a) 处理无约束组合
+    df_unc = pd.DataFrame(W_unc, columns=asset_list)
+    df_unc['ret_annual'] = ret_annual_unc
+    df_unc['risk_arr'] = risk_arr_unc
+    df_unc['hover_text'] = df_unc.apply(
+        lambda r: format_hover_text(r, "无约束组合", asset_list), axis=1)
+
+    # 无约束 - 随机点 (抽样以避免浏览器卡顿)
+    scatter_points_data.append({
+        "data": df_unc[~ef_mask_unc].sample(n=min(2000, len(df_unc[~ef_mask_unc]))),
+        "name": "无约束-随机点", "color": "black", "size": 3, "opacity": 0.5,
+    })
+    # 无约束 - 有效前沿
+    scatter_points_data.append({
+        "data": df_unc[ef_mask_unc],
+        "name": "无约束-有效前沿", "color": "black", "size": 3, "opacity": 0.9,
+    })
+
+    # b) 处理各标准组合
+    level_colors = {
+        'C1': '#1f77b4', 'C2': '#ff7f0e', 'C3': 'grey',
+        'C4': 'green', 'C5': 'blue', 'C6': 'red'
+    }
+    for i, (k, v) in enumerate(random_weight_dict.items()):
+        color = level_colors[k]
+        df_level = pd.DataFrame(v['weights'], columns=asset_list)
+        df_level['ret_annual'] = v['ret_annual']
+        df_level['risk_arr'] = v['risk_arr']
+        df_level['hover_text'] = df_level.apply(
+            lambda r: format_hover_text(r, f"{k} 组合", asset_list), axis=1)
+        level_ef_mask = v['ef_mask']
+
+        # 标准组合 - 随机点 (抽样)
+        scatter_points_data.append({
+            "data": df_level[~level_ef_mask].sample(n=min(2000, len(df_level[~level_ef_mask]))),
+            "name": f"{k}-随机点", "color": color, "size": 3, "opacity": 0.5,
+        })
+        # 标准组合 - 有效前沿
+        scatter_points_data.append({
+            "data": df_level[level_ef_mask],
+            "name": f"{k}-有效前沿", "color": color, "size": 3, "opacity": 0.9,
+        })
+
+    # c) 调用绘图函数
+    plot_efficient_frontier(
+        scatter_points_data,
+        title="各约束下的有效前沿对比",
+        x_axis_title=f"年化风险 ({RISK_METRIC.upper()})",
+        y_axis_title="年化收益率",
+        x_col="risk_arr",
+        y_col="ret_annual",
+        hover_text_col="hover_text",
+        output_filename=None
+    )
