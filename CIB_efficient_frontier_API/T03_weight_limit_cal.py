@@ -5,7 +5,6 @@
 @Author: Kevin-Chen
 @Descriptions: 权重约束计算
 """
-from typing import Any, Dict, Iterable, List, Tuple
 
 
 def level_weight_limit_cal(asset_list, level_limit):
@@ -134,4 +133,3 @@ if __name__ == '__main__':
     single_limit_hold, multi_limit_hold = hold_weight_limit_cal(the_asset_list, the_user_holding)
     print("客户持仓的单资产约束：", single_limit_hold)
     print("客户持仓的多资产约束：", multi_limit_hold)
-    
