@@ -1918,9 +1918,8 @@ if __name__ == "__main__":
         "enable": False,
         # 每个极端种子（例如 5 个大类 -> 5 个种子）生成多少权重
         "samples_per_seed": 100,
-        # 可选步长：未指定时默认采用第1轮 step_size（否则 0.3）
-        # "step_size": 0.3,
-        # 其他可选项：projector_iters/projector_tol/projector_damping/seed/parallel_workers/use_numba
+        # 可选步长
+        "step_size": 0.3,
     }
 
     # 风险度量与 VaR 参数
