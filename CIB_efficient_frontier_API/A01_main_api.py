@@ -69,12 +69,12 @@ if __name__ == '__main__':
         0: {
             "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
             # exploration 参数（当 init_mode=="exploration" 生效）：
-            "samples": 100,
+            "samples": 300,
             "step_size": 0.99,
             # solver 参数（当 init_mode=="solver" 生效）：
             "solver_params": {
-                "n_grid": 100,
-                "solver": "ECOS",  # ECOS/SCS/MOSEK
+                "n_grid": 300,
+                "solver": "SLSQP",  # ECOS/SCS/MOSEK/SLSQP
                 "ridge": 1e-8,
             },
         },
