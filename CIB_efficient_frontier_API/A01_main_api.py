@@ -130,7 +130,7 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
         lambda r: format_hover_text(r, f"标准-{r['name']}", asset_list), axis=1)
     scatter_points_data.append({
         "data": df_standard_points,
-        "name": "标准组合点", "color": "gold", "size": 8, "opacity": 1.0, "symbol": "star",
+        "name": "标准组合点", "color": "gold", "size": 12, "opacity": 1.0, "symbol": "star",
         "marker_line": dict(width=1, color='black')
     })
 
@@ -146,7 +146,7 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
         lambda r: format_hover_text(r, "客户当前持仓", asset_list), axis=1)
     scatter_points_data.append({
         "data": df_user_point,
-        "name": "客户当前持仓", "color": "cyan", "size": 9, "opacity": 1.0, "symbol": "diamond",
+        "name": "客户当前持仓", "color": "cyan", "size": 12, "opacity": 1.0, "symbol": "diamond",
         "marker_line": dict(width=1, color='black')
     })
     return scatter_points_data
