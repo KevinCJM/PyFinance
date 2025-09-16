@@ -308,17 +308,14 @@ def main(json_str, excel_path, excel_sheet):
     """
 
     ''' 1. 处理Json & 读取数据 ----------------------------------------------------------------------------------- '''
-    # 解析JSON配置并从Excel中读取资产数据
     (asset_list, draw_plt, draw_plt_filename, weight_range,
      returns) = analysis_json_and_read_data(json_str, excel_path, excel_sheet)
 
     ''' 2) 计算约束 ---------------------------------------------------------------------------------------------- '''
-    # 根据资产列表和权重范围计算单层与多层权重限制
     single_limit, multi_limit = level_weight_limit_cal(asset_list, weight_range)
     print(f"单层约束: {single_limit}; 多层约束: {multi_limit}")
 
     ''' 3) 计算两端风险水平 --------------------------------------------------------------------------------------- '''
-    # 步骤 1: 生成随机权重用于热启动
     print(f"\n步骤 1: 生成 {NUM_RANDOM_SAMPLES} 个随机权重用于热启动...")
     w_random = generate_weights_random_walk(
         N=len(asset_list),
@@ -330,28 +327,42 @@ def main(json_str, excel_path, excel_sheet):
     )
     print(f"生成了 {w_random.shape[0]} 个有效的随机权重。")
 
-    # 步骤 2: 从随机权重中寻找风险最大/最小的组合作为热启动点
     print("\n步骤 2: 从随机权重中寻找风险最大/最小的组合作为热启动点...")
     ret_annual_random, risk_arr_random, w0_min_risk, w0_max_risk = find_min_max_risk(
         w_random, returns, RISK_METRIC, TRADING_DAYS, VAR_PARAMS)
     print(
         f"最小风险热启动点 (风险={np.min(risk_arr_random):.4f}); 最大风险热启动点 (风险={np.max(risk_arr_random):.4f})")
 
-    # 步骤 3: 使用SLSQP优化器精确寻找风险边界
     print("\n步骤 3: 使用SLSQP优化器精确寻找风险边界...")
     res_min, res_max = use_optimizer(single_limit, multi_limit, returns,
                                      RISK_METRIC, VAR_PARAMS, TRADING_DAYS,
                                      w0_min_risk, w0_max_risk, asset_list)
 
     ''' 4) 绘图展示 ----------------------------------------------------------------------------------------------- '''
-    # 如果启用绘图功能，则调用绘图函数展示优化结果和随机采样点
     if draw_plt:
         draw_plt_func(res_min, res_max, returns, w_random, ret_annual_random,
                       risk_arr_random, asset_list, TRADING_DAYS, RISK_METRIC,
                       draw_plt_filename)
 
-    # 返回最小风险和最大风险组合的优化结果
-    return json.dumps({'min_risk': res_min, 'max_risk': res_max}, ensure_ascii=False)
+    # 构建可序列化的返回结果字典
+    result_to_serialize = {}
+    if res_min:
+        result_to_serialize['min_risk'] = {'risk_value': res_min.fun, 'weights': res_min.x.tolist()}
+    else:
+        result_to_serialize['min_risk'] = {
+            'success': False,
+            'message': "Optimization not run or failed."
+        }
+
+    if res_max:
+        result_to_serialize['max_risk'] = {'risk_value': -res_max.fun, 'weights': res_min.x.tolist()}
+    else:
+        result_to_serialize['max_risk'] = {
+            'success': False,
+            'message': "Optimization not run or failed."
+        }
+
+    return json.dumps(result_to_serialize, ensure_ascii=False)
 
 
 if __name__ == '__main__':
