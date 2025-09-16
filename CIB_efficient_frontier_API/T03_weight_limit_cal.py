@@ -38,17 +38,8 @@ def hold_weight_limit_cal(asset_list, user_holding):
     # multi_limit_res: Dict[Tuple[int, ...], Tuple[float, float]] = {}
     single_limit, multi_limit = [], {}
 
-    # 识别风险等级key
-    risk_level_key = None
-    for key in user_holding:
-        if key not in ['holding', 'can_sell', 'can_buy']:
-            risk_level_key = key
-            break
-    if not risk_level_key:
-        raise ValueError("在user_holding中找不到风险等级key")
-
-    level_limits = user_holding[risk_level_key]
-    holdings = user_holding['holding']
+    level_limits = user_holding['WeightRange']
+    holdings = user_holding['StandardProportion']
     can_sell_rules = user_holding['can_sell']
     can_buy_rules = user_holding['can_buy']
 
@@ -90,28 +81,27 @@ if __name__ == '__main__':
           }
     # 持仓组合
     the_user_holding = {
-        'C6': {  # 客户所属风险等级的标准组合上下限约束
-            '货币现金类': (0.00, 1.00),
-            '固定收益类': (0.00, 1.00),
-            '混合策略类': (0.00, 0.4),
-            '权益投资类': (0.00, 0.7),
-            '另类投资类': (0.00, 0.12)
-        },
-        'holding': {  # 客户的当前持仓
+        'WeightRange': {
+            '货币现金类': [0.0, 1.0],
+            '固定收益类': [0.0, 1.0],
+            '混合策略类': [0.0, 0.4],
+            '权益投资类': [0.0, 0.7],
+            '另类投资类': [0.0, 0.12]},
+        'StandardProportion': {
             '货币现金类': 0.1,
             '固定收益类': 0.2,
             '混合策略类': 0.2,
             '权益投资类': 0.4,
             '另类投资类': 0.1
         },
-        'can_sell': {  # 哪些大类持仓客户允许卖出
+        'can_sell': {
             '货币现金类': False,
             '固定收益类': True,
             '混合策略类': False,
             '权益投资类': True,
             '另类投资类': True
         },
-        'can_buy': {  # 哪些大类持仓客户允许买入
+        'can_buy': {
             '货币现金类': True,
             '固定收益类': True,
             '混合策略类': False,
