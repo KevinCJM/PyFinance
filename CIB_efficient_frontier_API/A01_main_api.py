@@ -7,11 +7,12 @@
 """
 import json
 import pandas as pd
-import plotly.colors
+import numpy as np
 
 from T04_show_plt import plot_efficient_frontier
 from T02_other_tools import load_returns_from_excel
-from T01_generate_random_weights import multi_level_random_walk_config
+from T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, \
+    compute_var_parametric_arrays
 from T03_weight_limit_cal import level_weight_limit_cal, hold_weight_limit_cal
 
 
@@ -20,8 +21,41 @@ def format_hover_text(row, title, a_list):
     text = f"<b>{title}</b><br>年化收益率: {row['ret_annual']:.2%}<br>年化风险: {row['risk_arr']:.2%}"
     text += "<br><br><b>--权重--</b><br>"
     for asset in a_list:
-        text += f"{asset}: {row[asset]:.2%}<br>"
+        if asset in row and pd.notna(row[asset]):
+            text += f"{asset}: {row[asset]:.2%}<br>"
     return text.strip('<br>')
+
+
+# 帮助函数：计算单个组合的指标
+def calculate_single_port_metrics(weights_array, daily_returns, annual_trading_days, risk_metric, var_params):
+    w_2d = weights_array.reshape(1, -1)
+
+    # 计算年化收益率 (口径与主流程保持一致，使用对数收益)
+    ret_annual_arr, vol_annual_arr = compute_perf_arrays(
+        port_daily=daily_returns,
+        portfolio_allocs=w_2d,
+        trading_days=annual_trading_days,
+        return_type="log"
+    )
+    annual_ret = ret_annual_arr[0]
+
+    # 根据风险度量选择计算方式
+    if (risk_metric or "vol").lower() == "var":
+        vp = var_params or {}
+        risk_arr = compute_var_parametric_arrays(
+            port_daily=daily_returns,
+            portfolio_allocs=w_2d,
+            confidence=float(vp.get("confidence", 0.95)),
+            horizon_days=float(vp.get("horizon_days", 1.0)),
+            return_type=str(vp.get("return_type", "log")),  # 使用 VAR_PARAMS 中定义的收益类型
+            ddof=int(vp.get("ddof", 1)),
+            clip_non_negative=bool(vp.get("clip_non_negative", True)),
+        )
+        annual_risk = risk_arr[0]
+    else:  # 'vol'
+        annual_risk = vol_annual_arr[0]
+
+    return annual_ret, annual_risk
 
 
 if __name__ == '__main__':
@@ -62,10 +96,18 @@ if __name__ == '__main__':
                 '货币现金类': 0.1, '固定收益类': 0.2, '混合策略类': 0.2, '权益投资类': 0.4, '另类投资类': 0.1
             },
             'can_sell': {
-                '货币现金类': False, '固定收益类': True, '混合策略类': False, '权益投资类': True, '另类投资类': True
+                '货币现金类': False,
+                '固定收益类': True,
+                '混合策略类': False,
+                '权益投资类': True,
+                '另类投资类': True
             },
             'can_buy': {
-                '货币现金类': True, '固定收益类': True, '混合策略类': False, '权益投资类': True, '另类投资类': False
+                '货币现金类': True,
+                '固定收益类': True,
+                '混合策略类': False,
+                '权益投资类': True,
+                '另类投资类': True
             }
         }
     }
@@ -80,21 +122,21 @@ if __name__ == '__main__':
     ROUNDS_CONFIG = {
         # 第0轮：初始化方式二选一：
         0: {
-            "init_mode": "solver",  # "exploration" 随机探索 或 "solver" 求解器
+            "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
             # exploration 参数（当 init_mode=="exploration" 生效）：
-            "samples": 300,
-            "step_size": 0.99,
+            "samples": 10000,
+            "step_size": 0.1,
             # solver 参数（当 init_mode=="solver" 生效）：
             "solver_params": {
-                "n_grid": 5000,
+                "n_grid": 1000,
                 "solver": "SLSQP",  # ECOS/SCS/MOSEK/SLSQP
                 "ridge": 1e-8,
             },
         },
-        1: {"samples_total": 1000, "step_size": 0.1, "vol_bins": 100, "parallel_workers": 100},
-        2: {"samples_total": 2000, "step_size": 0.8, "vol_bins": 200, "parallel_workers": 100},
-        3: {"samples_total": 3000, "step_size": 0.05, "vol_bins": 300, "parallel_workers": 100},
-        4: {"samples_total": 4000, "step_size": 0.01, "vol_bins": 400, "parallel_workers": 100},
+        1: {"samples_total": 10000, "step_size": 0.1, "vol_bins": 1000, "parallel_workers": 100},
+        2: {"samples_total": 20000, "step_size": 0.8, "vol_bins": 2000, "parallel_workers": 100},
+        3: {"samples_total": 30000, "step_size": 0.05, "vol_bins": 3000, "parallel_workers": 100},
+        4: {"samples_total": 40000, "step_size": 0.01, "vol_bins": 4000, "parallel_workers": 100},
     }
     TRADING_DAYS = 252.0  # 年化换算用交易天数
     DEDUP_DECIMALS = 2  # 在“权重去重”时对每行权重进行四舍五入保留的小数位数
@@ -128,8 +170,6 @@ if __name__ == '__main__':
     excel_path = '历史净值数据_万得指数.xlsx'
     excel_sheet = '历史净值数据'
     returns, assets = load_returns_from_excel(excel_path, excel_sheet, asset_list)
-    # 用于绘图的点云数据
-    scatter_points_data = list()
 
     ''' 2) 计算约束 ----------------------------------------------------------------------------------------------- '''
     # 计算标准组合的约束
@@ -204,6 +244,7 @@ if __name__ == '__main__':
         var_params=VAR_PARAMS,
         precision_choice=PRECISION_CHOICE,
     )
+    print(f"客户持仓组合的随机权重计算完成. 权重数: {W_hold.shape[0]}")
 
     ''' 6) 绘图展示 ------------------------------------------------------------------------------------------------- '''
     print("\n开始准备绘图数据...")
@@ -227,32 +268,72 @@ if __name__ == '__main__':
         "name": "无约束-有效前沿", "color": "black", "size": 3, "opacity": 0.9,
     })
 
-    # b) 处理各标准组合
-    level_colors = {
-        'C1': '#1f77b4', 'C2': '#ff7f0e', 'C3': 'grey',
-        'C4': 'green', 'C5': 'blue', 'C6': 'red'
-    }
-    for i, (k, v) in enumerate(random_weight_dict.items()):
-        color = level_colors[k]
+    # b) 处理各标准组合的 frontier
+    level_colors = {'C1': '#1f77b4', 'C2': '#ff7f0e', 'C3': 'grey', 'C4': 'green', 'C5': 'blue', 'C6': 'red'}
+    for k, v in random_weight_dict.items():
+        color = level_colors.get(k, 'black')
         df_level = pd.DataFrame(v['weights'], columns=asset_list)
         df_level['ret_annual'] = v['ret_annual']
         df_level['risk_arr'] = v['risk_arr']
-        df_level['hover_text'] = df_level.apply(
-            lambda r: format_hover_text(r, f"{k} 组合", asset_list), axis=1)
+        df_level['hover_text'] = df_level.apply(lambda r: format_hover_text(r, f"{k} 组合", asset_list), axis=1)
         level_ef_mask = v['ef_mask']
-
-        # 标准组合 - 随机点 (抽样)
         scatter_points_data.append({
             "data": df_level[~level_ef_mask].sample(n=min(2000, len(df_level[~level_ef_mask]))),
             "name": f"{k}-随机点", "color": color, "size": 3, "opacity": 0.5,
         })
-        # 标准组合 - 有效前沿
         scatter_points_data.append({
             "data": df_level[level_ef_mask],
             "name": f"{k}-有效前沿", "color": color, "size": 3, "opacity": 0.9,
         })
 
-    # c) 调用绘图函数
+    # c) 处理客户持仓组合的 frontier
+    df_hold = pd.DataFrame(W_hold, columns=asset_list)
+    df_hold['ret_annual'] = ret_annual_hold
+    df_hold['risk_arr'] = risk_arr_hold
+    df_hold['hover_text'] = df_hold.apply(lambda r: format_hover_text(r, "客户持仓约束", asset_list), axis=1)
+    scatter_points_data.append({
+        "data": df_hold[~ef_mask_hold].sample(n=min(2000, len(df_hold[~ef_mask_hold]))),
+        "name": "客户持仓-随机点", "color": "purple", "size": 3, "opacity": 0.5,
+    })
+    scatter_points_data.append({
+        "data": df_hold[ef_mask_hold],
+        "name": "客户持仓-有效前沿", "color": "purple", "size": 3, "opacity": 1.0,
+    })
+
+    # d) 处理标准组合点
+    standard_points = []
+    for name, w_dict in standard_proportion.items():
+        weights = np.array([w_dict.get(asset, 0.0) for asset in asset_list])
+        ret, risk = calculate_single_port_metrics(weights, returns, TRADING_DAYS, RISK_METRIC, VAR_PARAMS)
+        point_data = {'name': name, 'ret_annual': ret, 'risk_arr': risk}
+        for asset, w in w_dict.items():
+            point_data[asset] = w
+        standard_points.append(point_data)
+    df_standard_points = pd.DataFrame(standard_points)
+    df_standard_points['hover_text'] = df_standard_points.apply(
+        lambda r: format_hover_text(r, f"标准-{r['name']}", asset_list), axis=1)
+    scatter_points_data.append({
+        "data": df_standard_points,
+        "name": "标准组合点", "color": "gold", "size": 5, "opacity": 1.0, "symbol": "star",
+        "marker_line": dict(width=1, color='black')
+    })
+
+    # e) 处理客户当前持仓点
+    user_weights_dict = user_holding['StandardProportion']
+    user_weights_arr = np.array([user_weights_dict.get(asset, 0.0) for asset in asset_list])
+    user_ret, user_risk = calculate_single_port_metrics(user_weights_arr, returns, TRADING_DAYS, RISK_METRIC,
+                                                        VAR_PARAMS)
+    df_user_point_data = {'ret_annual': user_ret, 'risk_arr': user_risk, **user_weights_dict}
+    df_user_point = pd.DataFrame([df_user_point_data])
+    df_user_point['hover_text'] = df_user_point.apply(lambda r: format_hover_text(r, "客户当前持仓", asset_list),
+                                                      axis=1)
+    scatter_points_data.append({
+        "data": df_user_point,
+        "name": "客户当前持仓", "color": "cyan", "size": 5, "opacity": 1.0, "symbol": "diamond",
+        "marker_line": dict(width=1, color='black')
+    })
+
+    # f) 调用绘图函数
     plot_efficient_frontier(
         scatter_points_data,
         title="各约束下的有效前沿对比",
