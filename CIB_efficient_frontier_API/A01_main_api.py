@@ -6,6 +6,9 @@
 @Descriptions: 
 """
 import json
+from T02_other_tools import load_returns_from_excel
+from T01_generate_random_weights import multi_level_random_walk_config
+from T03_weight_limit_cal import level_weight_limit_cal, hold_weight_limit_cal
 
 if __name__ == '__main__':
     # 字典格式入参
@@ -52,26 +55,35 @@ if __name__ == '__main__':
         }
     }
 
-    # 字典转Json
+    ''' 0) 准备工作: 模拟json参数输入 & 模拟大类收益率输入 '''
+    # 字典转Json, 模拟输入的Json参数
     json_str = json.dumps(dict_input, ensure_ascii=False)
     print(json_str)
+    # 读取excel，生成日收益二维数组
+    excel_path = '历史净值数据_万得指数.xlsx'
+    excel_sheet = '历史净值数据'
+    returns, assets = load_returns_from_excel(excel_path, excel_sheet, asset_list)
+
+    ''' 1) 解析Json参数 '''
     # Json转字典
     dict_input = json.loads(json_str)
-    print(dict_input)
     # 分解参数
     asset_list = dict_input['asset_list']  # 大类列表
     weight_range = dict_input['WeightRange']  # 标准组合约束
     standard_proportion = dict_input['StandardProportion']  # 标准组合
-    user_holding = dict_input['user_holding']  # 持仓组合
-    user_holding_weight_range = user_holding['WeightRange']  # 客户所属风险等级的标准组合上下限约束
-    user_holding_standard_proportion = user_holding['StandardProportion']  # 客户的当前持仓
-    user_holding_can_sell = user_holding['can_sell']  # 哪些大类持仓客户允许卖出
-    user_holding_can_buy = user_holding['can_buy']  # 哪些大类持仓客户允许买入
-    print(asset_list)
-    print(weight_range)
-    print(standard_proportion)
-    print(user_holding)
-    print(user_holding_weight_range)
-    print(user_holding_standard_proportion)
-    print(user_holding_can_sell)
-    print(user_holding_can_buy)
+    user_holding = dict_input['user_holding']  # 客户持仓组合
+
+    ''' 2) 计算约束 '''
+    # 计算标准组合的约束
+    level_weight_limit = {}
+    for k, v in weight_range.items():
+        single_limit, multi_limit = level_weight_limit_cal(asset_list, v)
+        level_weight_limit[k] = {'single_limit': single_limit, 'multi_limit': multi_limit}
+    print("标准组合的约束：", level_weight_limit)
+    # 计算客户持仓的约束
+    single_limit_hold, multi_limit_hold = hold_weight_limit_cal(asset_list, user_holding)
+    hold_weight_limit = {'single_limit': single_limit_hold, 'multi_limit': multi_limit_hold}
+    print("客户持仓的约束：", hold_weight_limit)
+
+    ''' 3) 计算标准组合的随机权重和有效前沿 '''
+    # 循环计算各个标准组合的随机权重以及权重对应的收益率和波动率
