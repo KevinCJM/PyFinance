@@ -19,7 +19,7 @@ def level_weight_limit_cal(asset_list, level_limit):
     # single_limit_res: List[Tuple[float, float]] = [(0.0, 1.0)] * len(asset_list)
     # # 多资产联合约束（示例为空；可设如 {(0,1):(0.2,0.6)}）
     # multi_limit_res: Dict[Tuple[int, ...], Tuple[float, float]] = {}
-    single_limit = [level_limit[asset] for asset in asset_list]
+    single_limit = [(round(level_limit[asset][0], 4), round(level_limit[asset][1], 4)) for asset in asset_list]
     multi_limit = {}
     return single_limit, multi_limit
 
