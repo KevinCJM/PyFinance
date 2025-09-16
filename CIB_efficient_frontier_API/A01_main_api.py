@@ -210,6 +210,24 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
     return scatter_points_data
 
 
+# 解析Json参数 & 读取大类收益率
+def analysis_json_and_read_data(json_input, excel_name, sheet_name):
+    # Json转字典
+    json_dict = json.loads(json_input)
+    # 分解参数
+    asset_list = json_dict['asset_list']  # 大类列表
+    cal_market_ef = json_dict.get('cal_market_ef', None)  # 是否计算无约束的市场组合
+    draw_plt = json_dict.get('draw_plt', None)  # 是否绘图展示
+    draw_plt_filename = json_dict.get('draw_plt_filename', None)  # 绘图保存文件名, None表示不保存直接显示
+    weight_range = json_dict.get('WeightRange', None)  # 标准组合约束
+    standard_proportion = json_dict.get('StandardProportion', None)  # 标准组合
+    user_holding = json_dict.get('user_holding', None)  # 客户持仓组合
+    # 读取excel，生成日收益二维数组
+    returns, assets = load_returns_from_excel(excel_name, sheet_name, asset_list)
+    return (asset_list, cal_market_ef, draw_plt, draw_plt_filename,
+            weight_range, standard_proportion, user_holding, returns)
+
+
 if __name__ == '__main__':
     ''' 0) 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------- '''
     # 字典格式入参
@@ -271,31 +289,22 @@ if __name__ == '__main__':
     print(json_str)
 
     ''' 1) 解析Json参数 & 读取大类收益率 ----------------------------------------------------------------------------- '''
-    # Json转字典
-    dict_input = json.loads(json_str)
-    # 分解参数
-    asset_list = dict_input['asset_list']  # 大类列表
-    cal_market_ef = dict_input.get('cal_market_ef', None)  # 是否计算无约束的市场组合
-    draw_plt = dict_input.get('draw_plt', None)  # 是否绘图展示
-    draw_plt_filename = dict_input.get('draw_plt_filename', None)  # 绘图保存文件名, None表示不保存直接显示
-    weight_range = dict_input.get('WeightRange', None)  # 标准组合约束
-    standard_proportion = dict_input.get('StandardProportion', None)  # 标准组合
-    user_holding = dict_input.get('user_holding', None)  # 客户持仓组合
-    # 读取excel，生成日收益二维数组
     excel_path = '历史净值数据_万得指数.xlsx'
     excel_sheet = '历史净值数据'
-    returns, assets = load_returns_from_excel(excel_path, excel_sheet, asset_list)
+    (asset_list, cal_market_ef, draw_plt, draw_plt_filename, weight_range, standard_proportion,
+     user_holding, returns) = analysis_json_and_read_data(json_str, excel_path, excel_sheet)
 
     ''' 2) 计算约束 ----------------------------------------------------------------------------------------------- '''
     # 计算标准组合的约束
-    level_weight_limit = dict()
     if weight_range and standard_proportion:
+        level_weight_limit = dict()
         for k, v in weight_range.items():
             single_limit, multi_limit = level_weight_limit_cal(asset_list, v)
             level_weight_limit[k] = {'single_limit': single_limit, 'multi_limit': multi_limit}
         print("标准组合的约束：", level_weight_limit)
     else:
         print("无标准组合的约束输入，跳过约束计算。")
+        level_weight_limit = None
 
     # 计算客户持仓的约束
     if user_holding:
