@@ -1892,11 +1892,11 @@ if __name__ == "__main__":
         0: {
             "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
             # exploration 参数（当 init_mode=="exploration" 生效）：
-            "samples": 300,
+            "samples": 100,
             "step_size": 0.99,
             # solver 参数（当 init_mode=="solver" 生效）：
             "solver_params": {
-                "n_grid": 300,
+                "n_grid": 100,
                 "solver": "ECOS",  # ECOS/SCS/MOSEK
                 "ridge": 1e-8,
             },
@@ -1904,8 +1904,7 @@ if __name__ == "__main__":
         1: {"samples_total": 1000, "step_size": 0.1, "vol_bins": 100, "parallel_workers": 100},
         2: {"samples_total": 2000, "step_size": 0.8, "vol_bins": 200, "parallel_workers": 100},
         3: {"samples_total": 3000, "step_size": 0.05, "vol_bins": 300, "parallel_workers": 100},
-        4: {"samples_total": 4000, "step_size": 0.03, "vol_bins": 400, "parallel_workers": 100},
-        5: {"samples_total": 5000, "step_size": 0.01, "vol_bins": 500, "parallel_workers": 100},
+        4: {"samples_total": 4000, "step_size": 0.01, "vol_bins": 400, "parallel_workers": 100},
     }
     TRADING_DAYS = 252.0  # 年化换算用交易天数
     DEDUP_DECIMALS = 2  # 在“权重去重”时对每行权重进行四舍五入保留的小数位数
