@@ -451,3 +451,7 @@ if __name__ == '__main__':
     ''' 开始计算, 调用主程序 ------------------------------------------------------------------------------------- '''
     json_res = main(json_str, excel_path, excel_sheet)
     print("\n最终返回的结果 Json 字符串为：\n", json_res)
+
+    # 保存结果到文件
+    with open('result_A01_main_api.json', 'w', encoding='utf-8') as f:
+        f.write(json_res)
