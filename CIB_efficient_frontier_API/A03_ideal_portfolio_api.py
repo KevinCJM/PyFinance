@@ -686,4 +686,7 @@ if __name__ == '__main__':
         json_str = f.read()
     excel_path = '历史净值数据_万得指数.xlsx'
     excel_sheet = '历史净值数据'
-    print(main(json_str, excel_path, excel_sheet))
+
+    ''' 计算并输出结果 ------------------------------------------------------------------------------------------ '''
+    str_res = main(json_str, excel_path, excel_sheet)
+    print("\n最终返回的结果 Json 字符串为：\n", str_res)
