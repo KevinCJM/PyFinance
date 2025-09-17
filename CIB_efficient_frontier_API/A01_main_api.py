@@ -230,80 +230,50 @@ def analysis_json_and_read_data(json_input, excel_name, sheet_name):
 
 def main(json_input, excel_name, sheet_name):
     """
+    主函数，用于执行完整的投资组合风险分析流程。包括解析JSON配置、读取Excel数据、计算权重约束、
+    寻找最小和最大风险组合，并可选地绘制风险收益图。
 
-    :param json_input:
-    :param excel_name:
-    :param sheet_name:
-    :return:
+    :param json_input: str, 包含资产配置和分析参数的JSON字符串
+    :param excel_path: str, Excel文件路径，包含历史收益率等数据
+    :param excel_sheet: str, Excel工作表名称，用于读取数据
+    :return: str, 包含计算结果或错误信息的JSON字符串
     """
-    # 存储结果
-    res_dict = dict()
+    try:
+        # 存储结果
+        res_dict = dict()
 
-    ''' 1) 解析Json参数 & 读取大类收益率 ----------------------------------------------------------------------------- '''
-    (asset_list, cal_market_ef, draw_plt, draw_plt_filename, weight_range, standard_proportion,
-     user_holding, returns) = analysis_json_and_read_data(json_input, excel_name, sheet_name)
+        ''' 1) 解析Json参数 & 读取大类收益率 ----------------------------------------------------------------------------- '''
+        (asset_list, cal_market_ef, draw_plt, draw_plt_filename, weight_range, standard_proportion,
+         user_holding, returns) = analysis_json_and_read_data(json_input, excel_name, sheet_name)
 
-    ''' 2) 计算约束 ----------------------------------------------------------------------------------------------- '''
-    # 计算标准组合的约束
-    if weight_range and standard_proportion:
-        level_weight_limit = dict()
-        for k, v in weight_range.items():
-            single_limit, multi_limit = level_weight_limit_cal(asset_list, v)
-            level_weight_limit[k] = {'single_limit': single_limit, 'multi_limit': multi_limit}
-        print("标准组合的约束：", level_weight_limit)
-    else:
-        print("无标准组合的约束输入，跳过约束计算。")
+        ''' 2) 计算约束 ----------------------------------------------------------------------------------------------- '''
         level_weight_limit = None
+        if weight_range and standard_proportion:
+            level_weight_limit = dict()
+            for k, v in weight_range.items():
+                single_limit, multi_limit = level_weight_limit_cal(asset_list, v)
+                level_weight_limit[k] = {'single_limit': single_limit, 'multi_limit': multi_limit}
+            print("标准组合的约束：", level_weight_limit)
+        else:
+            print("无标准组合的约束输入，跳过约束计算。")
 
-    # 计算客户持仓的约束
-    if user_holding:
-        single_limit_hold, multi_limit_hold = hold_weight_limit_cal(asset_list, user_holding)
-        hold_weight_limit = {'single_limit': single_limit_hold, 'multi_limit': multi_limit_hold}
-        print("客户持仓的约束：", hold_weight_limit)
-    else:
-        print("无客户持仓的约束输入，跳过约束计算。")
-        single_limit_hold = multi_limit_hold = None
+        single_limit_hold, multi_limit_hold = (None, None)
+        if user_holding:
+            single_limit_hold, multi_limit_hold = hold_weight_limit_cal(asset_list, user_holding)
+            hold_weight_limit = {'single_limit': single_limit_hold, 'multi_limit': multi_limit_hold}
+            print("客户持仓的约束：", hold_weight_limit)
+        else:
+            print("无客户持仓的约束输入，跳过约束计算。")
 
-    ''' 3) 计算无约束的市场组合的随机权重和有效前沿 --------------------------------------------------------------------- '''
-    if cal_market_ef:
-        single_limit = [(0.0, 1.0)] * len(asset_list)
-        print(f"计算无约束的市场组合随机权重. 单资产约束: {single_limit}")
-        (W_unc, ret_annual_unc, risk_arr_unc, ef_mask_unc) = multi_level_random_walk_config(
-            port_daily_returns=returns,
-            single_limits=single_limit,
-            multi_limits={},
-            rounds_config=ROUNDS_CONFIG,
-            dedup_decimals=DEDUP_DECIMALS,
-            annual_trading_days=TRADING_DAYS,
-            global_seed=RANDOM_SEED,
-            extreme_seed_config=EXTREME_SEED_CONFIG,
-            risk_metric=RISK_METRIC,
-            var_params=VAR_PARAMS,
-            precision_choice=PRECISION_CHOICE,
-        )
-        print(f"无约束市场组合的随机权重计算完成. 权重数: {W_unc.shape[0]}")
-        res_dict['market'] = {
-            'weights': W_unc.tolist(),
-            'ret_annual': ret_annual_unc.tolist(),
-            'risk_arr': risk_arr_unc.tolist(),
-            'ef_mask': ef_mask_unc.tolist(),
-        }
-    else:
-        print("无需计算无无约束市场组合的有效前沿和配置空间")
-        W_unc = ret_annual_unc = risk_arr_unc = ef_mask_unc = None
-
-    ''' 4) 计算标准组合的随机权重和有效前沿 ---------------------------------------------------------------------------- '''
-    random_weight_dict = dict()
-    if weight_range and standard_proportion:
-        # 循环计算各个标准组合的随机权重以及权重对应的收益率和波动率
-        for k, v in level_weight_limit.items():
-            single_limit = v['single_limit']
-            multi_limit = v['multi_limit']
-            print(f"计算标准组合 {k} 的随机权重. 单资产约束: {single_limit}; 多资产约束: {multi_limit}")
-            (W, ret_annual, risk_arr, ef_mask) = multi_level_random_walk_config(
+        ''' 3) 计算无约束的市场组合的随机权重和有效前沿 --------------------------------------------------------------------- '''
+        W_unc, ret_annual_unc, risk_arr_unc, ef_mask_unc = (None, None, None, None)
+        if cal_market_ef:
+            single_limit = [(0.0, 1.0)] * len(asset_list)
+            print(f"计算无约束的市场组合随机权重. 单资产约束: {single_limit}")
+            (W_unc, ret_annual_unc, risk_arr_unc, ef_mask_unc) = multi_level_random_walk_config(
                 port_daily_returns=returns,
                 single_limits=single_limit,
-                multi_limits=multi_limit,
+                multi_limits={},
                 rounds_config=ROUNDS_CONFIG,
                 dedup_decimals=DEDUP_DECIMALS,
                 annual_trading_days=TRADING_DAYS,
@@ -313,76 +283,148 @@ def main(json_input, excel_name, sheet_name):
                 var_params=VAR_PARAMS,
                 precision_choice=PRECISION_CHOICE,
             )
-            random_weight_dict[k] = {
-                'weights': W.tolist(),
-                'ret_annual': ret_annual.tolist(),
-                'risk_arr': risk_arr.tolist(),
-                'ef_mask': ef_mask.tolist()
+            print(f"无约束市场组合的随机权重计算完成. 权重数: {W_unc.shape[0]}")
+            res_dict['market'] = {
+                'weights': W_unc.tolist(),
+                'ret_annual': ret_annual_unc.tolist(),
+                'risk_arr': risk_arr_unc.tolist(),
+                'ef_mask': ef_mask_unc.tolist(),
             }
-            print(f"标准组合 {k} 的随机权重计算完成. 权重数: {W.shape[0]}")
-        # 存储结果
-        res_dict['standard'] = random_weight_dict
-    else:
-        print("无标准组合的相关输入，跳过计算有效前沿和可配置空间。")
-
-    ''' 5) 计算客户持仓的随机权重和有效前沿 ----------------------------------------------------------------------------- '''
-    if user_holding:
-        print(f"计算客户持仓组合的随机权重. 单资产约束: {single_limit_hold}; 多资产约束: {multi_limit_hold}")
-        (W_hold, ret_annual_hold, risk_arr_hold, ef_mask_hold) = multi_level_random_walk_config(
-            port_daily_returns=returns,
-            single_limits=single_limit_hold,
-            multi_limits=multi_limit_hold,
-            rounds_config=ROUNDS_CONFIG,
-            dedup_decimals=DEDUP_DECIMALS,
-            annual_trading_days=TRADING_DAYS,
-            global_seed=RANDOM_SEED,
-            extreme_seed_config=EXTREME_SEED_CONFIG,
-            risk_metric=RISK_METRIC,
-            var_params=VAR_PARAMS,
-            precision_choice=PRECISION_CHOICE,
-        )
-        print(f"客户持仓组合的随机权重计算完成. 权重数: {W_hold.shape[0]}")
-        res_dict['user'] = {
-            'weights': W_hold.tolist(),
-            'ret_annual': ret_annual_hold.tolist(),
-            'risk_arr': risk_arr_hold.tolist(),
-            'ef_mask': ef_mask_hold.tolist(),
-        }
-    else:
-        print("无客户持仓的相关输入，跳过计算有效前沿和可配置空间。")
-        W_hold = ret_annual_hold = risk_arr_hold = ef_mask_hold = None
-
-    ''' 6) 绘图展示 ------------------------------------------------------------------------------------------------- '''
-    if draw_plt:
-        print("\n开始准备绘图数据...")
-        # 颜色映射
-        level_colors = {'C1': '#1f77b4', 'C2': '#ff7f0e', 'C3': 'grey', 'C4': 'green', 'C5': 'blue', 'C6': 'red'}
-        # 创建绘图数据
-        scatter_points_data = create_scatter_point_data(asset_list, W_unc, ret_annual_unc,
-                                                        risk_arr_unc, ef_mask_unc,
-                                                        level_colors, random_weight_dict,
-                                                        W_hold, ret_annual_hold,
-                                                        risk_arr_hold, standard_proportion,
-                                                        ef_mask_hold, user_holding,
-                                                        returns, TRADING_DAYS,
-                                                        VAR_PARAMS, RISK_METRIC)
-        # 调用绘图函数
-        if len(scatter_points_data) > 0:
-            plot_efficient_frontier(
-                scatter_points_data,
-                title="各约束下的有效前沿对比",
-                x_axis_title=f"年化风险 ({RISK_METRIC.upper()})",
-                y_axis_title="年化收益率",
-                x_col="risk_arr",
-                y_col="ret_annual",
-                hover_text_col="hover_text",
-                output_filename=draw_plt_filename
-            )
         else:
-            print("无有效前沿数据，无法绘图。")
-    else:
-        print("无需绘图展示。")
-    return json.dumps(res_dict, ensure_ascii=False)
+            print("无需计算无约束市场组合的有效前沿和配置空间")
+
+        ''' 4) 计算标准组合的随机权重和有效前沿 ------------------------------------------------------------------------ '''
+        random_weight_dict = dict()
+        if level_weight_limit:
+            for k, v in level_weight_limit.items():
+                single_limit = v['single_limit']
+                multi_limit = v['multi_limit']
+                print(f"计算标准组合 {k} 的随机权重. 单资产约束: {single_limit}; 多资产约束: {multi_limit}")
+                (W, ret_annual, risk_arr, ef_mask) = multi_level_random_walk_config(
+                    port_daily_returns=returns,
+                    single_limits=single_limit,
+                    multi_limits=multi_limit,
+                    rounds_config=ROUNDS_CONFIG,
+                    dedup_decimals=DEDUP_DECIMALS,
+                    annual_trading_days=TRADING_DAYS,
+                    global_seed=RANDOM_SEED,
+                    extreme_seed_config=EXTREME_SEED_CONFIG,
+                    risk_metric=RISK_METRIC,
+                    var_params=VAR_PARAMS,
+                    precision_choice=PRECISION_CHOICE,
+                )
+                random_weight_dict[k] = {
+                    'weights': W.tolist(),
+                    'ret_annual': ret_annual.tolist(),
+                    'risk_arr': risk_arr.tolist(),
+                    'ef_mask': ef_mask.tolist()
+                }
+                print(f"标准组合 {k} 的随机权重计算完成. 权重数: {W.shape[0]}")
+            res_dict['standard'] = random_weight_dict
+        else:
+            print("无标准组合的相关输入，跳过计算有效前沿和可配置空间。")
+
+        ''' 5) 计算客户持仓的随机权重和有效前沿 ------------------------------------------------------------------------ '''
+        W_hold, ret_annual_hold, risk_arr_hold, ef_mask_hold = (None, None, None, None)
+        if user_holding and single_limit_hold:
+            print(f"计算客户持仓组合的随机权重. 单资产约束: {single_limit_hold}; 多资产约束: {multi_limit_hold}")
+            (W_hold, ret_annual_hold, risk_arr_hold, ef_mask_hold) = multi_level_random_walk_config(
+                port_daily_returns=returns,
+                single_limits=single_limit_hold,
+                multi_limits=multi_limit_hold,
+                rounds_config=ROUNDS_CONFIG,
+                dedup_decimals=DEDUP_DECIMALS,
+                annual_trading_days=TRADING_DAYS,
+                global_seed=RANDOM_SEED,
+                extreme_seed_config=EXTREME_SEED_CONFIG,
+                risk_metric=RISK_METRIC,
+                var_params=VAR_PARAMS,
+                precision_choice=PRECISION_CHOICE,
+            )
+            print(f"客户持仓组合的随机权重计算完成. 权重数: {W_hold.shape[0]}")
+            res_dict['user'] = {
+                'weights': W_hold.tolist(),
+                'ret_annual': ret_annual_hold.tolist(),
+                'risk_arr': risk_arr_hold.tolist(),
+                'ef_mask': ef_mask_hold.tolist(),
+            }
+        else:
+            print("无客户持仓的相关输入，跳过计算有效前沿和可配置空间。")
+
+        ''' 6) 绘图展示 -------------------------------------------------------------------------------------------- '''
+        if draw_plt:
+            print("\n开始准备绘图数据...")
+            level_colors = {'C1': '#1f77b4', 'C2': '#ff7f0e', 'C3': 'grey', 'C4': 'green', 'C5': 'blue', 'C6': 'red'}
+            scatter_points_data = create_scatter_point_data(asset_list, W_unc, ret_annual_unc,
+                                                            risk_arr_unc, ef_mask_unc,
+                                                            level_colors, random_weight_dict,
+                                                            W_hold, ret_annual_hold,
+                                                            risk_arr_hold, standard_proportion,
+                                                            ef_mask_hold, user_holding,
+                                                            returns, TRADING_DAYS,
+                                                            VAR_PARAMS, RISK_METRIC)
+            if len(scatter_points_data) > 0:
+                plot_efficient_frontier(
+                    scatter_points_data,
+                    title="各约束下的有效前沿对比",
+                    x_axis_title=f"年化风险 ({RISK_METRIC.upper()})",
+                    y_axis_title="年化收益率",
+                    x_col="risk_arr",
+                    y_col="ret_annual",
+                    hover_text_col="hover_text",
+                    output_filename=draw_plt_filename
+                )
+            else:
+                print("无有效前沿数据，无法绘图。")
+        else:
+            print("无需绘图展示。")
+
+        # 封装成功响应
+        success_response = {
+            "success": True,
+            "data": res_dict
+        }
+        return json.dumps(success_response, ensure_ascii=False)
+
+    except json.JSONDecodeError as e:
+        error_response = {
+            "success": False,
+            "error_code": "INVALID_JSON_INPUT",
+            "message": f"请求的JSON格式错误: {e}"
+        }
+        return json.dumps(error_response, ensure_ascii=False)
+
+    except (KeyError, TypeError) as e:
+        error_response = {
+            "success": False,
+            "error_code": "MISSING_OR_INVALID_FIELD",
+            "message": f"输入数据中缺少必需的字段或字段类型错误: {e}"
+        }
+        return json.dumps(error_response, ensure_ascii=False)
+
+    except FileNotFoundError as e:
+        error_response = {
+            "success": False,
+            "error_code": "DATA_FILE_NOT_FOUND",
+            "message": f"服务器端数据文件未找到: {e.filename}"
+        }
+        return json.dumps(error_response, ensure_ascii=False)
+
+    except ValueError as e:
+        error_response = {
+            "success": False,
+            "error_code": "INVALID_DATA_OR_CONFIG",
+            "message": f"数据或配置无效: {e}"
+        }
+        return json.dumps(error_response, ensure_ascii=False)
+
+    except Exception as e:
+        error_response = {
+            "success": False,
+            "error_code": "INTERNAL_SERVER_ERROR",
+            "message": f"计算过程中发生未知错误: {type(e).__name__} - {e}"
+        }
+        return json.dumps(error_response, ensure_ascii=False)
 
 
 if __name__ == '__main__':

@@ -2116,4 +2116,6 @@ if __name__ == '__main__':
     (asset_list, draw_plt, draw_plt_filename, user_holding, ef_data,
      returns) = analysis_json_and_read_data(json_str, excel_path, excel_sheet)
 
-    ''' 2. 读取数据，计算收益率矩阵 -------------------------------------------------------------------------------- '''
+    ''' 2) 计算约束 ---------------------------------------------------------------------------------------------- '''
+    single_limit, multi_limit = level_weight_limit_cal(asset_list, weight_range)
+    print(f"单层约束: {single_limit}; 多层约束: {multi_limit}")
