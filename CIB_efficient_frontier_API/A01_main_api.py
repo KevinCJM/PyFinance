@@ -468,16 +468,16 @@ if __name__ == '__main__':
                 '货币现金类': 0.1, '固定收益类': 0.2, '混合策略类': 0.2, '权益投资类': 0.4, '另类投资类': 0.1
             },
             'can_sell': {
-                '货币现金类': False,
-                '固定收益类': True,
-                '混合策略类': False,
+                '货币现金类': True,
+                '固定收益类': False,
+                '混合策略类': True,
                 '权益投资类': True,
                 '另类投资类': True
             },
             'can_buy': {
                 '货币现金类': True,
                 '固定收益类': True,
-                '混合策略类': False,
+                '混合策略类': True,
                 '权益投资类': True,
                 '另类投资类': True
             }
@@ -492,7 +492,7 @@ if __name__ == '__main__':
 
     ''' 开始计算, 调用主程序 ------------------------------------------------------------------------------------- '''
     json_res = main(json_str, excel_path, excel_sheet)
-    print("\n最终返回的结果 Json 字符串为：\n", json_res)
+    # print("\n最终返回的结果 Json 字符串为：\n", json_res)
 
     # 保存结果到文件
     with open('result_A01_main_api.json', 'w', encoding='utf-8') as f:
