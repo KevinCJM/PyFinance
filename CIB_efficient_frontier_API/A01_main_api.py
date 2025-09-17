@@ -117,12 +117,12 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
         # 无约束 - 随机点 (抽样以避免浏览器卡顿)
         scatter_points_data.append({
             "data": df_unc,
-            "name": "无约束-随机点", "color": "black", "size": 3, "opacity": 0.5,
+            "name": "无约束-随机点", "color": "black", "size": 2, "opacity": 0.2,
         })
         # 无约束 - 有效前沿
         scatter_points_data.append({
             "data": df_unc[ef_mask_unc],
-            "name": "无约束-有效前沿", "color": "black", "size": 3, "opacity": 0.9,
+            "name": "无约束-有效前沿", "color": "blue", "size": 3, "opacity": 0.8,
         })
     else:
         print("没有无约束组合的权重数据，跳过无约束组合的绘图处理。")
@@ -157,11 +157,11 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
             lambda r: format_hover_text(r, "客户持仓约束", asset_list), axis=1)
         scatter_points_data.append({
             "data": df_hold,
-            "name": "客户持仓-随机点", "color": "purple", "size": 3, "opacity": 0.5,
+            "name": "客户持仓-随机点", "color": "purple", "size": 2, "opacity": 0.2,
         })
         scatter_points_data.append({
             "data": df_hold[ef_mask_hold],
-            "name": "客户持仓-有效前沿", "color": "purple", "size": 3, "opacity": 1.0,
+            "name": "客户持仓-有效前沿", "color": "red", "size": 3, "opacity": 0.8,
         })
     else:
         print("没有客户持仓组合的权重数据，跳过客户持仓组合的绘图处理。")
@@ -436,7 +436,7 @@ if __name__ == '__main__':
         ],
         'cal_market_ef': True,  # 是否计算无约束的市场组合
         'draw_plt': True,  # 是否绘图展示
-        'draw_plt_filename': None,  # 绘图保存文件名，None表示不保存直接显示
+        'draw_plt_filename': 'test.html',  # 绘图保存文件名，None表示不保存直接显示
         'WeightRange': {
             'C1': {'货币现金类': [1.0, 1.0], '固定收益类': [0.0, 0.0], '混合策略类': [0.0, 0.0],
                    '权益投资类': [0.0, 0.0], '另类投资类': [0.0, 0.0]},

@@ -13,7 +13,7 @@ from scipy.optimize import minimize
 from T04_show_plt import plot_efficient_frontier
 from T02_other_tools import load_returns_from_excel
 from T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
-from T03_weight_limit_cal import level_weight_limit_cal
+from T03_weight_limit_cal import hold_weight_limit_cal
 from T01_generate_random_weights import generate_weights_random_walk
 
 
@@ -2117,5 +2117,7 @@ if __name__ == '__main__':
      returns) = analysis_json_and_read_data(json_str, excel_path, excel_sheet)
 
     ''' 2) 计算约束 ---------------------------------------------------------------------------------------------- '''
-    single_limit, multi_limit = level_weight_limit_cal(asset_list, weight_range)
+    single_limit, multi_limit = hold_weight_limit_cal(asset_list, user_holding)
     print(f"单层约束: {single_limit}; 多层约束: {multi_limit}")
+
+    ''' 3) 计算推荐组合配置方案 ------------------------------------------------------------------------------------ '''
