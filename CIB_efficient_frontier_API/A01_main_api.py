@@ -5,6 +5,7 @@
 @Author: Kevin-Chen
 @Descriptions: 
 """
+import time
 import json
 import pandas as pd
 import numpy as np
@@ -22,7 +23,7 @@ RANDOM_SEED = 12345
 ROUNDS_CONFIG = {
     # 第0轮：初始化方式二选一：
     0: {
-        "init_mode": "exploration",  # "exploration" 随机探索 或 "solver" 求解器
+        "init_mode": "solver",  # "exploration" 随机探索 或 "solver" 求解器
         # exploration 参数（当 init_mode=="exploration" 生效）：
         "samples": 1000,
         "step_size": 0.1,
@@ -56,9 +57,9 @@ VAR_PARAMS = {
     "clip_non_negative": True,  # 对“无下跌”情形，VaR 取 0
 }
 # 权重精度（量化）选择：'0.1%'、'0.2%'、'0.5%' 或 None（不量化）
-PRECISION_CHOICE: str | None = None
+PRECISION_CHOICE: str | None = '0.1%'
 # SLSQP 最终精炼参数
-SLSQP_REFINE = {"enable": True, "n_grid": 1000}
+SLSQP_REFINE = {"enable": False, "n_grid": 1000}
 
 
 # 帮助函数：生成悬停文本
@@ -494,8 +495,10 @@ if __name__ == '__main__':
     print(json_str)
 
     ''' 开始计算, 调用主程序 ------------------------------------------------------------------------------------- '''
+    s_t = time.time()
     json_res = main(json_str, excel_path, excel_sheet)
     # print("\n最终返回的结果 Json 字符串为：\n", json_res)
+    print(f"\n计算总耗时: {time.time() - s_t:.2f} 秒")
 
     # 保存结果到文件
     with open('result_A01_main_api.json', 'w', encoding='utf-8') as f:
