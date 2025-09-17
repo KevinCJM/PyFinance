@@ -218,12 +218,12 @@ if __name__ == '__main__':
     hist_perf['Sharpe Ratio'] = hist_perf['Annual Return'] / hist_perf['Annual Volatility']
     hist_perf['VaR95'] = hist_perf['Annual Return'] - hist_perf['Annual Volatility'] * VaR95
 
-    # =========================== 分层网格搜索：10 -> 20 -> 50 -> 100 ===========================
+    # =========================== 分层网格搜索：100 -> 20 -> 50 -> 100 ===========================
 
-    # # 第一层：10% 精度
+    # # 第一层：1% 精度
     print("\nLayer 1: 10% precision (resolution=10)")
     start_time = time.time()
-    w_r10 = generate_simplex_grid(n_assets=5, resolution=10)
+    w_r10 = generate_simplex_grid(n_assets=5, resolution=100)
     print(f"Generated {len(w_r10):,} weight combinations")
     r10, best_r10 = find_best(w_r10)
     time_r10 = time.time() - start_time
