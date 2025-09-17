@@ -40,24 +40,24 @@ if __name__ == '__main__':
         'draw_plt': True,  # 是否绘图展示
         'draw_plt_filename': None,  # 绘图保存文件名，None表示不保存直接显示
         'user_holding': {
-            'WeightRange': {  # 用户所属的风险等级对应的各资产权重上下限
+            'WeightRange': {
                 '货币现金类': [0.0, 1.0], '固定收益类': [0.0, 1.0], '混合策略类': [0.0, 0.4],
                 '权益投资类': [0.0, 0.7], '另类投资类': [0.0, 0.12]
             },
-            'StandardProportion': {  # 用户当前持仓
+            'StandardProportion': {
                 '货币现金类': 0.1, '固定收益类': 0.2, '混合策略类': 0.2, '权益投资类': 0.4, '另类投资类': 0.1
             },
-            'can_sell': {  # 能否卖出
-                '货币现金类': False,
-                '固定收益类': True,
-                '混合策略类': False,
+            'can_sell': {
+                '货币现金类': True,
+                '固定收益类': False,
+                '混合策略类': True,
                 '权益投资类': True,
                 '另类投资类': True
             },
-            'can_buy': {  # 能否买入
+            'can_buy': {
                 '货币现金类': True,
                 '固定收益类': True,
-                '混合策略类': False,
+                '混合策略类': True,
                 '权益投资类': True,
                 '另类投资类': True
             }
