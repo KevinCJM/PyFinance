@@ -564,117 +564,110 @@ def _make_scatter_data(
     return scatter
 
 
-if __name__ == '__main__':
-    ''' 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------ '''
-    # 读json文件
-    with open('A03_input.json', 'r', encoding='utf-8') as f:
-        json_str = f.read()
-    # excel信息
-    excel_path = '历史净值数据_万得指数.xlsx'
-    excel_sheet = '历史净值数据'
-    print(json_str)
+def main(json_input: str, excel_name: str, sheet_name: str) -> str:
+    try:
+        # 1) 解析参数 & 读取数据 -------------------------------------------------------------------------------------
+        (asset_list, draw_plt, draw_plt_filename, user_holding, ef_data,
+         returns, refine_ef_before_select) = analysis_json_and_read_data(
+            json_input, excel_name, sheet_name)
 
-    ''' 1. 解析json参数 & 读取excel数据 --------------------------------------------------------------------------- '''
-    (asset_list, draw_plt, draw_plt_filename, user_holding, ef_data,
-     returns, refine_ef_before_select) = analysis_json_and_read_data(json_str, excel_path, excel_sheet)
+        # 2) 计算约束 -----------------------------------------------------------------------------------------------
+        single_limit, multi_limit = hold_weight_limit_cal(asset_list, user_holding)
 
-    ''' 2) 计算约束 ---------------------------------------------------------------------------------------------- '''
-    single_limit, multi_limit = hold_weight_limit_cal(asset_list, user_holding)
-    print(f"单层约束: {single_limit}; 多层约束: {multi_limit}")
+        # 3) 基于EF输入与SLSQP热启动计算点 -----------------------------------------------------------------------------
+        W_seed = np.asarray(ef_data.get("weights", []), dtype=float)
+        if W_seed.ndim != 2 or W_seed.shape[1] != len(asset_list):
+            raise ValueError("ef_data['weights'] 维度不正确或与资产列表不匹配")
 
-    ''' 3) 基于EF输入与SLSQP热启动，计算推荐点 --------------------------------------------------------------- '''
-    # EF 输入（种子）
-    W_seed = np.asarray(ef_data.get("weights", []), dtype=float)
-    if W_seed.ndim != 2 or W_seed.shape[1] != len(asset_list):
-        raise ValueError("ef_data['weights'] 维度不正确或与资产列表不匹配")
-
-    # 先计算种子的风险，用于热启动
-    ret_seed, vol_seed = compute_perf_arrays(returns, W_seed, trading_days=TRADING_DAYS, return_type="log")
-    if RISK_METRIC == "vol":
-        risk_seed = vol_seed
-    else:
-        risk_seed = compute_var_parametric_arrays(
-            returns, W_seed, confidence=VAR_PARAMS["confidence"], horizon_days=VAR_PARAMS["horizon_days"],
+        ret_seed, vol_seed = compute_perf_arrays(
+            returns, W_seed, trading_days=TRADING_DAYS, return_type="log")
+        risk_seed = vol_seed if RISK_METRIC == "vol" else compute_var_parametric_arrays(
+            returns, W_seed,
+            confidence=VAR_PARAMS["confidence"], horizon_days=VAR_PARAMS["horizon_days"],
             return_type=VAR_PARAMS["return_type"], ddof=VAR_PARAMS["ddof"],
             clip_non_negative=VAR_PARAMS["clip_non_negative"],
         )
+        W_ef = W_seed
+        # 当前持仓
+        w_user = np.array([user_holding["StandardProportion"].get(a, 0.0) for a in asset_list], dtype=float)
+        met_user = compute_point_metrics(returns, w_user)
+        user_point = {"weights": w_user.tolist(), **met_user}
 
-    # 不再精炼有效前沿：直接使用传入的 EF 点集作为热启动与展示基线
-    W_ef = W_seed
+        # 3.1 同收益最小风险 -----------------------------------------------------------------------------------------
+        w0_same_ret = _select_hot_start_by_target(W_ef, met_user["ret_annual"], returns, mode="ret")
+        res_same_ret_x = solve_same_return_min_risk(returns, single_limit, multi_limit,
+                                                    met_user["ret_annual"], w0_same_ret)
+        met_same_ret = compute_point_metrics(returns, res_same_ret_x, w_user)
+        p_same_ret = {"weights": res_same_ret_x.tolist(), **met_same_ret}
 
-    # 3.1 当前持仓点
-    w_user = np.array([user_holding["StandardProportion"].get(a, 0.0) for a in asset_list], dtype=float)
-    met_user = compute_point_metrics(returns, w_user)
-    ret_user, risk_user = met_user["ret_annual"], met_user["risk_value"]
-    user_point = {"weights": w_user.tolist(), **met_user}
+        # 3.2 同风险最大收益 -----------------------------------------------------------------------------------------
+        w0_same_risk = _select_hot_start_by_target(W_ef, met_user["risk_value"], returns, mode="risk")
+        res_same_risk_x = solve_same_risk_max_return(
+            returns, single_limit, multi_limit, met_user["risk_value"], w0_same_risk)
+        met_same_risk = compute_point_metrics(returns, res_same_risk_x, w_user)
+        p_same_risk = {"weights": res_same_risk_x.tolist(), **met_same_risk}
 
-    # 公共约束
-    bounds, base_cons = _build_constraints(single_limit, multi_limit)
-
-    # 3.2 同收益最小风险（热启动：按收益最近的EF点）
-    w0_same_ret = _select_hot_start_by_target(W_ef, ret_user, returns, mode="ret")
-    res_same_ret_x = solve_same_return_min_risk(returns, single_limit, multi_limit, ret_user, w0_same_ret)
-    ret_same_ret = _ann_log_ret_func(returns, res_same_ret_x)
-    risk_same_ret = _risk_func(returns, res_same_ret_x, risk_metric=RISK_METRIC, var_params=VAR_PARAMS)
-    p_same_ret = {
-        "weights": res_same_ret_x.tolist(),
-        "ret_annual": ret_same_ret,
-        "risk_value": risk_same_ret,
-        "turnover_l1_half": float(np.abs(res_same_ret_x - w_user).sum() * 0.5),
-    }
-
-    # 3.3 同风险最大收益（热启动：按风险最近的EF点）
-    w0_same_risk = _select_hot_start_by_target(W_ef, risk_user, returns, mode="risk")
-    res_same_risk_x = solve_same_risk_max_return(returns, single_limit, multi_limit, risk_user, w0_same_risk)
-    ret_same_risk = _ann_log_ret_func(returns, res_same_risk_x)
-    risk_same_risk = _risk_func(returns, res_same_risk_x, risk_metric=RISK_METRIC, var_params=VAR_PARAMS)
-    p_same_risk = {
-        "weights": res_same_risk_x.tolist(),
-        "ret_annual": ret_same_risk,
-        "risk_value": risk_same_risk,
-        "turnover_l1_half": float(np.abs(res_same_risk_x - w_user).sum() * 0.5),
-    }
-
-    # 3.4 在EF上换仓最小：函数化
-    w_min_turnover, W_refined = find_min_turnover_on_ef(
-        returns, W_ef, risk_seed, single_limit, multi_limit, w_user,
-        refine_before_select=refine_ef_before_select,
-    )
-
-    # 计算最小换手率解的年化收益和风险指标
-    ret_min_turnover = _ann_log_ret_func(returns, w_min_turnover)
-    risk_min_turnover = _risk_func(returns, w_min_turnover, risk_metric=RISK_METRIC, var_params=VAR_PARAMS)
-
-    # 构造最小换手率解的结果字典
-    p_min_turnover = {
-        "weights": w_min_turnover.tolist(),
-        "ret_annual": ret_min_turnover,
-        "risk_value": risk_min_turnover,
-        "turnover_l1_half": float(0.5 * np.abs(w_min_turnover - w_user).sum()),
-    }
-
-    ''' 4) 绘图展示 ----------------------------------------------------------------------------------------------- '''
-    if draw_plt:
-        scatter_points_data = _make_scatter_data(
-            asset_list, W_ef, returns, user_point, p_same_ret, p_same_risk, p_min_turnover, W_refined
+        # 3.3 在EF上换仓最小 -----------------------------------------------------------------------------------------
+        w_min_turnover, W_refined = find_min_turnover_on_ef(
+            returns, W_ef, risk_seed, single_limit, multi_limit,
+            w_user, refine_before_select=refine_ef_before_select,
         )
-        plot_efficient_frontier(
-            scatter_points_data,
-            title="持仓对比与推荐点(在EF上)",
-            x_axis_title=f"年化风险 ({RISK_METRIC.upper()})",
-            y_axis_title="年化收益率",
-            x_col="risk_arr",
-            y_col="ret_annual",
-            hover_text_col="hover_text",
-            output_filename=draw_plt_filename,
-        )
+        met_min_turn = compute_point_metrics(returns, w_min_turnover, w_user)
+        p_min_turnover = {"weights": w_min_turnover.tolist(), **met_min_turn}
 
-    # 输出JSON结果
-    result = {
-        "success": True,
-        "user": user_point,
-        "same_return_min_risk": p_same_ret,
-        "same_risk_max_return": p_same_risk,
-        "min_turnover_on_ef": p_min_turnover,
-    }
-    print(json.dumps(result, ensure_ascii=False))
+        # 4) 可选绘图 ------------------------------------------------------------------------------------------------
+        if draw_plt:
+            scatter_points_data = _make_scatter_data(
+                asset_list, W_ef, returns, user_point,
+                p_same_ret, p_same_risk, p_min_turnover, W_refined
+            )
+            plot_efficient_frontier(
+                scatter_points_data,
+                title="持仓对比与推荐点(在EF上)",
+                x_axis_title=f"年化风险 ({RISK_METRIC.upper()})",
+                y_axis_title="年化收益率",
+                x_col="risk_arr",
+                y_col="ret_annual",
+                hover_text_col="hover_text",
+                output_filename=draw_plt_filename,
+            )
+
+        # 5) 返回 JSON 结果
+        result = {
+            "success": True,
+            "same_return_min_risk": p_same_ret,
+            "same_risk_max_return": p_same_risk,
+            "min_turnover_on_ef": p_min_turnover,
+        }
+        if refine_ef_before_select and W_refined is not None and W_refined.size:
+            result["ef_refined"] = {"weights": W_refined.tolist()}
+        return json.dumps(result, ensure_ascii=False)
+
+    except FileNotFoundError as e:
+        return json.dumps({
+            "success": False,
+            "error_code": "DATA_FILE_NOT_FOUND",
+            "message": f"服务器端数据文件未找到: {getattr(e, 'filename', str(e))}"
+        }, ensure_ascii=False)
+    except ValueError as e:
+        return json.dumps({
+            "success": False,
+            "error_code": "INVALID_DATA_OR_CONFIG",
+            "message": f"数据或配置无效: {e}"
+        }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error_code": "INTERNAL_SERVER_ERROR",
+            "message": f"计算过程中发生未知错误: {type(e).__name__} - {e}"
+        }, ensure_ascii=False)
+
+
+if __name__ == '__main__':
+    # Demo 运行：读取本地输入并打印输出
+    ''' 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------ '''
+    with open('A03_input.json', 'r', encoding='utf-8') as f:
+        json_str = f.read()
+    excel_path = '历史净值数据_万得指数.xlsx'
+    excel_sheet = '历史净值数据'
+    print(main(json_str, excel_path, excel_sheet))
