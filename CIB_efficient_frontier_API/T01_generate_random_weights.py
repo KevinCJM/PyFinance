@@ -28,6 +28,128 @@ import pandas as pd
 from T02_other_tools import log, load_returns_from_excel
 
 
+def refine_frontier_with_slsqp(
+        port_daily_returns: np.ndarray,
+        single_limits: List[Tuple[float, float]],
+        multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
+        W_random: np.ndarray,
+        risk_arr_random: np.ndarray,
+        *,
+        risk_metric: str = "vol",
+        var_params: Dict[str, Any] | None = None,
+        n_grid: int = 100,
+        annual_trading_days: float = 252.0,
+        ddof: int = 1,
+) -> np.ndarray:
+    """
+    在随机权重的基础上，使用SLSQP和热启动策略来精炼有效前沿。
+
+    1) 找到最大收益和最小风险的端点。
+    2) 构建风险区间网格。
+    3) 对每个网格点，从已有随机权重中找到风险最接近的点作为热启动点。
+    4) 求解在风险约束下的收益最大化问题。
+    5) 返回所有求解出的权重集合。
+    """
+    try:
+        from scipy.optimize import minimize
+    except ImportError as e:
+        raise RuntimeError("需要安装 scipy 以使用 SLSQP 求解器: pip install scipy") from e
+
+    N = port_daily_returns.shape[1]
+    log(f"[SLSQP Refine] 开始精炼流程, n_grid={n_grid}")
+
+    # 复制自 _build_frontier_by_risk_grid_slsqp 的内部函数，用于优化
+    def _ann_log_ret_func(w: np.ndarray) -> float:
+        w = np.asarray(w, dtype=np.float64)
+        Rt = port_daily_returns @ w
+        Xt = np.log1p(Rt)
+        return float(Xt.mean()) * annual_trading_days
+
+    if risk_metric == "vol":
+        def _risk_func_raw(w: np.ndarray) -> float:
+            w = np.asarray(w, dtype=np.float64)
+            Rt = port_daily_returns @ w
+            Xt = np.log1p(Rt)
+            return float(Xt.std(ddof=ddof)) * np.sqrt(annual_trading_days)
+    else:  # 'var'
+        from statistics import NormalDist
+        vp = var_params or {}
+        confidence = float(vp.get("confidence", 0.95))
+        horizon_days = float(vp.get("horizon_days", 1.0))
+        return_type = str(vp.get("return_type", "simple"))
+        z_score = NormalDist().inv_cdf(1.0 - confidence)
+
+        def _risk_func_raw(w: np.ndarray) -> float:
+            w = np.asarray(w, dtype=np.float64)
+            Rt = port_daily_returns @ w
+            if return_type == "log":
+                X = np.log1p(Rt)
+            else:
+                X = Rt
+            mu = X.mean()
+            sigma = X.std(ddof=ddof)
+            h = float(horizon_days)
+            mu_h = mu * h
+            sigma_h = sigma * np.sqrt(h)
+            var = -(mu_h + z_score * sigma_h)
+            return max(0.0, var) if vp.get("clip_non_negative", True) else var
+
+    # 定义约束
+    bounds = single_limits
+    cons = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+    for idx_tuple, (lo, hi) in multi_limits.items():
+        idx = list(idx_tuple)
+        if idx:
+            cons.append({'type': 'ineq', 'fun': lambda w, i=idx, l=lo: np.sum(w[i]) - l})
+            cons.append({'type': 'ineq', 'fun': lambda w, i=idx, h=hi: h - np.sum(w[i])})
+
+    # 1) 找到端点 A (最大收益) 和 B (最小风险)
+    log("[SLSQP Refine] 正在求解最大收益和最小风险的端点...")
+    w0_guess = np.full(N, 1.0 / N, dtype=np.float64)
+    res_max_ret = minimize(lambda w: -_ann_log_ret_func(w), w0_guess, method='SLSQP', bounds=bounds, constraints=cons,
+                           options={'ftol': 1e-12, 'maxiter': 800})
+    res_min_risk = minimize(_risk_func_raw, w0_guess, method='SLSQP', bounds=bounds, constraints=cons,
+                            options={'ftol': 1e-12, 'maxiter': 800})
+
+    if not res_min_risk.success or not res_max_ret.success:
+        log("[SLSQP Refine] 无法求解风险/收益端点，精炼流程终止。")
+        return np.empty((0, N), dtype=np.float64)
+
+    w_riskmin = res_min_risk.x
+    w_retmax = res_max_ret.x
+    risk_at_min_risk = res_min_risk.fun
+    risk_at_max_ret = _risk_func_raw(w_retmax)
+
+    # 2) 构建风险区间网格
+    risk_start, risk_end = min(risk_at_min_risk, risk_at_max_ret), max(risk_at_min_risk, risk_at_max_ret)
+    risk_grid = np.linspace(risk_start, risk_end, int(n_grid))
+    log(f"[SLSQP Refine] 风险区间: [{risk_start:.4f}, {risk_end:.4f}], 网格点数: {n_grid}")
+
+    W_refined: List[np.ndarray] = []
+    # 3 & 4) 遍历网格点，使用热启动进行优化
+    for i, r_target in enumerate(risk_grid):
+        # 3) 寻找热启动点
+        hot_start_idx = np.argmin(np.abs(risk_arr_random - r_target))
+        w0 = W_random[hot_start_idx]
+
+        # 4) 求解在风险约束下的收益最大化问题
+        cons_grid = cons + [{'type': 'ineq', 'fun': lambda w, rt=r_target: rt - _risk_func_raw(w)}]
+        res = minimize(lambda w: -_ann_log_ret_func(w), w0, method='SLSQP', bounds=bounds, constraints=cons_grid,
+                       options={'ftol': 1e-9, 'maxiter': 500, 'disp': False})
+
+        if res.success:
+            W_refined.append(res.x)
+        if (i + 1) % 20 == 0:
+            log(f"[SLSQP Refine] 已完成 {i + 1}/{n_grid} 个点的优化...")
+
+    if not W_refined:
+        log("[SLSQP Refine] 未能生成任何精炼点。")
+        return np.empty((0, N), dtype=np.float64)
+
+    log(f"[SLSQP Refine] 精炼流程完成，生成 {len(W_refined)} 个有效前沿点。")
+    return np.vstack(W_refined).astype(np.float64, copy=False)
+
+
 # ===================== 0) 工具函数 =====================
 
 def cal_ef_mask(ret_annual: np.ndarray, vol_annual: np.ndarray, eps: float = 1e-6) -> np.ndarray:
@@ -1561,6 +1683,7 @@ def multi_level_random_walk_config(
         risk_metric: str = "vol",  # "vol" 或 "var"
         var_params: Dict[str, Any] | None = None,
         precision_choice: str | None = None,
+        slsqp_refine_config: Dict[str, Any] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     基于“字典配置”的多层随机游走：
@@ -1577,6 +1700,8 @@ def multi_level_random_walk_config(
         同样支持 projector 参数与 `seed`（若未给，沿用 global_seed 生成器）。
       - 额外的 extreme_seed_config（可选，默认 None）：
         {"enable": bool, "samples_per_seed": int, 可选 "step_size" 及 projector/seed/并行参数}
+      - 额外的 slsqp_refine_config（可选，默认 None）：
+        {"enable": bool, "n_grid": int}，用于在最后进行SLSQP精炼
     返回：最终 (W, ret, vol, ef_mask)。
     """
     if not rounds_config:
@@ -1892,6 +2017,39 @@ def multi_level_random_walk_config(
         ef_mask = cal_ef_mask(ret, risk_arr)
         log(f"[第{r}轮] 有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}")
 
+    # 可选的最终精炼阶段
+    if slsqp_refine_config and slsqp_refine_config.get("enable"):
+        log("[SLSQP Refinement] 开始最终精炼流程...")
+        W_refined = refine_frontier_with_slsqp(
+            port_daily_returns=port_daily_returns,
+            single_limits=single_limits,
+            multi_limits=multi_limits,
+            W_random=W,
+            risk_arr_random=risk_arr,
+            risk_metric=risk_metric,
+            var_params=var_params,
+            n_grid=int(slsqp_refine_config.get("n_grid", 100)),
+            annual_trading_days=annual_trading_days,
+            ddof=1,  # 确保与 compute_perf_arrays 一致
+        )
+
+        if W_refined.size > 0:
+            log(f"[SLSQP Refinement] 生成 {W_refined.shape[0]} 个精炼点，正在合并...")
+            # 合并、去重并重新计算最终指标
+            W = np.vstack([W, W_refined])
+            W = deduplicate_weights(W, decimals=dedup_decimals)
+            log(f"[SLSQP Refinement] 合并后总有效权重数: {W.shape[0]}")
+
+            ret, vol = compute_perf_arrays(
+                port_daily_returns, W, trading_days=annual_trading_days, ddof=1
+            )
+            if (risk_metric or "vol").lower() == "var":
+                risk_arr = compute_var_parametric_arrays(port_daily_returns, W, **(var_params or {}))
+            else:
+                risk_arr = vol
+            ef_mask = cal_ef_mask(ret, risk_arr)
+            log(f"[SLSQP Refinement] 最终有效前沿点数: {int(ef_mask.sum())} / {ef_mask.size}")
+
     return W, ret, (risk_arr if (risk_metric or "vol").lower() == "var" else vol), ef_mask
 
 
@@ -1960,6 +2118,9 @@ if __name__ == "__main__":
     # 权重精度（量化）选择：'0.1%'、'0.2%'、'0.5%' 或 None（不量化）
     PRECISION_CHOICE: str | None = None
 
+    # SLSQP 最终精炼参数
+    SLSQP_REFINE = {"enable": False, "n_grid": 10000}
+
     log("程序开始运行")
 
     ''' 1) ------------------------- 数据读取 ------------------------- '''
@@ -1986,4 +2147,5 @@ if __name__ == "__main__":
         risk_metric=RISK_METRIC,
         var_params=VAR_PARAMS,
         precision_choice=PRECISION_CHOICE,
+        slsqp_refine_config=SLSQP_REFINE
     )
