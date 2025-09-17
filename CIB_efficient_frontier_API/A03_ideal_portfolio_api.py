@@ -427,6 +427,7 @@ def _make_scatter_data(
         p_same_risk: Dict[str, Any],
         p_min_turnover: Dict[str, Any],
         W_ef_refined: Optional[np.ndarray] = None,
+        p_mid_better: Optional[Dict[str, Any]] = None,
 ):
     """
     构造用于前端散点图展示的资产组合数据，包括有效前沿、当前持仓、特定优化目标点等。
@@ -524,6 +525,8 @@ def _make_scatter_data(
         _point_df("同风险最大收益", p_same_risk, "orange", "star"),
         _point_df("换仓最小(在EF上)", p_min_turnover, "purple", "cross"),
     ]
+    if p_mid_better is not None:
+        scatter.append(_point_df("收益↑ 风险↓ (中点)", p_mid_better, "goldenrod", "triangle-up"))
     # 可选：展示精炼的前沿点集
     if W_ef_refined is not None and W_ef_refined.size > 0:
         df_ref = pd.DataFrame(W_ef_refined, columns=asset_list)
@@ -615,11 +618,23 @@ def main(json_input: str, excel_name: str, sheet_name: str) -> str:
         met_min_turn = compute_point_metrics(returns, w_min_turnover, w_user)
         p_min_turnover = {"weights": w_min_turnover.tolist(), **met_min_turn}
 
+        # 3.4 收益↑风险↓ (EF中点)：在 EF 上选择靠近（同收益最小风险点 与 同风险最大收益点）中点的位置 --------------------------
+        ef_for_mid = W_refined if (refine_ef_before_select and W_refined is not None and W_refined.size) else W_ef
+        ret_arr_mid, risk_arr_mid, _ = compute_array_metrics(returns, ef_for_mid, None,
+                                                             risk_metric=RISK_METRIC, var_params=VAR_PARAMS)
+        target_ret = 0.5 * (p_same_ret["ret_annual"] + p_same_risk["ret_annual"])
+        target_risk = 0.5 * (p_same_ret["risk_value"] + p_same_risk["risk_value"])
+        d2 = (ret_arr_mid - target_ret) ** 2 + (risk_arr_mid - target_risk) ** 2
+        mid_idx = int(np.argmin(d2))
+        w_mid = ef_for_mid[mid_idx]
+        met_mid = compute_point_metrics(returns, w_mid, w_user)
+        p_mid_better = {"weights": w_mid.tolist(), **met_mid}
+
         # 4) 可选绘图 ------------------------------------------------------------------------------------------------
         if draw_plt:
             scatter_points_data = _make_scatter_data(
-                asset_list, W_ef, returns, user_point,
-                p_same_ret, p_same_risk, p_min_turnover, W_refined
+                asset_list, W_ef, returns, user_point, p_same_ret,
+                p_same_risk, p_min_turnover, W_refined, p_mid_better
             )
             plot_efficient_frontier(
                 scatter_points_data,
@@ -638,6 +653,7 @@ def main(json_input: str, excel_name: str, sheet_name: str) -> str:
             "same_return_min_risk": p_same_ret,
             "same_risk_max_return": p_same_risk,
             "min_turnover_on_ef": p_min_turnover,
+            "better_return_lower_risk": p_mid_better
         }
         if refine_ef_before_select and W_refined is not None and W_refined.size:
             result["ef_refined"] = {"weights": W_refined.tolist()}
