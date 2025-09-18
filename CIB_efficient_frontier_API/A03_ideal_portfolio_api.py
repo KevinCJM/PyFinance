@@ -39,11 +39,26 @@ VAR_PARAMS = {
 }
 
 
-# 换仓最小点查找：基于每个传入风险锚点 r_cap，
-# 用 SLSQP 求解在风险上限 r_cap 下收益最大的高效点，再在这些解中挑选 L1/2 换手率最小者。
-
-
 def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: str):
+    """
+    解析JSON输入并从Excel文件中读取数据
+
+    参数:
+        json_input (str): 包含配置信息的JSON字符串
+        excel_name (str): Excel文件名
+        sheet_name (str): Excel工作表名
+
+    返回:
+        tuple: 包含以下元素的元组:
+            - asset_list: 资产列表
+            - draw_plt: 是否绘制图表的标志
+            - draw_plt_filename: 图表保存文件名
+            - user_holding: 用户持仓数据
+            - ef_data: 有效前沿数据，需包含"weights"字段
+            - returns: 从Excel加载的收益率数据
+            - refine_ef_before_select: 是否精炼有效前沿点集的标志
+    """
+    # 解析JSON输入参数
     params = json.loads(json_input)
     asset_list = params["asset_list"]
     draw_plt = params.get("draw_plt", True)
@@ -52,7 +67,10 @@ def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: st
     ef_data = params["ef_data"]  # 需包含 "weights": List[List[float]]
     # 开关：是否精炼有效前沿点集
     refine_ef_before_select = bool(params.get("refine_ef_before_select", False))
+
+    # 从Excel文件加载收益率数据
     returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
+
     return asset_list, draw_plt, draw_plt_filename, user_holding, ef_data, returns, refine_ef_before_select
 
 
@@ -677,7 +695,6 @@ def main(json_input: str, excel_name: str, sheet_name: str) -> str:
 
 
 if __name__ == '__main__':
-    # Demo 运行：读取本地输入并打印输出
     ''' 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------ '''
     with open('sample_A03_input.json', 'r', encoding='utf-8') as f:
         json_str = f.read()

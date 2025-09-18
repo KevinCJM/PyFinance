@@ -444,7 +444,7 @@ if __name__ == '__main__':
     }
 
     # excel 参数
-    excel_name = '万得数据.xlsx'
+    excel_name = '万得指数数据.xlsx'
     sheet_name = '万得原始数据'
     # 读取并处理数据
     nav_df = read_data_and_prepare(excel_name, sheet_name)
