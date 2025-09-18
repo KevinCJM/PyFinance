@@ -107,12 +107,16 @@ def _risk_func_optimizer(w, returns, risk_metric, var_params, trading_days) -> f
         return float(port_log_ret.std(ddof=1)) * np.sqrt(trading_days)
     else:
         # 计算风险价值(VaR)指标
-        from statistics import NormalDist
         vp = var_params or {}
         confidence = float(vp.get("confidence", 0.95))
         horizon_days = float(vp.get("horizon_days", 1.0))
         return_type = str(vp.get("return_type", "log"))
-        z_score = NormalDist().inv_cdf(1.0 - confidence)
+        try:
+            from scipy.stats import norm
+            z_score = float(norm.ppf(1.0 - confidence))
+        except Exception:
+            # 退化为常用近似值（95% 左尾约 -1.645）
+            z_score = -1.645
 
         # 根据收益率类型选择计算方式
         if return_type == "log":

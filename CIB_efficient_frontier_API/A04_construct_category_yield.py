@@ -24,7 +24,8 @@ import json
 import traceback
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+from T02_other_tools import read_excel_compat
 
 
 def _parse_series_from_dict(d: Dict[str, Any]) -> pd.Series:
@@ -73,7 +74,7 @@ def analysis_json_and_read_data(json_input, excel_name=None, sheet_name=None):
                 raise ValueError("使用 index_code 时需提供 excel_name 与 sheet_name")
             if not isinstance(index_code, list) or not index_code:
                 raise ValueError("index_code 必须是非空列表")
-            df_all = pd.read_excel(excel_name, sheet_name=sheet_name)
+            df_all = read_excel_compat(excel_name, sheet_name)
             if 'date' not in df_all.columns:
                 raise ValueError("Excel 中缺少 'date' 列")
             df_all = df_all.set_index('date')
@@ -92,7 +93,7 @@ def analysis_json_and_read_data(json_input, excel_name=None, sheet_name=None):
     return params_dict
 
 
-def parse_inputs_from_json(json_input: str, excel_name: str | None = None, sheet_name: str | None = None):
+def parse_inputs_from_json(json_input: str, excel_name: Optional[str] = None, sheet_name: Optional[str] = None):
     """新增解析：更健壮地构造每个大类的成分日收益 DataFrame（_index_returns_df）。"""
     params_dict = json.loads(json_input)
     for cat, params in params_dict.items():
@@ -110,7 +111,7 @@ def parse_inputs_from_json(json_input: str, excel_name: str | None = None, sheet
                 raise ValueError(f"[{cat}] 使用 index_code 时需提供 excel_name 与 sheet_name")
             if not isinstance(index_code, list) or not index_code:
                 raise ValueError(f"[{cat}] index_code 必须是非空列表")
-            df_all = pd.read_excel(excel_name, sheet_name=sheet_name)
+            df_all = read_excel_compat(excel_name, sheet_name)
             if 'date' not in df_all.columns:
                 raise ValueError("Excel 中缺少 'date' 列")
             df_all = df_all.set_index("date")
@@ -154,7 +155,7 @@ def construct_category_returns(params_dict: Dict[str, Any]) -> pd.DataFrame:
     return cat_df
 
 
-def main(json_input: str, excel_name: str | None = None, sheet_name: str | None = None) -> str:
+def main(json_input: str, excel_name: Optional[str] = None, sheet_name: Optional[str] = None) -> str:
     """入口：解析输入、构建大类日收益，并返回 JSON。"""
     try:
         # 1) 解析入参与取数

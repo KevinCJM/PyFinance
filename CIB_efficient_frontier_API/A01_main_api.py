@@ -7,8 +7,10 @@
 """
 import time
 import json
+import traceback
 import pandas as pd
 import numpy as np
+from typing import Optional
 
 from T04_show_plt import plot_efficient_frontier
 from T02_other_tools import load_returns_from_excel
@@ -57,7 +59,7 @@ VAR_PARAMS = {
     "clip_non_negative": True,  # 对“无下跌”情形，VaR 取 0
 }
 # 权重精度（量化）选择：'0.1%'、'0.2%'、'0.5%' 或 None（不量化）
-PRECISION_CHOICE: str | None = None
+PRECISION_CHOICE: Optional[str] = None
 # SLSQP 最终精炼参数
 SLSQP_REFINE = {"enable": False, "n_grid": 1000}
 
@@ -391,6 +393,7 @@ def main(json_input, excel_name, sheet_name):
         return json.dumps(success_response, ensure_ascii=False)
 
     except json.JSONDecodeError as e:
+        print(traceback.format_exc())
         error_response = {
             "success": False,
             "error_code": "INVALID_JSON_INPUT",
@@ -399,6 +402,7 @@ def main(json_input, excel_name, sheet_name):
         return json.dumps(error_response, ensure_ascii=False)
 
     except (KeyError, TypeError) as e:
+        print(traceback.format_exc())
         error_response = {
             "success": False,
             "error_code": "MISSING_OR_INVALID_FIELD",
@@ -407,6 +411,7 @@ def main(json_input, excel_name, sheet_name):
         return json.dumps(error_response, ensure_ascii=False)
 
     except FileNotFoundError as e:
+        print(traceback.format_exc())
         error_response = {
             "success": False,
             "error_code": "DATA_FILE_NOT_FOUND",
@@ -415,6 +420,7 @@ def main(json_input, excel_name, sheet_name):
         return json.dumps(error_response, ensure_ascii=False)
 
     except ValueError as e:
+        print(traceback.format_exc())
         error_response = {
             "success": False,
             "error_code": "INVALID_DATA_OR_CONFIG",
@@ -423,6 +429,7 @@ def main(json_input, excel_name, sheet_name):
         return json.dumps(error_response, ensure_ascii=False)
 
     except Exception as e:
+        print(traceback.format_exc())
         error_response = {
             "success": False,
             "error_code": "INTERNAL_SERVER_ERROR",
@@ -433,7 +440,7 @@ def main(json_input, excel_name, sheet_name):
 
 if __name__ == '__main__':
     ''' 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------- '''
-    with open('sample_A01_input_all.json', 'r', encoding='utf-8') as f:
+    with open('sample_A01_input_market.json', 'r', encoding='utf-8') as f:
         json_str = f.read()
     # excel信息
     excel_path = '历史净值数据_万得指数.xlsx'

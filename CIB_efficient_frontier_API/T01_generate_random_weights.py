@@ -7,10 +7,9 @@ B01_random_weights_faster.py
 - 性能重点：尽量使用 NumPy 向量化、减少中间对象与 DataFrame 依赖。
 """
 
-from __future__ import annotations  # 启用 Python 3.10+ 的类型注解特性
 
 import time
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -27,6 +26,10 @@ import numpy as np
 import pandas as pd
 from T02_other_tools import log, ann_log_return, ann_log_vol
 
+def _make_rng(seed: int):
+    """Create a NumPy RandomState for compatibility with NumPy<=1.16."""
+    return np.random.RandomState(int(seed))
+
 
 def refine_frontier_with_slsqp(
         port_daily_returns: np.ndarray,
@@ -36,7 +39,7 @@ def refine_frontier_with_slsqp(
         risk_arr_random: np.ndarray,
         *,
         risk_metric: str = "vol",
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
         n_grid: int = 100,
         annual_trading_days: float = 252.0,
         ddof: int = 1,
@@ -66,12 +69,15 @@ def refine_frontier_with_slsqp(
         def _risk_func_raw(w: np.ndarray) -> float:
             return ann_log_vol(port_daily_returns, np.asarray(w, dtype=np.float64), annual_trading_days, ddof)
     else:  # 'var'
-        from statistics import NormalDist
         vp = var_params or {}
         confidence = float(vp.get("confidence", 0.95))
         horizon_days = float(vp.get("horizon_days", 1.0))
         return_type = str(vp.get("return_type", "simple"))
-        z_score = NormalDist().inv_cdf(1.0 - confidence)
+        try:
+            from scipy.stats import norm
+            z_score = float(norm.ppf(1.0 - confidence))
+        except Exception:
+            z_score = -1.645
 
         def _risk_func_raw(w: np.ndarray) -> float:
             w = np.asarray(w, dtype=np.float64)
@@ -187,9 +193,9 @@ def validate_weights_batch(
         W: np.ndarray,
         lows: np.ndarray,
         highs: np.ndarray,
-        G: np.ndarray | None = None,
-        low_g: np.ndarray | None = None,
-        up_g: np.ndarray | None = None,
+        G: Optional[np.ndarray] = None,
+        low_g: Optional[np.ndarray] = None,
+        up_g: Optional[np.ndarray] = None,
         atol: float = 1e-6,
 ) -> np.ndarray:
     """
@@ -585,12 +591,15 @@ def compute_var_parametric_arrays(
 
     # 正态分布左尾分位数 z_{1 - confidence}
     try:
-        from statistics import NormalDist
-
-        z = NormalDist().inv_cdf(1.0 - confidence)
+        from scipy.stats import norm
+        z = float(norm.ppf(1.0 - confidence))
     except Exception:
-        # 兜底：95% 左尾近似 -1.64485
-        z = -1.645
+        try:
+            from statistics import NormalDist
+            z = NormalDist().inv_cdf(1.0 - confidence)
+        except Exception:
+            # 兜底：95% 左尾近似 -1.64485
+            z = -1.645
 
     # 计算 VaR：VaR = max(0, -(mu_h + z * sigma_h))
     var_val = -(mu_h + z * sigma_h)
@@ -608,7 +617,7 @@ def _build_frontier_by_risk_grid_slsqp(
         multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
         *,
         risk_metric: str = "vol",
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
         n_grid: int = 150,
         annual_trading_days: float = 252.0,
         ddof: int = 1,
@@ -637,8 +646,8 @@ def _build_frontier_by_risk_grid_slsqp(
         horizon_days = float(vp.get("horizon_days", 1.0))
         return_type = str(vp.get("return_type", "simple"))
         try:
-            from statistics import NormalDist
-            z_score = NormalDist().inv_cdf(1.0 - confidence)
+            from scipy.stats import norm
+            z_score = float(norm.ppf(1.0 - confidence))
         except Exception:
             z_score = -1.645
 
@@ -750,7 +759,7 @@ def build_frontier_by_risk_grid(
         multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
         *,
         risk_metric: str = "vol",  # "vol" 或 "var"
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
         n_grid: int = 150,
         ridge: float = 1e-8,
         solver: str = "ECOS",
@@ -834,9 +843,11 @@ def build_frontier_by_risk_grid(
     else:
         # VaR 参数
         vp = var_params or {}
-        from statistics import NormalDist
-
-        alpha = abs(NormalDist().inv_cdf(1.0 - float(vp.get("confidence", 0.95))))
+        try:
+            from scipy.stats import norm
+            alpha = abs(float(norm.ppf(1.0 - float(vp.get("confidence", 0.95)))))
+        except Exception:
+            alpha = 1.645
         sqrt_h = float(vp.get("horizon_days", 1.0)) ** 0.5
         h = float(vp.get("horizon_days", 1.0))
 
@@ -859,9 +870,11 @@ def build_frontier_by_risk_grid(
             return float(np.sqrt(wv @ Sigma @ wv))
     else:
         vp = var_params or {}
-        from statistics import NormalDist
-
-        alpha = abs(NormalDist().inv_cdf(1.0 - float(vp.get("confidence", 0.95))))
+        try:
+            from scipy.stats import norm
+            alpha = abs(float(norm.ppf(1.0 - float(vp.get("confidence", 0.95)))))
+        except Exception:
+            alpha = 1.645
         sqrt_h = float(vp.get("horizon_days", 1.0)) ** 0.5
         h = float(vp.get("horizon_days", 1.0))
 
@@ -889,9 +902,11 @@ def build_frontier_by_risk_grid(
             prob = cp.Problem(obj, cons)
         else:
             vp = var_params or {}
-            from statistics import NormalDist
-
-            alpha = abs(NormalDist().inv_cdf(1.0 - float(vp.get("confidence", 0.95))))
+            try:
+                from scipy.stats import norm
+                alpha = abs(float(norm.ppf(1.0 - float(vp.get("confidence", 0.95)))))
+            except Exception:
+                alpha = 1.645
             sqrt_h = float(vp.get("horizon_days", 1.0)) ** 0.5
             h = float(vp.get("horizon_days", 1.0))
 
@@ -994,7 +1009,7 @@ def _parse_precision(choice: str) -> float:
     return float(val)
 
 
-def _snap_to_grid_simplex(w: np.ndarray, step: float, single_limits: List[Tuple[float, float]]) -> np.ndarray | None:
+def _snap_to_grid_simplex(w: np.ndarray, step: float, single_limits: List[Tuple[float, float]]) -> Optional[np.ndarray]:
     """
     将权重向量吸附到网格（步长 step）上，同时满足：单资产上下限与 sum=1。
     采用最大余数法在整数格上分配，保持总和与边界。
@@ -1051,7 +1066,7 @@ def quantize_with_projection(
         *,
         projector=None,
         rounds: int = 5,
-) -> np.ndarray | None:
+) -> Optional[np.ndarray]:
     """
     迭代执行：
       1) 约束投影（盒+sum=1+组） 2) 网格吸附（sum=1+单资产）
@@ -1081,13 +1096,13 @@ def quantize_with_projection(
 
 def _quantize_weights_batch_if_needed(
         W: np.ndarray,
-        precision_choice: str | None,
+        precision_choice: Optional[str],
         single_limits: List[Tuple[float, float]],
         multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
         *,
         rounds: int = 4,
-        use_numba: bool | None = None,
-        parallel_workers: int | None = None,
+        use_numba: Optional[bool] = None,
+        parallel_workers: Optional[int] = None,
 ) -> np.ndarray:
     """按需对一批权重量化；失败的行丢弃。precision_choice=None 时原样返回。"""
     if not precision_choice:
@@ -1107,12 +1122,12 @@ def _quantize_weights_batch_if_needed(
         damping=0.9,
     )
 
-    def _one(w: np.ndarray) -> np.ndarray | None:
+    def _one(w: np.ndarray) -> Optional[np.ndarray]:
         return quantize_with_projection(
             w, step, single_limits, multi_limits, projector=projector, rounds=rounds
         )
 
-    out: list[np.ndarray] = []
+    out: List[np.ndarray] = []
     M = W.shape[0]
     if parallel_workers is None:
         cpu = os.cpu_count() or 4
@@ -1145,7 +1160,7 @@ def generate_extreme_weight_seeds(
         projector_iters: int = 200,
         projector_tol: float = 1e-9,
         projector_damping: float = 1.0,
-        use_numba: bool | None = None,
+        use_numba: Optional[bool] = None,
         dedup_decimals: int = 8,
 ) -> np.ndarray:
     """
@@ -1191,14 +1206,14 @@ def generate_weights_random_walk(
         projector_iters: int = 200,
         projector_tol: float = 1e-9,
         projector_damping: float = 1.0,
-        use_numba: bool | None = None,
+        use_numba: Optional[bool] = None,
 ) -> np.ndarray:
     """使用带约束的随机游走生成一批合法权重 (M,N)。"""
     log(
         "开始通过约束随机游走生成投资组合: "
         f"N={N}, samples={num_samples}, step={step_size}"
     )
-    rng = np.random.default_rng(seed)
+    rng = _make_rng(seed)
     if use_numba is None:
         use_numba = HAS_NUMBA
     projector = (
@@ -1232,15 +1247,15 @@ def generate_weights_from_seeds(
         seeds: np.ndarray,
         single_limits: List[Tuple[float, float]],
         multi_limits: Dict[Tuple[int, ...], Tuple[float, float]],
-        rng: np.random.Generator,
+        rng,
         samples_per_seed: int = 50,
-        per_seed_quota: np.ndarray | None = None,
+        per_seed_quota: Optional[np.ndarray] = None,
         step_size: float = 0.3,
         projector_iters: int = 200,
         projector_tol: float = 1e-9,
         projector_damping: float = 1.0,
-        parallel_workers: int | None = None,
-        use_numba: bool | None = None,
+        parallel_workers: Optional[int] = None,
+        use_numba: Optional[bool] = None,
 ) -> np.ndarray:
     """
     从一组起始点（通常为上一轮的有效前沿点）出发，进行局部随机游走，生成新的合法权重。
@@ -1271,7 +1286,16 @@ def generate_weights_from_seeds(
         q = int(quotas[seed_idx])
         if q <= 0:
             return np.empty((0, N), dtype=np.float64)
-        local_rng = np.random.default_rng(rng.integers(2 ** 63 - 1))
+        # 兼容旧版 NumPy：RandomState 没有 integers，使用 randint
+        try:
+            local_seed = int(rng.randint(0, 2 ** 31 - 1))
+        except Exception:
+            # 若传入的是新 API 生成器
+            try:
+                local_seed = int(rng.integers(2 ** 31 - 1))
+            except Exception:
+                local_seed = int(12345 + seed_idx)
+        local_rng = _make_rng(local_seed)
         current = seeds[seed_idx].copy()
         buf = []
         for _ in range(q):
@@ -1334,8 +1358,8 @@ def _assign_quota_by_spacing(
         seeds_vol: np.ndarray,
         samples_total: int,
         *,
-        d_target_bins: int | None = None,
-        d_target: float | None = None,
+        d_target_bins: Optional[int] = None,
+        d_target: Optional[float] = None,
         q_min: float = 0.0,
         q_max: float = 6.0,
         min_quota_per_seed: int = 0,
@@ -1410,7 +1434,7 @@ def _assign_quota_by_vol_bins(
         bins: int = 60,
         weight_mode: str = "inverse",  # "inverse" or "deficit"
         min_quota_per_seed: int = 0,
-        max_quota_per_seed: int | None = None,
+        max_quota_per_seed: Optional[int] = None,
 ) -> np.ndarray:
     """
     根据波动率分桶策略为种子分配采样配额。
@@ -1530,7 +1554,7 @@ def multi_level_random_walk(
         dedup_decimals: int = 4,
         annual_trading_days: float = 252.0,
         risk_metric: str = "vol",  # "vol" 或 "var"
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     多层随机游走：
@@ -1544,7 +1568,7 @@ def multi_level_random_walk(
     lows = np.array([a for a, _ in single_limits], dtype=np.float64)
     highs = np.array([b for _, b in single_limits], dtype=np.float64)
 
-    rng = np.random.default_rng(seed)
+    rng = _make_rng(seed)
 
     # 第 1 步：大步长探索
     log(
@@ -1667,11 +1691,11 @@ def multi_level_random_walk_config(
         dedup_decimals: int = 4,
         annual_trading_days: float = 252.0,
         global_seed: int = 12345,
-        extreme_seed_config: Dict[str, Any] | None = None,
+        extreme_seed_config: Optional[Dict[str, Any]] = None,
         risk_metric: str = "vol",  # "vol" 或 "var"
-        var_params: Dict[str, Any] | None = None,
-        precision_choice: str | None = None,
-        slsqp_refine_config: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
+        precision_choice: Optional[str] = None,
+        slsqp_refine_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     基于“字典配置”的多层随机游走：
@@ -1817,7 +1841,7 @@ def multi_level_random_walk_config(
             if extreme_seeds.size:
                 log(f"[极端种子] 可行种子数: {extreme_seeds.shape[0]}")
                 # 从极端种子出发进行随机游走
-                rng_e = np.random.default_rng(r_seed_e)
+                rng_e = _make_rng(r_seed_e)
                 per_seed_quota = np.full(extreme_seeds.shape[0], sps, dtype=int)
                 ext_W = generate_weights_from_seeds(
                     seeds=extreme_seeds,
@@ -1836,7 +1860,7 @@ def multi_level_random_walk_config(
                 if ext_W.size:
                     # 过滤与现有 W 重复的样本
                     if W.size:
-                        seen_local: set[bytes] = set()
+                        seen_local: Set[bytes] = set()
                         Wc_seen = np.ascontiguousarray(np.round(W, dedup_decimals))
                         for row in Wc_seen:
                             seen_local.add(row.tobytes())
@@ -1888,7 +1912,7 @@ def multi_level_random_walk_config(
     # 后续轮次：按配置执行
     max_round = max(rounds_config.keys())
     # 已见权重缓存（按四舍五入到 dedup_decimals 后的字节序列）
-    seen: set[bytes] = set()
+    seen: Set[bytes] = set()
     if W.size:
         Wc0 = np.ascontiguousarray(np.round(W, dedup_decimals))
         for row in Wc0:
@@ -1935,7 +1959,7 @@ def multi_level_random_walk_config(
 
         log(f"[第{r}轮] 以 {seeds.shape[0]} 个种子，步长={step_mid}，{desc}")
 
-        rng = np.random.default_rng(r_seed)
+        rng = _make_rng(r_seed)
         new_W = generate_weights_from_seeds(
             seeds=seeds,
             single_limits=single_limits,
@@ -2104,7 +2128,7 @@ if __name__ == "__main__":
     }
 
     # 权重精度（量化）选择：'0.1%'、'0.2%'、'0.5%' 或 None（不量化）
-    PRECISION_CHOICE: str | None = None
+    PRECISION_CHOICE: Optional[str] = None
 
     # SLSQP 最终精炼参数
     SLSQP_REFINE = {"enable": False, "n_grid": 10000}

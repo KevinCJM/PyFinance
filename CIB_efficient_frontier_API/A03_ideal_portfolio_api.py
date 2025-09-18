@@ -10,7 +10,6 @@
   3.4 与客户当前持仓换仓最小的有效前沿点（按风险锚点用SLSQP求前沿点后挑选）
 """
 
-from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Tuple, Optional
@@ -82,7 +81,7 @@ def _risk_func(
         returns_daily: np.ndarray,
         w: np.ndarray,
         risk_metric: str = RISK_METRIC,
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
         annual_trading_days: float = TRADING_DAYS,
 ) -> float:
     risk_metric = (risk_metric or "vol").lower()
@@ -90,12 +89,15 @@ def _risk_func(
         return ann_log_vol(returns_daily, w, annual_trading_days, ddof=1)
     # 参数法VaR
     vp = var_params or {}
-    from statistics import NormalDist
-
+    try:
+        from scipy.stats import norm
+        z_score = float(norm.ppf(1.0 - float(vp.get("confidence", 0.95))))
+    except Exception:
+        # 退化为常用近似值（95% 左尾约 -1.645）
+        z_score = -1.645
     confidence = float(vp.get("confidence", 0.95))
     horizon_days = float(vp.get("horizon_days", 1.0))
     return_type = str(vp.get("return_type", "log"))
-    z_score = NormalDist().inv_cdf(1.0 - confidence)
 
     if return_type == "log":
         X = np.log1p(returns_daily @ w)
@@ -203,7 +205,7 @@ def compute_point_metrics(
         w_user: Optional[np.ndarray] = None,
         *,
         risk_metric: str = RISK_METRIC,
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """
     计算单个组合的年化收益、风险与换手率。
@@ -257,7 +259,7 @@ def compute_array_metrics(
         w_user: Optional[np.ndarray] = None,
         *,
         risk_metric: str = RISK_METRIC,
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """批量计算点集的年化收益、风险与(可选)换手率(L1/2)。
 

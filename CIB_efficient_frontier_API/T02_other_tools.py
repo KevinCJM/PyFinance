@@ -5,9 +5,9 @@
 @Author: Kevin-Chen
 @Descriptions: 
 """
-from __future__ import annotations  # 启用 Python 3.10+ 的类型注解特性
 
 import time
+import os
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Tuple
 import os
@@ -46,7 +46,7 @@ def load_returns_from_excel(
 ) -> Tuple[np.ndarray, List[str]]:
     """从 Excel 读取净值数据，生成日收益二维数组 (T,N)。"""
     log(f"加载数据: {excel_path} | sheet={sheet_name}")
-    df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    df = read_excel_compat(excel_path, sheet_name)
     df = df.set_index("date")
     df.index = pd.to_datetime(df.index)
     df = df.dropna().sort_index(ascending=True)
@@ -113,3 +113,30 @@ def ann_log_vol(
     Rt = returns_daily @ np.asarray(w, dtype=np.float64)
     Xt = np.log1p(Rt)
     return float(Xt.std(ddof=int(ddof))) * float(np.sqrt(trading_days))
+# 读取 Excel，兼容老环境引擎选择
+def read_excel_compat(excel_path: str, sheet_name: str) -> pd.DataFrame:
+    """兼容性读取 Excel：
+    - .xlsx/.xlsm/.xltx/.xltm 优先使用 engine='openpyxl'（xlrd 新版不支持 xlsx）。
+    - .xls 使用 engine='xlrd'。
+    - 若引擎缺失，给出清晰错误提示。
+    """
+    ext = os.path.splitext(str(excel_path))[-1].lower()
+    try:
+        if ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
+            return pd.read_excel(excel_path, sheet_name=sheet_name, engine="openpyxl")
+        elif ext == ".xls":
+            return pd.read_excel(excel_path, sheet_name=sheet_name, engine="xlrd")
+        else:
+            # 其他扩展名，尝试默认
+            return pd.read_excel(excel_path, sheet_name=sheet_name)
+    except ImportError as e:
+        raise ImportError(
+            "读取 Excel 失败，缺少所需引擎。对于 .xlsx 文件请安装 openpyxl (建议 openpyxl==2.6.4 以兼容 Py3.6)，"
+            "对于 .xls 文件请安装 xlrd<2.0。原始错误: %s" % str(e)
+        )
+    except Exception:
+        # 再做一次回退尝试：不指定引擎，让 pandas 自行选择
+        try:
+            return pd.read_excel(excel_path, sheet_name=sheet_name)
+        except Exception as e2:
+            raise
