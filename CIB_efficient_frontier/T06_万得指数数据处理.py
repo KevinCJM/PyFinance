@@ -432,9 +432,9 @@ if __name__ == '__main__':
         },
         "混合类": {
             'method': 'manual',
-            'index_names': ['万得纯债型基金总指数', '万得另类投资基金总指数',
-                            '万得宏观策略私募指数', '万得管理期货私募指数', '万得股票市场中性私募指数'],
-            'manual_weights': [0.6, 0.1, 0.1, 0.1, 0.1],
+            'index_names': ['万得纯债型基金总指数', '万得另类投资基金总指数', '万得管理期货私募指数',
+                            '万得宏观策略私募指数', '万得股票市场中性私募指数'],
+            'manual_weights': [0.4, 0.15, 0.15, 0.15, 0.15],
             # 'risk_metric': 'vol',  # 风险平价度量 ['vol', 'ES', 'VaR'], 选择 weight_mode='risk_parity' 时有效
             # 'rp_alpha': 0.95,  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
             # 'rp_tol': 1e-6,  # 迭代收敛阈值, 选择 weight_mode='risk_parity' 时有效
