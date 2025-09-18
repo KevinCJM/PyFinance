@@ -55,4 +55,6 @@ def read_data(nv_parquet, trade_day_parquet):
 if __name__ == '__main__':
     the_nv_parquet = "data/etf_daily_df.parquet"
     the_trade_day_parquet = "data/trade_day_df.parquet"
+
+    # 1) 读取数据 ------------------------------------------------------------------------------------------------------
     etf_return_pivot = read_data(the_nv_parquet, the_trade_day_parquet)
