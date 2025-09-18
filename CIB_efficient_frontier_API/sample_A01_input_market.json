@@ -7,7 +7,7 @@
     "另类投资类"
   ],
   "cal_market_ef": true,
-  "draw_plt": true,
+  "draw_plt": false,
   "draw_plt_filename": "test.html",
   "StandardProportion": {
     "C1": {

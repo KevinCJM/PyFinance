@@ -10,7 +10,7 @@
   3.4 与客户当前持仓换仓最小的有效前沿点（按风险锚点用SLSQP求前沿点后挑选）
 """
 
-
+import time
 import json
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -704,5 +704,7 @@ if __name__ == '__main__':
     excel_sheet = '历史净值数据'
 
     ''' 计算并输出结果 ------------------------------------------------------------------------------------------ '''
+    s_t = time.time()
     str_res = main(json_str, excel_path, excel_sheet)
     print("\n最终返回的结果 Json 字符串为：\n", str_res)
+    print(f"\n总计算耗时: {time.time() - s_t:.3f} 秒")

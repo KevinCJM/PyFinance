@@ -6,6 +6,7 @@
 @Descriptions: 寻找在指定大类约束下的风险边界
 """
 import json
+import time
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -378,5 +379,7 @@ if __name__ == '__main__':
     excel_sheet = '历史净值数据'
 
     ''' 调用主函数进行计算 -------------------------------------------------------------------------------------- '''
+    s_t = time.time()
     result_json = main(json_str, excel_path, excel_sheet)
     print("\n最终返回的结果 Json 字符串为：\n", result_json)
+    print(f"\n总计算用时: {time.time() - s_t:.2f} 秒")

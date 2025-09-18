@@ -21,6 +21,7 @@
 """
 
 import json
+import time
 import traceback
 import numpy as np
 import pandas as pd
@@ -211,5 +212,7 @@ if __name__ == '__main__':
     sheet = "万得原始数据"
 
     ''' 计算并输出结果 ------------------------------------------------------------------------------------------ '''
+    s_t = time.time()
     json_res = main(json_str, excel_path, sheet)
     print(json_res)
+    print(f"总耗时: {time.time() - s_t:.2f} 秒")
