@@ -76,14 +76,15 @@ def main_fetch_index_daily_return(
         end: str = "20230905",
         max_workers: int = 10,
         max_retries: int = 5,
-        retry_delay: float = 1.0
+        retry_delay: float = 1.0,
+        if_csi: bool = True
 ) -> pd.DataFrame:
     results = []
     intervals = split_years(start, end)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(fetch_index_daily_return, code, s, e, max_retries, retry_delay): (code, s, e)
+            executor.submit(fetch_index_daily_return, code, s, e, max_retries, retry_delay, if_csi): (code, s, e)
             for code in codes
             for s, e in intervals
         }

@@ -25,8 +25,7 @@ def ensure_output_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-def fetch_etf_list(output_dir, token: str) -> pd.DataFrame:
-    pro = ts.pro_api(token)
+def fetch_etf_list(output_dir, pro) -> pd.DataFrame:
     df = pro.fund_basic(market="E")
     # 规范列名 & 保留常用字段
     keep = ["ts_code", "name", "management", "found_date"]
@@ -59,8 +58,7 @@ class RateLimiter:
                 time.sleep(wait)
 
 
-def fetch_nav_once(token: str, ts_code: str, limiter: RateLimiter) -> Optional[pd.DataFrame]:
-    pro = ts.pro_api(token)
+def fetch_nav_once(pro, ts_code: str, limiter: RateLimiter) -> Optional[pd.DataFrame]:
     # 限流：确保不超过 80 次/分钟
     limiter.acquire()
     df = pro.fund_nav(ts_code=ts_code)
@@ -78,7 +76,7 @@ def fetch_nav_once(token: str, ts_code: str, limiter: RateLimiter) -> Optional[p
 
 
 def fetch_nav_with_retry(
-        token: str,
+        pro,
         ts_code: str,
         name: str,
         max_retries: int,
@@ -90,7 +88,7 @@ def fetch_nav_with_retry(
     backoff = backoff_sec
     for attempt in range(1, max_retries + 1):
         try:
-            df = fetch_nav_once(token, ts_code, limiter)
+            df = fetch_nav_once(pro, ts_code, limiter)
             if df is not None and not df.empty:
                 df["name"] = name
                 df = df.sort_values("nav_date").reset_index(drop=True)
@@ -116,22 +114,20 @@ def fetch_nav_with_retry(
 
 
 def main(
-        token: str,
+        pro,
         *,
         max_workers: int = 8,
         max_retries: int = 3,
         backoff_sec: float = 1.5,
-        output_dir: str = os.path.join("data", "processed"),
+        output_dir: str = "data",
         max_calls_per_minute: int = 80,
         wait_on_rate_limit_sec: float = 10.0,
 ) -> None:
-    if not token:
-        raise RuntimeError("未提供 Tushare token，请在 __main__ 中设置 token 参数。")
     ensure_output_dir(output_dir)
 
     limiter = RateLimiter(max_calls=max_calls_per_minute, period=60.0)
     # 1) 获取 ETF 列表
-    etf_info_df = fetch_etf_list(output_dir, token)
+    etf_info_df = fetch_etf_list(output_dir, pro)
     # 可选：保存元数据（便于排查），受 .gitignore 保护
     try:
         etf_info_df.to_excel(os.path.join(output_dir, "etf_info_df.xlsx"), index=False)
@@ -152,7 +148,7 @@ def main(
         future_to_code = {
             executor.submit(
                 fetch_nav_with_retry,
-                token,
+                pro,
                 code,
                 name,
                 max_retries,
@@ -196,15 +192,17 @@ if __name__ == "__main__":
     MAX_WORKERS = 8
     MAX_RETRIES = 3
     RETRY_BACKOFF_SEC = 1.5
-    OUTPUT_DIR = os.path.join("data", "processed")
-
-    if not TUSHARE_TOKEN:
-        raise RuntimeError("请在 __main__ 下设置 TUSHARE_TOKEN")
+    OUTPUT_DIR = "data"
+    the_pro = ts.pro_api(TUSHARE_TOKEN)
 
     main(
-        token=TUSHARE_TOKEN,
+        pro=the_pro,
         max_workers=MAX_WORKERS,
         max_retries=MAX_RETRIES,
         backoff_sec=RETRY_BACKOFF_SEC,
         output_dir=OUTPUT_DIR,
     )
+
+    trade_day_df = the_pro.trade_cal(exchange='SSE', start_date='20100101', end_date='20250920')
+    trade_day_df.to_parquet(os.path.join(OUTPUT_DIR, "trade_day_df.parquet"), index=False)
+    print(f"已保存交易日历 Parquet：{os.path.join(OUTPUT_DIR, 'trade_day_df.parquet')}，共 {len(trade_day_df)} 行")

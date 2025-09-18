@@ -302,7 +302,7 @@ def fetch_stock_daily_returns_parallel(codes: list[str], start: str, end: str,
 
 # 6) 指数日行情（CSIndex 中证指数）
 def fetch_index_daily_return(symbol: str, start: str, end: str, max_retries: int = 5,
-                             retry_delay: float = 0.5) -> pd.DataFrame:
+                             retry_delay: float = 0.5, if_csi: bool = True) -> pd.DataFrame:
     """
     获取指定指数在指定时间范围内的日线行情数据
 
@@ -310,6 +310,7 @@ def fetch_index_daily_return(symbol: str, start: str, end: str, max_retries: int
         symbol (str): 指数代码
         start (str): 开始日期，格式为 'YYYYMMDD'
         end (str): 结束日期，格式为 'YYYYMMDD'
+        if_csi (bool): 是否为中证指数，默认为 True
 
     返回:
         pd.DataFrame: 包含指数日线行情数据的DataFrame，包含以下列：
@@ -328,10 +329,12 @@ def fetch_index_daily_return(symbol: str, start: str, end: str, max_retries: int
     for attempt in range(1, max_retries + 1):
         try:
             # 获取指数历史行情数据
+            if not if_csi:
+                return fetch_index_daily_return_ts(symbol, start, end, max_retries, retry_delay, if_csi)
             index_df = ak.stock_zh_index_hist_csindex(symbol=symbol, start_date=start, end_date=end)
             if index_df.empty:
                 print(f"AKshare获取{symbol}指数的日行情数据获取失败, 数据为空, 尝试使用tushare接口")
-                return fetch_index_daily_return_ts(symbol, start, end, max_retries)
+                return fetch_index_daily_return_ts(symbol, start, end, max_retries, retry_delay, if_csi)
 
             # 重命名列名为英文
             index_df.rename(columns={"日期": "date", "指数代码": "index_code", "指数中文全称": "index_name",
@@ -355,14 +358,16 @@ def fetch_index_daily_return(symbol: str, start: str, end: str, max_retries: int
                 time.sleep(retry_delay)
             else:
                 print(f"{symbol}指数的日行情数据获取失败, 尝试使用tushare接口: {e}")
-                return fetch_index_daily_return_ts(symbol, start, end, max_retries)
+                return fetch_index_daily_return_ts(symbol, start, end, max_retries, if_csi)
 
 
-def fetch_index_daily_return_ts(symbol: str, start: str, end: str, max_retries: int = 5, retry_delay: float = 1.5):
+def fetch_index_daily_return_ts(symbol: str, start: str, end: str,
+                                max_retries: int = 5, retry_delay: float = 1.5, if_csi: bool = True) -> pd.DataFrame:
     for attempt in range(1, max_retries + 1):
         try:
             # 获取指数历史行情数据
-            index_df = pro.index_daily(ts_code=f'{symbol}.CSI', start_date=start, end_date=end)
+            csi = ".CSI" if if_csi else ""
+            index_df = pro.index_daily(ts_code=f'{symbol}{csi}', start_date=start, end_date=end)
             if index_df.empty:
                 print(f"tushare获取{symbol}指数的日行情数据获取失败, 数据为空")
                 return pd.DataFrame()

@@ -347,7 +347,6 @@ def solve_min_variance(Sigma, single_limits, multi_limits):
     return w.value
 
 
-
 def solve_max_return(mu, single_limits, multi_limits):
     n = mu.size
     w = cp.Variable(n)
@@ -380,14 +379,39 @@ def solve_max_return_at_risk(mu, Sigma, s_target, single_limits, multi_limits, w
 
 
 def sweep_frontier_by_risk(mu, Sigma, single_limits, multi_limits, n_grid=300):
-    """逐风险扫描得到前沿曲线。"""
+    """
+    逐风险扫描得到前沿曲线。
+
+    通过在风险维度上进行网格搜索，计算不同风险水平下的最优投资组合，
+    从而构建有效前沿曲线。
+
+    参数:
+        mu: numpy数组，资产预期收益率向量
+        Sigma: numpy数组，资产收益率协方差矩阵
+        single_limits: 单一资产约束条件
+        multi_limits: 多资产约束条件
+        n_grid: int，风险维度网格点数量，默认为300
+
+    返回:
+        tuple: 包含以下元素的元组：
+            - grid: numpy数组，风险维度的网格点
+            - W: numpy数组，各风险水平下的最优权重矩阵
+            - R: numpy数组，对应组合的收益率
+            - S: numpy数组，对应组合的风险值
+            - w_minv: numpy数组，最小方差组合权重
+            - w_maxr: numpy数组，最大收益组合权重
+    """
+    # 计算最小方差组合和最大收益组合
     w_minv = solve_min_variance(Sigma, single_limits, multi_limits)
     w_maxr = solve_max_return(mu, single_limits, multi_limits)
+
+    # 获取最小方差组合和最大收益组合的风险值
     _, s_min = port_stats(w_minv, mu, Sigma)
     s_min = s_min[0]
     _, s_max = port_stats(w_maxr, mu, Sigma)
     s_max = np.maximum(s_min, s_max).item()
 
+    # 在风险维度上构建网格并逐点求解最优组合
     grid = np.linspace(s_min, s_max, n_grid)
     W = []
     w0 = w_minv
@@ -1007,7 +1031,7 @@ if __name__ == '__main__':
     # ---- 统一配置（可按需调整）----
     CONFIG = {
         # 1) 数据
-        "input_excel": "历史净值数据.xlsx",
+        "input_excel": "历史净值数据_万得指数.xlsx",
         "sheet_name": "历史净值数据",
         "rename_map": {
             "货基指数": "货币现金类", "固收类": "固定收益类", "混合类": "混合策略类",
