@@ -25,7 +25,7 @@ except Exception:
 
 import numpy as np
 import pandas as pd
-from T02_other_tools import log, load_returns_from_excel
+from T02_other_tools import log, ann_log_return, ann_log_vol
 
 
 def refine_frontier_with_slsqp(
@@ -60,17 +60,11 @@ def refine_frontier_with_slsqp(
 
     # 复制自 _build_frontier_by_risk_grid_slsqp 的内部函数，用于优化
     def _ann_log_ret_func(w: np.ndarray) -> float:
-        w = np.asarray(w, dtype=np.float64)
-        Rt = port_daily_returns @ w
-        Xt = np.log1p(Rt)
-        return float(Xt.mean()) * annual_trading_days
+        return ann_log_return(port_daily_returns, np.asarray(w, dtype=np.float64), annual_trading_days)
 
     if risk_metric == "vol":
         def _risk_func_raw(w: np.ndarray) -> float:
-            w = np.asarray(w, dtype=np.float64)
-            Rt = port_daily_returns @ w
-            Xt = np.log1p(Rt)
-            return float(Xt.std(ddof=ddof)) * np.sqrt(annual_trading_days)
+            return ann_log_vol(port_daily_returns, np.asarray(w, dtype=np.float64), annual_trading_days, ddof)
     else:  # 'var'
         from statistics import NormalDist
         vp = var_params or {}
@@ -632,17 +626,11 @@ def _build_frontier_by_risk_grid_slsqp(
 
     # 目标函数与风险函数 (非向量化，用于优化器)
     def _ann_log_ret_func(w: np.ndarray) -> float:
-        w = np.asarray(w, dtype=np.float64)
-        Rt = port_daily_returns @ w
-        Xt = np.log1p(Rt)
-        return float(Xt.mean()) * annual_trading_days
+        return ann_log_return(port_daily_returns, np.asarray(w, dtype=np.float64), annual_trading_days)
 
     if risk_metric == "vol":
         def _risk_func_raw(w: np.ndarray) -> float:
-            w = np.asarray(w, dtype=np.float64)
-            Rt = port_daily_returns @ w
-            Xt = np.log1p(Rt)
-            return float(Xt.std(ddof=ddof)) * np.sqrt(annual_trading_days)
+            return ann_log_vol(port_daily_returns, np.asarray(w, dtype=np.float64), annual_trading_days, ddof)
     else:  # 'var'
         vp = var_params or {}
         confidence = float(vp.get("confidence", 0.95))

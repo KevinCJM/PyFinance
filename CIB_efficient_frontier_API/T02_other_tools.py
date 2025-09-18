@@ -71,3 +71,45 @@ def load_returns_from_excel(
     arr = hist_ret_df.values.astype(np.float32, copy=False)
     log(f"数据加载完成，样本天数={arr.shape[0]}，资产数={arr.shape[1]}")
     return arr, assets_list
+
+
+def ann_log_return(
+        returns_daily: np.ndarray,
+        w: np.ndarray,
+        trading_days: float = 252.0,
+) -> float:
+    """计算组合的年化对数收益率。
+
+    参数:
+        returns_daily: (T, N) 日简单收益矩阵
+        w: (N,) 组合权重
+        trading_days: 年化天数（默认 252）
+    公式:
+        μ_annual_log = mean(log(1 + R_t)) * trading_days
+        其中 R_t = returns_daily @ w
+    """
+    Rt = returns_daily @ np.asarray(w, dtype=np.float64)
+    Xt = np.log1p(Rt)
+    return float(Xt.mean()) * float(trading_days)
+
+
+def ann_log_vol(
+        returns_daily: np.ndarray,
+        w: np.ndarray,
+        trading_days: float = 252.0,
+        ddof: int = 1,
+) -> float:
+    """计算组合年化对数收益波动率。
+
+    参数:
+        returns_daily: (T, N) 日简单收益矩阵
+        w: (N,) 组合权重
+        trading_days: 年化天数（默认 252）
+        ddof: 样本标准差自由度（默认 1）
+    公式:
+        σ_annual = std(log(1 + R_t), ddof) * sqrt(trading_days)
+        其中 R_t = returns_daily @ w
+    """
+    Rt = returns_daily @ np.asarray(w, dtype=np.float64)
+    Xt = np.log1p(Rt)
+    return float(Xt.std(ddof=int(ddof))) * float(np.sqrt(trading_days))

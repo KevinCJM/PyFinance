@@ -20,7 +20,7 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from T04_show_plt import plot_efficient_frontier
-from T02_other_tools import load_returns_from_excel, log
+from T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
 from T01_generate_random_weights import (
     compute_perf_arrays,
     compute_var_parametric_arrays,
@@ -57,9 +57,7 @@ def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: st
 
 
 def _ann_log_ret_func(returns_daily: np.ndarray, w: np.ndarray, annual_trading_days: float = TRADING_DAYS) -> float:
-    Rt = returns_daily @ w
-    Xt = np.log1p(Rt)
-    return float(Xt.mean()) * annual_trading_days
+    return ann_log_return(returns_daily, w, annual_trading_days)
 
 
 def _risk_func(
@@ -71,8 +69,7 @@ def _risk_func(
 ) -> float:
     risk_metric = (risk_metric or "vol").lower()
     if risk_metric == "vol":
-        Xt = np.log1p(returns_daily @ w)
-        return float(Xt.std(ddof=1)) * np.sqrt(annual_trading_days)
+        return ann_log_vol(returns_daily, w, annual_trading_days, ddof=1)
     # 参数法VaR
     vp = var_params or {}
     from statistics import NormalDist
