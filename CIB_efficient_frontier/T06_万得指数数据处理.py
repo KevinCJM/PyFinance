@@ -13,6 +13,9 @@ def read_data_and_prepare(excel_file_name: str = "万得指数数据.xlsx",
     # 规范日期列
     index_df["date"] = pd.to_datetime(index_df["date"])
     index_df = index_df[index_df["date"] < pd.to_datetime("2025-09-01")]
+    # index_df = index_df[index_df["date"] >= pd.to_datetime("2015-01-01")]
+    # 剔除有nan的行
+    index_df = index_df.dropna(axis=1)
 
     # 识别数值列（除 date 外）
     value_cols = [c for c in index_df.columns if c != "date"]
@@ -409,38 +412,39 @@ if __name__ == '__main__':
     config = {
         "权益类": {
             # 权重分配方式: 'equal'-等权; 'manual'-手工指定; 'risk_parity'-风险平价
-            'method': 'manual',
+            'method': 'equal',
             # 指定构建权重的成分名称（必须与数据中的列名一致）
-            'index_names': ['万得普通股票型基金指数', '万得股票策略私募指数', '万得QDII股票型基金指数'],
-            # 指定手工权重（仅当 method='manual' 时有效）
-            'manual_weights': [0.4, 0.4, 0.2],
+            'index_names': ['万得普通股票型基金指数', '万得股票策略私募指数']
         },
         "固收类": {
             'method': 'manual',
-            'index_names': ['万得短期纯债型基金指数', '万得中长期纯债型指数', '万得QDII债券型基金指数'],
-            'manual_weights': [0.25, 0.5, 0.25],
+            'index_names': ['万得短期纯债型基金指数', '万得中长期纯债型指数'],
+            'manual_weights': [0.5, 0.5],
         },
         "另类": {
-            'method': 'equal',
-            'index_names': ['伦敦金现', '南华商品指数', '万得另类投资基金总指数'],
+            'method': 'manual',
+            'index_names': ['伦敦金现', '南华商品指数'],
+            'manual_weights': [0.5, 0.5],
         },
         "货基指数": {
             'method': 'equal',
             'index_names': ['万得货币市场基金指数'],
         },
         "混合类": {
-            'method': 'risk_parity',
-            'index_names': ['万得纯债型基金总指数', '万得普通股票型基金指数', '万得另类投资基金总指数'],
-            'risk_metric': 'vol',  # 风险平价度量 ['vol', 'ES', 'VaR'], 选择 weight_mode='risk_parity' 时有效
-            'rp_alpha': 0.95,  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
-            'rp_tol': 1e-6,  # 迭代收敛阈值, 选择 weight_mode='risk_parity' 时有效
-            'rp_max_iter': 50,  # 迭代上限, 选择 weight_mode='risk_parity' 时有效
-            'risk_budget': (1, 5, 10),  # 风险预算比例 (与 selected_assets 等长), 选择 weight_mode='risk_parity' 时有效
+            'method': 'manual',
+            'index_names': ['万得纯债型基金总指数', '万得另类投资基金总指数',
+                            '万得宏观策略私募指数', '万得管理期货私募指数', '万得股票市场中性私募指数'],
+            'manual_weights': [0.6, 0.1, 0.1, 0.1, 0.1],
+            # 'risk_metric': 'vol',  # 风险平价度量 ['vol', 'ES', 'VaR'], 选择 weight_mode='risk_parity' 时有效
+            # 'rp_alpha': 0.95,  # ES/VaR 置信度 (左尾 1-alpha), 选择 risk_metric='ES'/'VaR' 时有效
+            # 'rp_tol': 1e-6,  # 迭代收敛阈值, 选择 weight_mode='risk_parity' 时有效
+            # 'rp_max_iter': 50,  # 迭代上限, 选择 weight_mode='risk_parity' 时有效
+            # 'risk_budget': (1, 5, 10),  # 风险预算比例 (与 selected_assets 等长), 选择 weight_mode='risk_parity' 时有效
         }
     }
 
     # excel 参数
-    excel_name = '万得指数数据.xlsx'
+    excel_name = '万得数据.xlsx'
     sheet_name = '万得原始数据'
     # 读取并处理数据
     nav_df = read_data_and_prepare(excel_name, sheet_name)
@@ -465,3 +469,16 @@ if __name__ == '__main__':
         plot_lines(nav_df, title="万得指数：虚拟净值（起始为1）", y_tick_format=None, output_html=None)
 
     custom_nav_df.to_excel("历史净值数据_万得指数.xlsx", sheet_name="历史净值数据")
+    print(custom_nav_df)
+
+    return_df = custom_nav_df.pct_change().dropna()
+    std = return_df.std(ddof=1)
+    print("\n各大类资产净值标准差:\n", std)
+    # 对数收益
+    log_return_df = np.log(custom_nav_df / custom_nav_df.shift(1)).dropna()
+    # 总对数收益率
+    total_log_return = log_return_df.sum()
+    # 对数收益率的波动率
+    log_volatility = log_return_df.std(ddof=1)
+    print("\n各大类资产总对数收益率:\n", total_log_return)
+    print("\n各大类资产对数收益率波动率:\n", log_volatility)
