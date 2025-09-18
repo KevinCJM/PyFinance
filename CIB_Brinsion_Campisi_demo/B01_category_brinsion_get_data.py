@@ -11,7 +11,7 @@ from tqdm import tqdm
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from tushare_config import pro
+from D01_tushare_config import pro
 from A01_equity_brinsion_get_data import fetch_index_daily_return
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量

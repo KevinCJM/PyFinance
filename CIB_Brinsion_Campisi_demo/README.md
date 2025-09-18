@@ -34,7 +34,7 @@
 为了从 Tushare 获取数据，您需要在项目根目录下创建一个 `tushare_config.py` 文件，并填入您的 Tushare token，格式如下：
 
 ```python
-# tushare_config.py
+# D01_tushare_config.py
 import tushare as ts
 
 ts.set_token('YOUR_TUSHARE_TOKEN')

@@ -14,7 +14,7 @@ import akshare as ak
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from tushare_config import pro
+from D01_tushare_config import pro
 
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 pd.set_option('display.width', 1000)  # 表格不分段显示
