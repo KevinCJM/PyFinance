@@ -367,25 +367,11 @@ def main(json_str, excel_path, excel_sheet):
 
 if __name__ == '__main__':
     ''' 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------ '''
-    # 字典格式入参
-    dict_input = {
-        'asset_list': [
-            '货币现金类', '固定收益类', '混合策略类', '权益投资类', '另类投资类'
-        ],
-        'WeightRange': {  # 大类权重上下限
-            '货币现金类': [0.05 * 0.8, 0.05 * 1.2], '固定收益类': [0.10 * 0.8, 0.10 * 1.2],
-            '混合策略类': [0.15 * 0.8, 0.15 * 1.2], '权益投资类': [0.60 * 0.8, 0.60 * 1.2],
-            '另类投资类': [0.10 * 0.8, 0.10 * 1.2]
-        },
-        'draw_plt': True,  # 是否绘图展示
-        'draw_plt_filename': None,  # 绘图保存文件名，None表示不保存直接显示
-    }
+    with open('sample_A02_input.json', 'r', encoding='utf-8') as f:
+        json_str = f.read()
     # excel信息
     excel_path = '历史净值数据_万得指数.xlsx'
     excel_sheet = '历史净值数据'
-    # 字典转Json, 模拟输入的Json参数
-    json_str = json.dumps(dict_input, ensure_ascii=False)
-    print(json_str)
 
     ''' 调用主函数进行计算 -------------------------------------------------------------------------------------- '''
     result_json = main(json_str, excel_path, excel_sheet)

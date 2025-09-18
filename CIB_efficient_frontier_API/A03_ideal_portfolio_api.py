@@ -682,7 +682,7 @@ def main(json_input: str, excel_name: str, sheet_name: str) -> str:
 if __name__ == '__main__':
     # Demo 运行：读取本地输入并打印输出
     ''' 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------ '''
-    with open('A03_input.json', 'r', encoding='utf-8') as f:
+    with open('sample_A03_input.json', 'r', encoding='utf-8') as f:
         json_str = f.read()
     excel_path = '历史净值数据_万得指数.xlsx'
     excel_sheet = '历史净值数据'
