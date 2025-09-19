@@ -288,7 +288,23 @@ def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p
         'sharpe_ratio': sharpe,
     })
     perf_df = pd.concat([weight_df, perf_df], axis=1)
-    perf_df['var_zero'] = np.clip(perf_df['var_annual'], a_min=None, a_max=0.0)
+
+    # 标记有效前沿上的点
+    def _efficient_frontier_mask(ret_v: np.ndarray, vol_v: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+        valid = np.isfinite(ret_v) & np.isfinite(vol_v)
+        mask = np.zeros(ret_v.shape[0], dtype=bool)
+        if not np.any(valid):
+            return mask
+        # 收益降序排列；对排序后的波动做累计最小
+        idx = np.nonzero(valid)[0]
+        order = np.argsort(ret_v[valid])[::-1]
+        sorted_vol = vol_v[valid][order]
+        cum_min = np.minimum.accumulate(sorted_vol)
+        on_sorted = sorted_vol <= (cum_min + tol)
+        mask[idx[order]] = on_sorted
+        return mask
+
+    perf_df['on_ef'] = _efficient_frontier_mask(perf_df['ret_annual'].values, perf_df['vol_annual'].values)
     return perf_df
 
 
@@ -358,7 +374,7 @@ if __name__ == '__main__':
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 10)
+    weight_list = generate_simplex_grid_numba(len(a_list), 100)
     print(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''

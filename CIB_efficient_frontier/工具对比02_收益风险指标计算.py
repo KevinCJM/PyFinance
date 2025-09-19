@@ -148,7 +148,24 @@ def generate_alloc_perf_new(asset_list, return_df, weight_array: np.ndarray, p95
         'vol_annual': vol_annual,
         'var_annual': var_annual,
     })
-    return pd.concat([weight_df, perf_df], axis=1)
+    res = pd.concat([weight_df, perf_df], axis=1)
+
+    # 标记有效前沿（收益降序时的累积最小波动）
+    def _efficient_frontier_mask(ret_v: np.ndarray, vol_v: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+        valid = np.isfinite(ret_v) & np.isfinite(vol_v)
+        mask = np.zeros(ret_v.shape[0], dtype=bool)
+        if not np.any(valid):
+            return mask
+        idx = np.nonzero(valid)[0]
+        order = np.argsort(ret_v[valid])[::-1]
+        sorted_vol = vol_v[valid][order]
+        cum_min = np.minimum.accumulate(sorted_vol)
+        on_sorted = sorted_vol <= (cum_min + tol)
+        mask[idx[order]] = on_sorted
+        return mask
+
+    res['on_ef'] = _efficient_frontier_mask(res['ret_annual'].values, res['vol_annual'].values)
+    return res
 
 
 # -------------------- Numba: 零拷贝并行计算 -------------------- #
@@ -259,7 +276,24 @@ def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p
     # 注意：当 M 很大时，构造 DataFrame 会占用较多内存
     weight_df = pd.DataFrame(W, columns=asset_cols)
     perf_df = pd.DataFrame({'ret_annual': ret, 'vol_annual': vol, 'var_annual': var})
-    return pd.concat([weight_df, perf_df], axis=1)
+    res = pd.concat([weight_df, perf_df], axis=1)
+
+    # 标记有效前沿
+    def _efficient_frontier_mask(ret_v: np.ndarray, vol_v: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+        valid = np.isfinite(ret_v) & np.isfinite(vol_v)
+        mask = np.zeros(ret_v.shape[0], dtype=bool)
+        if not np.any(valid):
+            return mask
+        idx = np.nonzero(valid)[0]
+        order = np.argsort(ret_v[valid])[::-1]
+        sorted_vol = vol_v[valid][order]
+        cum_min = np.minimum.accumulate(sorted_vol)
+        on_sorted = sorted_vol <= (cum_min + tol)
+        mask[idx[order]] = on_sorted
+        return mask
+
+    res['on_ef'] = _efficient_frontier_mask(res['ret_annual'].values, res['vol_annual'].values)
+    return res
 
 
 if __name__ == '__main__':
