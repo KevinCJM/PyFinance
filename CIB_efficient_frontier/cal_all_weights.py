@@ -164,10 +164,7 @@ def generate_simplex_grid_numba(assets_num: int, resolution_ratio: int):
 
 @njit(
     types.UniTuple(float64[:], 4)(float64[:, :], float64[:, :], float64, int64, float64),
-    parallel=True,
-    nogil=True,
-    fastmath=True,
-    cache=True,
+    parallel=True, nogil=True, fastmath=True, cache=True,
 )
 def _compute_perf_numba(r, w, trading_days, dof, p95):
     """
