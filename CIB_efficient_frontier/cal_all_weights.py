@@ -455,7 +455,7 @@ if __name__ == '__main__':
     print(res_df.head())
     print(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")  # 10%:0.94秒, 1%:30.84秒, 0.5%:SIGKILL
 
-    # 3) 画图：有效前沿 + 抽样其他点
+    ''' 3) 画图 ------------------------------------------------------------------------------------- '''
     plot_efficient_frontier_plotly(
         res_df,
         asset_cols=a_list,
