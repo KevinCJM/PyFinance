@@ -301,6 +301,7 @@ if __name__ == '__main__':
     # =========================== 分层网格搜索：100 -> 20 -> 50 -> 100 ===========================
 
     # 第一层：1% 精度
+    s_t = time.time()
     print("\nLayer 1: 10% precision (resolution=10)")
     start_time = time.time()
     w_r10 = generate_simplex_grid(n_assets=5, resolution=100)
@@ -321,3 +322,5 @@ if __name__ == '__main__':
         print('交互式图表已生成: efficient_frontier_4M.html')
     except Exception as e:
         print('Plotly 绘图失败:', repr(e))
+
+    print(f"Layer 1 completed in {time.time() - s_t:.2f} seconds")
