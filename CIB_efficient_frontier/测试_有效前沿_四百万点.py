@@ -11,6 +11,7 @@ warnings.filterwarnings('ignore')
 from itertools import combinations
 import os
 import plotly.graph_objects as go
+from numba import njit, prange
 
 
 # 加权求和计算指数组合每日收益数据
@@ -66,17 +67,98 @@ def generate_alloc_perf_batch(port_daily: np.ndarray, portfolio_allocs: np.ndarr
 
 def generate_simplex_grid(n_assets: int, resolution: int):
     """
-    n_assets: 几个资产类别（维度）
-    resolution: 把 1 划分为 resolution 份，即 Δ=1/resolution
-    返回所有加总为1，且每个资产为 Δ 的倍数的组合
+    使用 Numba(njit+prange) 加速的“星与杠”网格：
+    - n_assets: 资产维度（≥ 2）
+    - resolution: 将 1 划分成 resolution 份（Δ=1/resolution）
+    返回 shape=(C(resolution+n_assets-1, n_assets-1), n_assets) 的权重矩阵，每行之和=1。
+
+    说明：
+    - 旧实现基于 Python 的 itertools.combinations，生成 400 万级组合会非常慢；
+    - 新实现预分配结果矩阵，使用组合字典序枚举，并在第一维上并行分块填充；
+    - 需 numba==0.49.1（见 requirements.txt）。
     """
-    total_slots = resolution + n_assets - 1
-    grid = []
-    for bars in combinations(range(total_slots), n_assets - 1):
-        bars = (-1,) + bars + (total_slots,)
-        vec = [bars[i + 1] - bars[i] - 1 for i in range(n_assets)]
-        grid.append(np.array(vec) / resolution)
-    return np.array(grid)
+
+    @njit
+    def _comb(n: int, k: int) -> np.int64:
+        if k < 0 or k > n:
+            return np.int64(0)
+        if k > n - k:
+            k = n - k
+        res = 1
+        for i in range(1, k + 1):
+            res = (res * (n - k + i)) // i
+        return np.int64(res)
+
+    @njit
+    def _fill_block_given_first(out: np.ndarray, start_row: int,
+                                first_bar: int, total_slots: int,
+                                k: int, n_assets: int, resolution: int) -> int:
+        # 在 out[start_row:...] 填充所有以 first_bar 作为首个“杠”的组合，并返回写入的行数。
+        k2 = k - 1
+        if k2 == 0:
+            prev = -1
+            row = start_row
+            out[row, 0] = (first_bar - prev - 1) / resolution
+            prev = first_bar
+            out[row, n_assets - 1] = (total_slots - prev - 1) / resolution
+            for j in range(1, n_assets - 1):
+                out[row, j] = 0.0
+            return 1
+
+        base = first_bar + 1
+        n2 = total_slots - base
+        idx2 = np.empty(k2, dtype=np.int64)
+        for i in range(k2):
+            idx2[i] = i
+
+        row = start_row
+        while True:
+            prev = -1
+            out[row, 0] = (first_bar - prev - 1) / resolution
+            prev = first_bar
+            for j in range(k2):
+                b = base + idx2[j]
+                out[row, j + 1] = (b - prev - 1) / resolution
+                prev = b
+            out[row, n_assets - 1] = (total_slots - prev - 1) / resolution
+            row += 1
+
+            p = k2 - 1
+            while p >= 0 and idx2[p] == p + n2 - k2:
+                p -= 1
+            if p < 0:
+                break
+            idx2[p] += 1
+            for j in range(p + 1, k2):
+                idx2[j] = idx2[j - 1] + 1
+
+        return row - start_row
+
+    @njit(parallel=True)
+    def _generate(n_assets: int, resolution: int) -> np.ndarray:
+        total_slots = resolution + n_assets - 1
+        k = n_assets - 1
+        M = _comb(total_slots, k)
+        out = np.empty((M, n_assets), dtype=np.float64)
+
+        first_max = total_slots - k
+        F = first_max + 1
+        counts = np.empty(F, dtype=np.int64)
+        for f in range(F):
+            counts[f] = _comb(total_slots - (f + 1), k - 1)
+
+        offsets = np.empty(F + 1, dtype=np.int64)
+        offsets[0] = 0
+        for i in range(F):
+            offsets[i + 1] = offsets[i] + counts[i]
+
+        for f in prange(F):
+            start = offsets[f]
+            _ = _fill_block_given_first(out, start, f, total_slots, k, n_assets, resolution)
+
+        return out
+
+    return _generate(n_assets, resolution)
 
 
 # 通过近似法求解
@@ -237,8 +319,8 @@ def read_excel_auto(path: str, sheet_name: str = None) -> pd.DataFrame:
         return pd.read_excel(path, sheet_name=sheet_name, engine=engine)
     except ImportError as e:
         hint = (
-            "读取 Excel 失败：缺少引擎。对于 .xlsx/.xlsm 请安装 openpyxl；"
-            "对于 .xls 请安装 xlrd<2.0.0。原始错误: %r" % (e,)
+                "读取 Excel 失败：缺少引擎。对于 .xlsx/.xlsm 请安装 openpyxl；"
+                "对于 .xls 请安装 xlrd<2.0.0。原始错误: %r" % (e,)
         )
         raise RuntimeError(hint)
 
