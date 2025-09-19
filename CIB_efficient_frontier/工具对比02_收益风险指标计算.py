@@ -11,7 +11,7 @@ import time
 import datetime
 import numpy as np
 import pandas as pd
-from numba import njit, prange
+from numba import njit, prange, set_num_threads
 from multiprocessing import Pool, cpu_count
 from 工具对比01_单纯形网格点生成 import generate_simplex_grid_numba
 
@@ -256,104 +256,14 @@ def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p
     return pd.concat([weight_df, perf_df], axis=1)
 
 
-# ==================== 多进程版本（进程池 + Numba 内核） ==================== #
-# 说明：Linux/Docker 默认 start_method='fork'，子进程继承父进程内存（写时拷贝）。
-# 为避免参数反复拷贝，使用模块级全局变量在子进程访问大数组（R, W）。
-
-_MP_R = None
-_MP_W = None
-_MP_TD = 252.0
-_MP_DDOF = 1
-_MP_P95 = 1.96
-
-
-def _mp_worker_range(task):
-    start, end = task
-    W_chunk = _MP_W[start:end, :]
-    ret, vol, var = _compute_perf_numba(_MP_R, W_chunk, _MP_TD, _MP_DDOF, _MP_P95)
-    return ret, vol, var
-
-
-def generate_alloc_perf_numba_multiprocess(asset_list, return_df, weight_array: np.ndarray, p95=1.96,
-                                           trading_days: float = 252.0, ddof: int = 1,
-                                           n_procs: int = None, chunk_size: int = None) -> pd.DataFrame:
-    """
-    将任务拆分到进程池中执行的版本：
-    - 使用全局只读缓冲避免每个任务拷贝大矩阵；
-    - 子进程按权重行块调用 Numba 内核逐日累积，父进程合并结果；
-    - 仅在 Linux/fork 下具备“近零拷贝”优势；spawn 下会有较大内存与序列化开销。
-
-    参数:
-        asset_list: 资产列名顺序
-        return_df: 资产日收益率 DataFrame
-        weight_array: 权重矩阵 (M, N)
-        p95, trading_days, ddof: 指标参数
-        n_procs: 进程数（默认 cpu_count()）
-        chunk_size: 每个任务包含的组合数量（默认平均分配）
-
-    返回:
-        DataFrame: 列为资产权重各列 + ret_annual + vol_annual + var_annual
-    """
-    # 列对齐，准备数据缓冲
-    Nw = int(weight_array.shape[1])
-    asset_cols = list(asset_list)[:Nw]
-
-    R = return_df[asset_cols].values
-    if R.dtype != np.float64:
-        R = R.astype(np.float64)
-    if not R.flags.c_contiguous:
-        R = np.ascontiguousarray(R)
-
-    W = np.asarray(weight_array, dtype=np.float64)
-    if not W.flags.c_contiguous:
-        W = np.ascontiguousarray(W)
-
-    M = W.shape[0]
-    n_procs = n_procs or cpu_count()
-    if n_procs < 1:
-        n_procs = 1
-    if chunk_size is None or chunk_size <= 0:
-        chunk_size = max(1, (M + n_procs - 1) // n_procs)
-
-    # 设置全局缓冲供子进程使用（fork 下零拷贝）
-    global _MP_R, _MP_W, _MP_TD, _MP_DDOF, _MP_P95
-    _MP_R = R
-    _MP_W = W
-    _MP_TD = float(trading_days)
-    _MP_DDOF = int(ddof)
-    _MP_P95 = float(p95)
-
-    # 任务切片
-    tasks = []
-    for start in range(0, M, chunk_size):
-        end = min(start + chunk_size, M)
-        tasks.append((start, end))
-
-    # 并行执行（imap 保序返回）
-    results = []
-    with Pool(processes=n_procs) as pool:
-        for ret, vol, var in pool.imap(_mp_worker_range, tasks, chunksize=1):
-            results.append((ret, vol, var))
-
-    # 合并输出
-    ret_all = np.concatenate([a for a, _, _ in results], axis=0)
-    vol_all = np.concatenate([b for _, b, _ in results], axis=0)
-    var_all = np.concatenate([c for _, _, c in results], axis=0)
-
-    # 组装 DataFrame
-    weight_df = pd.DataFrame(W, columns=asset_cols)
-    perf_df = pd.DataFrame({'ret_annual': ret_all, 'vol_annual': vol_all, 'var_annual': var_all})
-    return pd.concat([weight_df, perf_df], axis=1)
-
-
 if __name__ == '__main__':
     ''' 0) 数据准备 --------------------------------------------------------------------------------- '''
     e, s = '历史净值数据.xlsx', '历史净值数据'
     a_list = ['货币现金类', '固定收益类', '混合策略类', '权益投资类', '另类投资类']
     re_df = data_prepare(e, s, a_list)
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 100)
-    print(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.84秒
+    weight_list = generate_simplex_grid_numba(len(a_list), 200)
+    print(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
 
     # ''' 1) 计算收益风险指标(老版本) ------------------------------------------------------------------- '''
     # s_t_1 = time.time()
@@ -371,11 +281,4 @@ if __name__ == '__main__':
     s_t_3 = time.time()
     res_3 = generate_alloc_perf_numba(a_list, re_df, weight_list)
     print(res_3.head())
-    print(f"计算收益风险指标(Numba) 耗时: {time.time() - s_t_3:.2f} 秒")  # 10%:0.94秒, 1%:29.40秒
-
-    ''' 4) 计算收益风险指标(Numba + 进程池) --------------------------------------------------------- '''
-    # 注意：仅在 Linux/fork 下具备近零拷贝优势；在 spawn 下请谨慎使用
-    s_t_4 = time.time()
-    res_4 = generate_alloc_perf_numba_multiprocess(a_list, re_df, weight_list, n_procs=4)
-    print(res_4.head())
-    print(f"计算收益风险指标(Numba+MP) 耗时: {time.time() - s_t_4:.2f} 秒")  # 1%:29.40秒
+    print(f"计算收益风险指标(Numba) 耗时: {time.time() - s_t_3:.2f} 秒")  # 10%:0.94秒, 1%:30.84秒, 0.5%:SIGKILL
