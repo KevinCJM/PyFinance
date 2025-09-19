@@ -12,19 +12,15 @@
 
 import time
 import json
-from typing import Any, Dict, List, Tuple, Optional
-
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from typing import Any, Dict, List, Tuple, Optional
 
 from T04_show_plt import plot_efficient_frontier
-from T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
-from T01_generate_random_weights import (
-    compute_perf_arrays,
-    compute_var_parametric_arrays,
-)
 from T03_weight_limit_cal import hold_weight_limit_cal
+from T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
+from T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
 
 # 全局参数（与其他模块保持一致）
 TRADING_DAYS = 252.0
@@ -93,13 +89,16 @@ def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: st
     refine_ef_before_select = bool(params.get("refine_ef_before_select", False))
 
     # 加载收益率：优先使用 JSON 中的 nv；否则 Excel；都无则报错
-    nv_data = params.get("nv")
+    nv_data = params.get("nv", None)
     if nv_data is not None:
+        log("使用 JSON 中的净值数据(nv)加载收益率")
         returns = _load_returns_from_nv(nv_data, asset_list)
     else:
         if excel_name and sheet_name:
+            log("使用 Excel 读取的净值数据加载收益率")
             returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
         else:
+            log("未提供净值数据(nv)，且缺少 Excel 读取参数(excel_name/sheet_name)")
             raise ValueError("未提供净值数据(nv)，且缺少 Excel 读取参数(excel_name/sheet_name)")
 
     return asset_list, draw_plt, draw_plt_filename, user_holding, ef_data, returns, refine_ef_before_select
@@ -209,18 +208,21 @@ def _select_hot_start_by_target(
 
     # 按收益模式进行匹配
     if mode == "ret":
-        ret_ann, _ = compute_perf_arrays(returns_daily, W, trading_days=TRADING_DAYS, return_type="log")
+        ret_ann, _ = compute_perf_arrays(returns_daily, W,
+                                         trading_days=TRADING_DAYS, return_type="log")
         idx = int(np.argmin(np.abs(ret_ann - target)))
     else:
         # 按风险模式进行匹配
         if RISK_METRIC == "vol":
             # 使用波动率作为风险指标
-            _, vol_ann = compute_perf_arrays(returns_daily, W, trading_days=TRADING_DAYS, return_type="log")
+            _, vol_ann = compute_perf_arrays(returns_daily, W,
+                                             trading_days=TRADING_DAYS, return_type="log")
             risk_arr = vol_ann
         else:
             # 使用VaR作为风险指标
             risk_arr = compute_var_parametric_arrays(
-                returns_daily, W, confidence=VAR_PARAMS["confidence"], horizon_days=VAR_PARAMS["horizon_days"],
+                returns_daily, W, confidence=VAR_PARAMS["confidence"],
+                horizon_days=VAR_PARAMS["horizon_days"],
                 return_type=VAR_PARAMS["return_type"], ddof=VAR_PARAMS["ddof"],
                 clip_non_negative=VAR_PARAMS["clip_non_negative"],
             )
@@ -256,7 +258,8 @@ def compute_point_metrics(
         - turnover_l1_half: 换手率（L1/2范数）
     """
     # 计算组合的收益和波动率数组
-    ret_arr, vol_arr = compute_perf_arrays(returns_daily, w.reshape(1, -1), trading_days=TRADING_DAYS,
+    ret_arr, vol_arr = compute_perf_arrays(returns_daily, w.reshape(1, -1),
+                                           trading_days=TRADING_DAYS,
                                            return_type="log")
     ret = float(ret_arr[0])
 
@@ -617,13 +620,24 @@ def _make_scatter_data(
 
 
 def main(json_input: str, excel_name: str, sheet_name: str) -> str:
+    """
+    主函数：根据输入的JSON配置和Excel数据，计算投资组合优化方案，并可选地绘制有效前沿图。
+
+    参数:
+        json_input (str): 包含用户配置和EF（Efficient Frontier）输入的JSON字符串。
+        excel_name (str): Excel文件名，用于读取资产收益数据。
+        sheet_name (str): Excel工作表名，指定读取数据的具体sheet。
+
+    返回:
+        str: 处理结果的JSON字符串，包含优化后的投资组合权重及性能指标，或错误信息。
+    """
     try:
         # 1) 解析参数 & 读取数据 -------------------------------------------------------------------------------------
         (asset_list, draw_plt, draw_plt_filename, user_holding, ef_data,
          returns, refine_ef_before_select) = analysis_json_and_read_data(
             json_input, excel_name, sheet_name)
 
-        # 2) 计算约束 -----------------------------------------------------------------------------------------------
+        # 2) 计算单个资产与多个资产的持仓约束 -----------------------------------------------------------------------------------------------
         single_limit, multi_limit = hold_weight_limit_cal(asset_list, user_holding)
 
         # 3) 基于EF输入与SLSQP热启动计算点 -----------------------------------------------------------------------------
@@ -696,7 +710,7 @@ def main(json_input: str, excel_name: str, sheet_name: str) -> str:
                 output_filename=draw_plt_filename,
             )
 
-        # 5) 返回 JSON 结果
+        # 5) 构造并返回 JSON 结果
         result = {
             "success": True,
             "same_return_min_risk": p_same_ret,
@@ -738,5 +752,5 @@ if __name__ == '__main__':
     ''' 计算并输出结果 ------------------------------------------------------------------------------------------ '''
     s_t = time.time()
     str_res = main(json_str, excel_path, excel_sheet)
-    print("\n最终返回的结果 Json 字符串为：\n", str_res)
-    print(f"\n总计算耗时: {time.time() - s_t:.3f} 秒")
+    log(f"最终返回的结果 Json 字符串为：\n{str_res}")
+    log(f"总计算耗时: {time.time() - s_t:.3f} 秒")

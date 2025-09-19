@@ -12,10 +12,10 @@ import pandas as pd
 from scipy.optimize import minimize
 
 from T04_show_plt import plot_efficient_frontier
-from T02_other_tools import load_returns_from_excel
-from T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
+from T02_other_tools import load_returns_from_excel, log
 from T03_weight_limit_cal import level_weight_limit_cal
 from T01_generate_random_weights import generate_weights_random_walk
+from T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
 
 ''' 预设计算参数 ---------------------------------------------------------------------------------------- '''
 RANDOM_SEED = 12345
@@ -66,11 +66,14 @@ def analysis_json_and_read_data(json_input, excel_name, sheet_name):
     # 读取数据：优先 nv，再 Excel，否则报错
     nv_data = json_dict.get('nv')
     if nv_data is not None:
+        log("使用 Json 中的净值数据(nv)进行计算...")
         returns = _load_returns_from_nv(nv_data, asset_list)
     else:
         if excel_name and sheet_name:
+            log("使用 Excel 中的净值数据进行计算...")
             returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
         else:
+            log("未提供净值数据(nv)，尝试使用 Excel 读取...")
             raise ValueError("未提供净值数据(nv)，且缺少 Excel 读取参数(excel_name/sheet_name)")
     return asset_list, draw_plt, draw_plt_filename, weight_range, returns
 
@@ -216,25 +219,25 @@ def use_optimizer(bounds, multi_limit, returns, risk_metric, var_params, trading
     if res_min.success:
         min_risk_val = res_min.fun
         min_risk_weights = res_min.x
-        print("\n--- 最小风险组合 (已找到) ---")
-        print(f"风险值 ({risk_metric}): {min_risk_val:.6f}")
+        log("\n--- 最小风险组合 (已找到) ---")
+        log(f"风险值 ({risk_metric}): {min_risk_val:.6f}")
         for asset, weight in zip(asset_list, min_risk_weights):
-            print(f"  {asset}: {weight:.4%}")
+            log(f"  {asset}: {weight:.4%}")
     else:
-        print("\n--- 最小风险组合优化失败 ---")
-        print(res_min.message)
+        log("\n--- 最小风险组合优化失败 ---")
+        log(res_min.message)
 
     # 输出最大风险组合结果
     if res_max.success:
         max_risk_val = -res_max.fun
         max_risk_weights = res_max.x
-        print("\n--- 最大风险组合 (已找到) ---")
-        print(f"风险值 ({risk_metric}): {max_risk_val:.6f}")
+        log("\n--- 最大风险组合 (已找到) ---")
+        log(f"风险值 ({risk_metric}): {max_risk_val:.6f}")
         for asset, weight in zip(asset_list, max_risk_weights):
-            print(f"  {asset}: {weight:.4%}")
+            log(f"  {asset}: {weight:.4%}")
     else:
-        print("\n--- 最大风险组合优化失败 ---")
-        print(res_max.message)
+        log("\n--- 最大风险组合优化失败 ---")
+        log(res_max.message)
     return res_min, res_max
 
 
@@ -259,7 +262,7 @@ def draw_plt_func(res_min, res_max, returns, w_random, ret_annual_random, risk_a
     返回:
         无返回值。生成并保存一张有效前沿图。
     """
-    print("\n步骤 4: 准备绘图数据并生成图表...")
+    log("\n步骤 4: 准备绘图数据并生成图表...")
 
     # 构建随机投资组合的数据框
     df_random = pd.DataFrame(w_random, columns=asset_list)
@@ -329,7 +332,7 @@ def draw_plt_func(res_min, res_max, returns, w_random, ret_annual_random, risk_a
         hover_text_col="hover_text",
         output_filename=draw_plt_filename
     )
-    print(f"绘图完成。")
+    log(f"绘图完成。")
 
 
 # 主函数
@@ -350,10 +353,10 @@ def main(json_str, excel_path, excel_sheet):
 
     ''' 2) 计算约束 ---------------------------------------------------------------------------------------------- '''
     single_limit, multi_limit = level_weight_limit_cal(asset_list, weight_range)
-    print(f"单层约束: {single_limit}; 多层约束: {multi_limit}")
+    log(f"单层约束: {single_limit}; 多层约束: {multi_limit}")
 
     ''' 3) 计算两端风险水平 --------------------------------------------------------------------------------------- '''
-    print(f"\n步骤 1: 生成 {NUM_RANDOM_SAMPLES} 个随机权重用于热启动...")
+    log(f"\n步骤 1: 生成 {NUM_RANDOM_SAMPLES} 个随机权重用于热启动...")
     w_random = generate_weights_random_walk(
         N=len(asset_list),
         single_limits=single_limit,
@@ -362,15 +365,15 @@ def main(json_str, excel_path, excel_sheet):
         num_samples=NUM_RANDOM_SAMPLES,
         step_size=RANDOM_WALK_STEP_SIZE,
     )
-    print(f"生成了 {w_random.shape[0]} 个有效的随机权重。")
+    log(f"生成了 {w_random.shape[0]} 个有效的随机权重。")
 
-    print("\n步骤 2: 从随机权重中寻找风险最大/最小的组合作为热启动点...")
+    log("\n步骤 2: 从随机权重中寻找风险最大/最小的组合作为热启动点...")
     ret_annual_random, risk_arr_random, w0_min_risk, w0_max_risk = find_min_max_risk(
         w_random, returns, RISK_METRIC, TRADING_DAYS, VAR_PARAMS)
-    print(
+    log(
         f"最小风险热启动点 (风险={np.min(risk_arr_random):.4f}); 最大风险热启动点 (风险={np.max(risk_arr_random):.4f})")
 
-    print("\n步骤 3: 使用SLSQP优化器精确寻找风险边界...")
+    log("\n步骤 3: 使用SLSQP优化器精确寻找风险边界...")
     res_min, res_max = use_optimizer(single_limit, multi_limit, returns,
                                      RISK_METRIC, VAR_PARAMS, TRADING_DAYS,
                                      w0_min_risk, w0_max_risk, asset_list)
@@ -405,13 +408,13 @@ def main(json_str, excel_path, excel_sheet):
 if __name__ == '__main__':
     ''' 准备工作: 模拟json参数输入 ------------------------------------------------------------------------------ '''
     with open('sample_A02_input.json', 'r', encoding='utf-8') as f:
-        json_str = f.read()
+        json_i = f.read()
     # excel信息
-    excel_path = '历史净值数据_万得指数.xlsx'
-    excel_sheet = '历史净值数据'
+    excel = None
+    sheet = '历史净值数据'
 
     ''' 调用主函数进行计算 -------------------------------------------------------------------------------------- '''
     s_t = time.time()
-    result_json = main(json_str, excel_path, excel_sheet)
-    print("\n最终返回的结果 Json 字符串为：\n", result_json)
-    print(f"\n总计算用时: {time.time() - s_t:.2f} 秒")
+    result_json = main(json_i, excel, sheet)
+    log(f"最终返回的结果 Json 字符串为：\n{result_json}")
+    log(f"总计算用时: {time.time() - s_t:.2f} 秒")
