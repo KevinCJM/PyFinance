@@ -49,7 +49,7 @@ def read_data_and_prepare(excel_file_name: str = "万得指数数据.xlsx",
 
 
 # 画图：净值曲线与日收益率
-def plot_lines(df: pd.DataFrame, title: str, y_tick_format: str | None, output_html: str | None):
+def plot_lines(df: pd.DataFrame, title, y_tick_format, output_html):
     fig = go.Figure()
     for col in df.columns:
         fig.add_trace(go.Scatter(x=df.index, y=df[col], mode="lines", name=col))

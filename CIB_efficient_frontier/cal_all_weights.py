@@ -162,7 +162,7 @@ def generate_simplex_grid_numba(assets_num: int, resolution_ratio: int):
 
 
 @njit(
-    types.UniTuple(float64[:], 3)(float64[:, :], float64[:, :], float64, int64, float64),
+    types.UniTuple(float64[:], 4)(float64[:, :], float64[:, :], float64, int64, float64),
     parallel=True,
     nogil=True,
     fastmath=True,
@@ -190,9 +190,11 @@ def _compute_perf_numba(r, w, trading_days, dof, p95):
 
     out_ret = np.empty(big_m, dtype=np.float64)
     out_vol = np.empty(big_m, dtype=np.float64)
+    out_sharpe = np.empty(big_m, dtype=np.float64)
 
     sqrt_td = np.sqrt(trading_days)
 
+    # 并行遍历所有组合，计算每个组合的年化收益、波动率和VaR
     for j in prange(big_m):
         mean = 0.0
         m2 = 0.0
@@ -215,43 +217,55 @@ def _compute_perf_numba(r, w, trading_days, dof, p95):
             mean += delta / n
             m2 += delta * (x - mean)
 
+        # 若组合无效或样本不足，则输出 NaN
         if invalid or n <= 1 or (n - dof) <= 0:
             out_ret[j] = np.nan
             out_vol[j] = np.nan
+            out_sharpe[j] = np.nan
             continue
 
+        # 计算年化收益与年化波动率
         var = m2 / (n - dof)
         if var < 0.0:
             var = 0.0
-        out_ret[j] = mean * trading_days
-        out_vol[j] = np.sqrt(var) * sqrt_td
+        annual_ret = mean * trading_days
+        annual_vol = np.sqrt(var) * sqrt_td
+        out_ret[j] = annual_ret
+        out_vol[j] = annual_vol
+        if annual_vol > 0.0:
+            out_sharpe[j] = annual_ret / annual_vol
+        else:
+            out_sharpe[j] = np.nan
 
+    # 计算 VaR：年化收益 - 年化波动 * VaR 系数
     out_var = out_ret - out_vol * p95
-    return out_ret, out_vol, out_var
+    return out_ret, out_vol, out_var, out_sharpe
 
 
+# 计算资产组合的年度化收益,波动率,和在险价值
 def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p95=1.96,
                               trading_days: float = 252.0, dof: int = 1):
     """
-    基于 numba 的零拷贝并行实现：
-    - 不创建 (T,M) 中间矩阵，按组合并行逐日累积，内存占用 O(T*N + M*N + 3M)。
-    - 返回三个一维数组，或按需拼装为 DataFrame（注意：M 很大时 DataFrame 可能占用数百 MB）。
+    基于 numba 的零拷贝并行实现，用于计算资产组合的年度化收益、波动率和风险价值（VaR）等指标。
+    该函数避免创建中间的 (T,M) 大小矩阵，从而降低内存占用。
 
     参数:
-        asset_list: 资产列名顺序，对应权重列顺序
-        return_df: 资产日收益率 DataFrame
-        weight_array: 权重矩阵 (M, N)
-        p95, trading_days, dof: 指标参数
-        return_dataframe: 为 True 时返回 DataFrame（含权重与指标），否则返回 (ret, vol, var) 元组
+        asset_list (list): 资产列名列表，其顺序应与权重矩阵 weight_array 的列顺序一致。
+        return_df (pd.DataFrame): 包含各资产日收益率的时间序列数据。
+        weight_array (np.ndarray): 权重矩阵，形状为 (M, N)，其中 M 为组合数，N 为资产数。
+        p95 (float): VaR 计算所用的分位数参数，默认为 1.96（即 95% 置信水平）。
+        trading_days (float): 年化交易日数量，默认为 252。
+        dof (int): 自由度参数，用于波动率调整，默认为 1。
 
     返回:
-        DataFrame: 列为资产权重各列(asset_cols) + ret_annual + vol_annual + var_annual
+        pd.DataFrame: 包含每组权重及对应年度化收益(ret_annual)、波动率(vol_annual)、风险价值(var_annual)的结果表。
     """
-    # 列对齐：按照权重矩阵的列数截断资产列
+
+    # 列对齐：按照权重矩阵的列数截断资产列，确保维度匹配
     nw = int(weight_array.shape[1])
     asset_cols = list(asset_list)[:nw]
 
-    # 保证输入为 float64 且 C 连续
+    # 保证输入为 float64 且 C 连续，以提升 numba 执行效率
     r = return_df[asset_cols].values
     if r.dtype != np.float64:
         r = r.astype(np.float64)
@@ -262,14 +276,23 @@ def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p
     if not w.flags.c_contiguous:
         w = np.ascontiguousarray(w)
 
-    ret, vol, var = _compute_perf_numba(r, w, float(trading_days), int(dof), float(p95))
+    # 调用核心计算函数，获取年度化收益、波动率、VaR 与夏普比率
+    ret, vol, var, sharpe = _compute_perf_numba(r, w, float(trading_days), int(dof), float(p95))
 
-    # 注意：当 M 很大时，构造 DataFrame 会占用较多内存
+    # 构造结果 DataFrame，注意当 M 很大时，拼接 DataFrame 可能导致高内存占用
     weight_df = pd.DataFrame(w, columns=asset_cols)
-    perf_df = pd.DataFrame({'ret_annual': ret, 'vol_annual': vol, 'var_annual': var})
-    return pd.concat([weight_df, perf_df], axis=1)
+    perf_df = pd.DataFrame({
+        'ret_annual': ret,
+        'vol_annual': vol,
+        'var_annual': var,
+        'sharpe_ratio': sharpe,
+    })
+    perf_df = pd.concat([weight_df, perf_df], axis=1)
+    perf_df['var_zero'] = np.clip(perf_df['var_annual'], a_min=None, a_max=0.0)
+    return perf_df
 
 
+# 从指定的 Excel 文件中读取并处理大类资产的数据
 def data_prepare(excel_path, sheet, asset_list):
     """
     从指定的 Excel 文件中读取并处理历史数据，返回指定资产的日收益率数据。
@@ -307,12 +330,12 @@ def data_prepare(excel_path, sheet, asset_list):
     # 读取原始数据
     hist_value = _read_excel_auto(excel_path, sheet)
 
-    # 数据输入处理
+    # 设置日期为索引，并转换为 datetime 类型，去除缺失值后按日期升序排列
     hist_value = hist_value.set_index('date')
     hist_value.index = pd.to_datetime(hist_value.index)
     hist_value = hist_value.dropna().sort_index(ascending=True)
 
-    # 列名标准化
+    # 标准化列名，统一资产类别命名
     hist_value = hist_value.rename({
         "货基指数": "货币现金类",
         '固收类': '固定收益类',
@@ -321,10 +344,9 @@ def data_prepare(excel_path, sheet, asset_list):
         '另类': '另类投资类'
     }, axis=1)
 
-    # 计算日收益率
+    # 计算每日收益率，并去除计算后产生的空值
     hist_value = hist_value.pct_change().dropna()
-
-    # 返回指定资产的数据
+    # 返回用户指定的资产列表对应的数据
     return hist_value[asset_list]
 
 
@@ -336,11 +358,11 @@ if __name__ == '__main__':
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 100)
+    weight_list = generate_simplex_grid_numba(len(a_list), 10)
     print(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
     s_t_1 = time.time()
     res_df = generate_alloc_perf_numba(a_list, re_df, weight_list)
-    print(res_df.head())
+    print(res_df)
     print(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")  # 10%:0.94秒, 1%:30.84秒, 0.5%:SIGKILL

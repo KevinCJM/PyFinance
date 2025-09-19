@@ -276,12 +276,12 @@ if __name__ == '__main__':
     # res_1 = generate_alloc_perf_old(a_list, re_df)
     # print(res_1)
     # print(f"计算收益风险指标(老版本) 耗时: {time.time() - s_t_1:.2f} 秒")  # 10%:13.10秒, 1%:卡死
-    #
-    # ''' 2) 计算收益风险指标(向量化新版本) ------------------------------------------------------------ '''
-    # s_t_2 = time.time()
-    # res_2 = generate_alloc_perf_new(a_list, re_df, weight_list)
-    # print(res_2)
-    # print(f"计算收益风险指标(向量化) 耗时: {time.time() - s_t_2:.2f} 秒")  # 10%:0.08秒, 1%:SIGKILL
+
+    ''' 2) 计算收益风险指标(向量化新版本) ------------------------------------------------------------ '''
+    s_t_2 = time.time()
+    res_2 = generate_alloc_perf_new(a_list, re_df, weight_list)
+    print(res_2)
+    print(f"计算收益风险指标(向量化) 耗时: {time.time() - s_t_2:.2f} 秒")  # 10%:0.08秒, 1%:SIGKILL
 
     ''' 3) 计算收益风险指标(Numba 并行零拷贝版本) ----------------------------------------------- '''
     s_t_3 = time.time()
