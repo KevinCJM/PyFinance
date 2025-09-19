@@ -309,30 +309,29 @@ def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p
     return perf_df
 
 
-def _build_hover_text(row, asset_cols):
-    parts = [
-        f"年化收益率: {row['ret_annual']:.2%}",
-        f"年化波动率: {row['vol_annual']:.2%}",
-        f"VaR95: {row['var_annual']:.2%}",
-        f"Sharpe: {row.get('sharpe_ratio', np.nan):.3f}",
-        "<br><b>资产权重</b>:"
-    ]
-    for col in asset_cols:
-        v = row.get(col, np.nan)
-        try:
-            fv = float(v)
-        except Exception:
-            fv = np.nan
-        if np.isfinite(fv) and fv > 1e-4:
-            parts.append(f"<br>{col}: {fv:.1%}")
-    return "".join(parts)
-
-
 def plot_efficient_frontier_plotly(df: pd.DataFrame,
                                    asset_cols,
                                    title: str = '资产组合有效前沿',
                                    sample_non_ef: int = 50000,
                                    save_html=None) -> None:
+    def _build_hover_text(row, a_cols):
+        parts = [
+            f"年化收益率: {row['ret_annual']:.2%}",
+            f"年化波动率: {row['vol_annual']:.2%}",
+            f"VaR95: {row['var_annual']:.2%}",
+            f"Sharpe: {row.get('sharpe_ratio', np.nan):.3f}",
+            "<br><b>资产权重</b>:"
+        ]
+        for col in a_cols:
+            v = row.get(col, np.nan)
+            try:
+                fv = float(v)
+            except Exception:
+                fv = np.nan
+            if np.isfinite(fv) and fv > 1e-4:
+                parts.append(f"<br>{col}: {fv:.1%}")
+        return "".join(parts)
+
     df = df.copy()
     ef_df = df[df['on_ef'] == True]
     non_ef_df = df[df['on_ef'] != True]
