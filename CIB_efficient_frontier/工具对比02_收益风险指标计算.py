@@ -155,17 +155,18 @@ if __name__ == '__main__':
     e, s = '历史净值数据.xlsx', '历史净值数据'
     a_list = ['货币现金类', '固定收益类', '混合策略类', '权益投资类', '另类投资类']
     re_df = data_prepare(e, s, a_list)
-    weight_list = generate_simplex_grid_numba(len(a_list), 1)
-    print(f"计算网格点数量: {weight_list.shape}")
+    s_t_0 = time.time()
+    weight_list = generate_simplex_grid_numba(len(a_list), 100)
+    print(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 1001:1.87 秒, 4598126:1.84 秒
 
-    ''' 1) 计算收益风险指标(老版本) ------------------------------------------------------------------- '''
-    s_t_1 = time.time()
-    res_1 = generate_alloc_perf_old(a_list, re_df)
-    print(res_1)
-    print(f"计算收益风险指标(老版本) 耗时: {time.time() - s_t_1:.2f} 秒")  # 23.22 秒
+    # ''' 1) 计算收益风险指标(老版本) ------------------------------------------------------------------- '''
+    # s_t_1 = time.time()
+    # res_1 = generate_alloc_perf_old(a_list, re_df)
+    # print(res_1)
+    # print(f"计算收益风险指标(老版本) 耗时: {time.time() - s_t_1:.2f} 秒")  # 1001:13.10 秒
 
     ''' 2) 计算收益风险指标(向量化新版本) ------------------------------------------------------------ '''
     s_t_2 = time.time()
     res_2 = generate_alloc_perf_new(a_list, re_df, weight_list)
     print(res_2)
-    print(f"计算收益风险指标(向量化) 耗时: {time.time() - s_t_2:.2f} 秒")
+    print(f"计算收益风险指标(向量化) 耗时: {time.time() - s_t_2:.2f} 秒")  # 1001:0.08 秒, 4598126:SIGKILL
