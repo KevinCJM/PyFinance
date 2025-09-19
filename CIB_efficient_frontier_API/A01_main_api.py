@@ -215,6 +215,32 @@ def create_scatter_point_data(asset_list, W_unc, ret_annual_unc, risk_arr_unc, e
     return scatter_points_data
 
 
+def _parse_series_from_dict(d):
+    """将 {date->nav} 字典解析为 Series，日期自动解析，按时间升序，值为 float。"""
+    s = pd.Series(d)
+    try:
+        idx = pd.to_datetime(s.index, format="%Y%m%d")
+    except Exception:
+        idx = pd.to_datetime(s.index)
+    s.index = idx
+    s = pd.to_numeric(s, errors='coerce').astype(float)
+    return s.dropna().sort_index()
+
+
+def _load_returns_from_nv(nv_dict, asset_list):
+    ser_list = []
+    for asset in asset_list:
+        if asset not in nv_dict:
+            raise ValueError("缺少大类 '%s' 的净值数据(nv)" % asset)
+        v = nv_dict[asset]
+        if not isinstance(v, dict):
+            raise ValueError("nv['%s'] 的格式应为 {date->nav} 字典" % asset)
+        ser_list.append(_parse_series_from_dict(v).rename(asset))
+    df_nv = pd.concat(ser_list, axis=1, join='inner')
+    df_ret = df_nv.pct_change().replace([np.inf, -np.inf], np.nan).dropna(how='any')
+    return df_ret.values.astype(np.float32, copy=False)
+
+
 # 解析Json参数 & 读取大类收益率
 def analysis_json_and_read_data(json_input, excel_name, sheet_name):
     # Json转字典
@@ -227,8 +253,15 @@ def analysis_json_and_read_data(json_input, excel_name, sheet_name):
     weight_range = json_dict.get('WeightRange', None)  # 标准组合约束
     standard_proportion = json_dict.get('StandardProportion', None)  # 标准组合
     user_holding = json_dict.get('user_holding', None)  # 客户持仓组合
-    # 读取excel，生成日收益二维数组
-    returns, assets = load_returns_from_excel(excel_name, sheet_name, asset_list)
+    # 优先使用 JSON 内嵌的净值数据 nv；否则读 Excel；都没有则报错
+    nv_data = json_dict.get('nv')
+    if nv_data is not None:
+        returns = _load_returns_from_nv(nv_data, asset_list)
+    else:
+        if excel_name and sheet_name:
+            returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
+        else:
+            raise ValueError("未提供净值数据(nv)，且缺少 Excel 读取参数(excel_name/sheet_name)")
     return (asset_list, cal_market_ef, draw_plt, draw_plt_filename,
             weight_range, standard_proportion, user_holding, returns)
 
