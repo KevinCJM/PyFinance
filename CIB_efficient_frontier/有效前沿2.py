@@ -8,9 +8,20 @@ from typing import Dict
 from scipy.spatial import ConvexHull
 from scipy.spatial.distance import cdist
 from itertools import combinations
+import os
 import matplotlib
 
-matplotlib.use('Qt5Agg')  # 必须在 plt 之前设置
+# 后端选择：优先使用环境变量，其次尝试 Qt5，失败回退到无界面 Agg
+_backend = os.environ.get("MPLBACKEND")
+try:
+    if _backend:
+        matplotlib.use(_backend, force=True)
+    else:
+        matplotlib.use('Qt5Agg', force=True)
+except Exception:
+    # Docker/无GUI环境下无 Qt 依赖，回退到 Agg 以避免导入错误
+    matplotlib.use('Agg', force=True)
+
 import matplotlib.pyplot as plt
 
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签

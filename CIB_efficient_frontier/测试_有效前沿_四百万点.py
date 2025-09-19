@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import datetime
 from copy import deepcopy
-from typing import Dict
+from typing import Dict, Optional
 from scipy.spatial import ConvexHull
 import time
 import warnings
@@ -10,23 +10,7 @@ import warnings
 warnings.filterwarnings('ignore')
 from itertools import combinations
 import os
-import matplotlib
-
-# 后端选择：优先使用环境变量，其次尝试 Qt5，失败回退到无界面 Agg
-_backend = os.environ.get("MPLBACKEND")
-try:
-    if _backend:
-        matplotlib.use(_backend, force=True)
-    else:
-        matplotlib.use('Qt5Agg', force=True)
-except Exception:
-    # Docker/无GUI环境下无 Qt 依赖，回退到 Agg 以避免导入错误
-    matplotlib.use('Agg', force=True)
-
-import matplotlib.pyplot as plt
-
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
-plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
+import plotly.graph_objects as go
 
 
 # 加权求和计算指数组合每日收益数据
@@ -160,23 +144,108 @@ def find_best(weights):
 
 
 # 绘制有效前沿图
-def scatter_plot(data, risk_label='var_annual'):
-    fig, ax = plt.subplots(1, 1, figsize=(20, 12))
-    for i, row in data.iterrows():
-        color_style = 'bo' if row['on_ef'] else 'ro'
-        ax.plot(row[risk_label], row['ret_annual'], color_style, markersize=1)
-    plt.gca().invert_xaxis()  # 这里反转x轴
-    plt.title('资产组合有效前沿', fontsize=14)
-    plt.xlabel(risk_label, fontsize=12)
-    plt.ylabel('ret_annual', fontsize=12)
-    # 优化布局
-    plt.tight_layout()
-    plt.show()
+def _build_hover_text(row, assets_cols):
+    parts = [
+        f"年化收益率: {row['ret_annual']:.2%}",
+        f"年化波动率: {row['vol_annual']:.2%}",
+        "<br><b>资产权重</b>:"
+    ]
+    for col in assets_cols:
+        if col in row and pd.notna(row[col]) and float(row[col]) > 1e-6:
+            parts.append(f"<br>{col}: {float(row[col]):.1%}")
+    return "".join(parts)
+
+
+def plot_efficient_frontier_plotly(df: pd.DataFrame,
+                                   assets_cols: list,
+                                   title: str = '资产组合有效前沿',
+                                   sample_non_ef: int = 50000,
+                                   save_html: Optional[str] = 'efficient_frontier.html'):
+    """
+    使用 plotly.graph_objects 进行交互式展示。
+    - x: vol_annual
+    - y: ret_annual
+    - on_ef: True 的点高亮
+    - 为避免内存压力，非前沿点可抽样展示（默认最多 5 万个）
+    """
+    df = df.copy()
+    if 'hover_text' not in df.columns:
+        df['hover_text'] = df.apply(lambda r: _build_hover_text(r, assets_cols), axis=1)
+
+    ef_df = df[df['on_ef'] == True]
+    non_ef_df = df[df['on_ef'] != True]
+
+    if sample_non_ef is not None and len(non_ef_df) > sample_non_ef:
+        non_ef_df = non_ef_df.sample(n=sample_non_ef, random_state=42)
+
+    fig = go.Figure()
+    # 非前沿点（灰色、半透明）
+    if len(non_ef_df) > 0:
+        fig.add_trace(go.Scatter(
+            x=non_ef_df['vol_annual'],
+            y=non_ef_df['ret_annual'],
+            mode='markers',
+            marker=dict(color='rgba(150,150,150,0.5)', size=3),
+            hovertext=non_ef_df['hover_text'],
+            hoverinfo='text',
+            name='其他组合'
+        ))
+
+    # 有效前沿点（蓝色）
+    if len(ef_df) > 0:
+        fig.add_trace(go.Scatter(
+            x=ef_df['vol_annual'],
+            y=ef_df['ret_annual'],
+            mode='markers',
+            marker=dict(color='rgba(0, 102, 204, 0.9)', size=4),
+            hovertext=ef_df['hover_text'],
+            hoverinfo='text',
+            name='有效前沿'
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title='年化波动率 (vol_annual)',
+        yaxis_title='年化收益率 (ret_annual)',
+        hovermode='closest',
+        legend_title='图例'
+    )
+
+    # 可选输出 HTML，便于在 Docker/无GUI 环境查看
+    if save_html:
+        try:
+            fig.write_html(save_html, include_plotlyjs='cdn')
+        except Exception:
+            pass
+
+    fig.show()
+
+
+def read_excel_auto(path: str, sheet_name: str = None) -> pd.DataFrame:
+    """
+    健壮的 Excel 读取：依据扩展名选择引擎；.xlsx/.xlsm 用 openpyxl；.xls 用 xlrd。
+    若缺少对应引擎，会抛出带指引的异常。
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in {'.xlsx', '.xlsm', '.xltx', '.xltm'}:
+        engine = 'openpyxl'
+    elif ext == '.xls':
+        engine = 'xlrd'
+    else:
+        engine = None  # 让 pandas 自行判断
+    try:
+        return pd.read_excel(path, sheet_name=sheet_name, engine=engine)
+    except ImportError as e:
+        hint = (
+            "读取 Excel 失败：缺少引擎。对于 .xlsx/.xlsm 请安装 openpyxl；"
+            "对于 .xls 请安装 xlrd<2.0.0。原始错误: %r" % (e,)
+        )
+        raise RuntimeError(hint)
 
 
 if __name__ == '__main__':
     # 读取数据
-    hist_value = pd.read_excel('历史净值数据.xlsx', sheet_name='历史净值数据')
+    hist_value = read_excel_auto('历史净值数据.xlsx', sheet_name='历史净值数据')
     # 数据输入处理
     hist_value = hist_value.set_index('date')
     hist_value.index = pd.to_datetime(hist_value.index)
@@ -231,7 +300,7 @@ if __name__ == '__main__':
 
     # =========================== 分层网格搜索：100 -> 20 -> 50 -> 100 ===========================
 
-    # # 第一层：1% 精度
+    # 第一层：1% 精度
     print("\nLayer 1: 10% precision (resolution=10)")
     start_time = time.time()
     w_r10 = generate_simplex_grid(n_assets=5, resolution=100)
@@ -240,134 +309,15 @@ if __name__ == '__main__':
     time_r10 = time.time() - start_time
     print(f"Found {len(best_r10)} efficient frontier points in {time_r10:.2f} seconds")
 
-    # # 第二层：5% 精度
-    print("\nLayer 2: 5% precision (resolution=20)")
-    start_time = time.time()
-    w_r20 = generate_simplex_grid_constraint(n_assets=5, resolution=20, cons=best_r10, threshold=0.1)
-    print(f"Generated {len(w_r20):,} constrained weight combinations")
-    if len(w_r20) > 0:
-        r20, best_r20 = find_best(w_r20)
-        time_r20 = time.time() - start_time
-        print(f"Found {len(best_r20)} efficient frontier points in {time_r20:.2f} seconds")
-    else:
-        print("No valid combinations found")
-        best_r20 = best_r10
-        time_r20 = 0
-
-    # # 第三层：2% 精度
-    print("\nLayer 3: 2% precision (resolution=50)")
-    start_time = time.time()
-    w_r50 = generate_simplex_grid_constraint(n_assets=5, resolution=50, cons=best_r20, threshold=0.05)
-    print(f"Generated {len(w_r50):,} constrained weight combinations")
-    if len(w_r50) > 0:
-        r50, best_r50 = find_best(w_r50)
-        time_r50 = time.time() - start_time
-        print(f"Found {len(best_r50)} efficient frontier points in {time_r50:.2f} seconds")
-    else:
-        print("No valid combinations found")
-        best_r50 = best_r20
-        time_r50 = 0
-
-    # # 第四层：1% 精度
-    print("\nLayer 4: 1% precision (resolution=100)")
-    start_time = time.time()
-    w_r100 = generate_simplex_grid_constraint(n_assets=5, resolution=100, cons=best_r50, threshold=0.02)
-    print(f"Generated {len(w_r100):,} constrained weight combinations")
-    if len(w_r100) > 0:
-        r100, best_r100 = find_best(w_r100)
-        time_r100 = time.time() - start_time
-        print(f"Found {len(best_r100)} efficient frontier points in {time_r100:.2f} seconds")
-    else:
-        print("No valid combinations found")
-        best_r100 = best_r50
-        time_r100 = 0
-
-    print("\n" + "=" * 50)
-    print("Hierarchical search completed!")
-    total_time = time_r10 + time_r20 + time_r50 + time_r100
-    print(f"Total time: {total_time:.2f} seconds")
-    print(f"Final efficient frontier points: {len(best_r100)}")
-
-    # # 第五层：0.5% 精度
-    print("\nLayer 5: 1% precision (resolution=200)")
-    start_time = time.time()
-    w_r200 = generate_simplex_grid_constraint(n_assets=5, resolution=200, cons=best_r100, threshold=0.01)
-    print(f"Generated {len(w_r200):,} constrained weight combinations")
-    if len(w_r200) > 0:
-        r200, best_r200 = find_best(w_r200)
-        time_r200 = time.time() - start_time
-        print(f"Found {len(best_r200)} efficient frontier points in {time_r200:.2f} seconds")
-    else:
-        print("No valid combinations found")
-        best_r200 = best_r100
-        time_r200 = 0
-    '''
-    r100_df = pd.read_csv("./data/新有效前沿点.csv")
-    grid_data = pd.read_csv("./data/网格搜索0.5.csv")
-    filtered_df = pd.read_csv("./data/网格搜索1.csv")
-    '''
-    # 网格搜索1
-    filtered_df = pd.concat([r10, r20, r50, r100]).drop_duplicates().sort_values(by='ret_annual').reset_index(
-        drop=True)  # 75692 个点
-    filtered_df['var_annual'] = filtered_df['ret_annual'] - filtered_df['vol_annual'] * VaR95
-    # 网格搜索0.5
-    grid_data = pd.concat([r10, r20, r50, r100, r200]).drop_duplicates().sort_values(by='ret_annual').reset_index(
-        drop=True)  # 75692 个点
-    grid_data['var_annual'] = grid_data['ret_annual'] - grid_data['vol_annual'] * VaR95
-    # 新有效前沿点
-    r100_df = filtered_df[filtered_df['on_ef'] == True]
-    # r100_df_ = cal_ef2_v4_ultra_fast(r100_df)
-
-    scatter_plot(grid_data)
-
-    # 可视化有效前沿
-    大类资产 = ["C1", "C2", "C3", "C4", "C5", "C6"]
-    # if len(best_r100) > 0:
-    plt.figure(figsize=(12, 8))
-    # 绘制有效前沿
-    plt.scatter(
-        x=filtered_df['vol_annual'],  # 使用波动率作为x轴
-        y=filtered_df['ret_annual'],  # 收益率
-        s=10,
-        c='blue',
-        alpha=0.2,
-        label='Other Choice'
-    )
-
-    plt.scatter(
-        x=r100_df['vol_annual'],  # 使用波动率作为x轴
-        y=r100_df['ret_annual'],  # 收益率
-        s=10,
-        c='red',
-        alpha=0.8,
-        label='Efficient Frontier'
-    )
-
-    # 添加单个资产点
-    for i, asset in enumerate(大类资产):
-        if asset in hist_perf.index:
-            if i == 0:
-                plt.scatter(
-                    hist_perf.loc[asset, 'Annual Volatility'],  # 使用年化波动率
-                    hist_perf.loc[asset, 'Annual Return'],
-                    s=100,
-                    alpha=1,
-                    c='orange',
-                    label='C1~C6'
-                )
-            else:
-                plt.scatter(
-                    hist_perf.loc[asset, 'Annual Volatility'],  # 使用年化波动率
-                    hist_perf.loc[asset, 'Annual Return'],
-                    s=100,
-                    alpha=1,
-                    c='orange'
-                )
-
-    plt.title('Efficient Frontier', fontsize=14)
-    plt.xlabel('Annual Volatility', fontsize=12)  # 更新x轴标签
-    plt.ylabel('Annual Return', fontsize=12)
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+    # 使用 Plotly 展示（抽样非前沿点以避免浏览器/内存压力）
+    try:
+        plot_efficient_frontier_plotly(
+            df=r10,
+            assets_cols=assets_list,
+            title='资产组合有效前沿（分辨率=100，约四百万点，已抽样显示）',
+            sample_non_ef=50000,
+            save_html='efficient_frontier_4M.html'
+        )
+        print('交互式图表已生成: efficient_frontier_4M.html')
+    except Exception as e:
+        print('Plotly 绘图失败:', repr(e))
