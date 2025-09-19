@@ -10,6 +10,7 @@ import time
 import numpy as np
 import pandas as pd
 from numba import njit, prange, float64, int64, types
+import plotly.graph_objects as go
 
 
 # 使用 Numba 加速网格生成，用于构建资产配置的离散化组合空间
@@ -308,6 +309,77 @@ def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p
     return perf_df
 
 
+def _build_hover_text(row, asset_cols):
+    parts = [
+        f"年化收益率: {row['ret_annual']:.2%}",
+        f"年化波动率: {row['vol_annual']:.2%}",
+        f"VaR95: {row['var_annual']:.2%}",
+        f"Sharpe: {row.get('sharpe_ratio', np.nan):.3f}",
+        "<br><b>资产权重</b>:"
+    ]
+    for col in asset_cols:
+        v = row.get(col, np.nan)
+        try:
+            fv = float(v)
+        except Exception:
+            fv = np.nan
+        if np.isfinite(fv) and fv > 1e-4:
+            parts.append(f"<br>{col}: {fv:.1%}")
+    return "".join(parts)
+
+
+def plot_efficient_frontier_plotly(df: pd.DataFrame,
+                                   asset_cols,
+                                   title: str = '资产组合有效前沿',
+                                   sample_non_ef: int = 50000,
+                                   save_html=None) -> None:
+    df = df.copy()
+    ef_df = df[df['on_ef'] == True]
+    non_ef_df = df[df['on_ef'] != True]
+
+    if sample_non_ef is not None and len(non_ef_df) > sample_non_ef:
+        non_ef_df = non_ef_df.sample(n=sample_non_ef, random_state=42)
+
+    ef_df = ef_df.copy()
+    non_ef_df = non_ef_df.copy()
+    ef_df['hover_text'] = ef_df.apply(lambda r: _build_hover_text(r, asset_cols), axis=1)
+    non_ef_df['hover_text'] = non_ef_df.apply(lambda r: _build_hover_text(r, asset_cols), axis=1)
+
+    fig = go.Figure()
+    if len(non_ef_df) > 0:
+        fig.add_trace(go.Scatter(
+            x=non_ef_df['vol_annual'],
+            y=non_ef_df['ret_annual'],
+            mode='markers',
+            marker=dict(color='rgba(150,150,150,0.45)', size=3),
+            hovertext=non_ef_df['hover_text'],
+            hoverinfo='text',
+            name='其他组合'
+        ))
+    if len(ef_df) > 0:
+        fig.add_trace(go.Scatter(
+            x=ef_df['vol_annual'],
+            y=ef_df['ret_annual'],
+            mode='markers',
+            marker=dict(color='rgba(0, 102, 204, 0.9)', size=4),
+            hovertext=ef_df['hover_text'],
+            hoverinfo='text',
+            name='有效前沿'
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title='年化波动率 (vol_annual)',
+        yaxis_title='年化收益率 (ret_annual)',
+        legend_title='图例',
+        hovermode='closest'
+    )
+    if save_html:
+        fig.write_html(save_html)
+        print(f"已保存 HTML 到 {save_html}")
+    fig.show()
+
+
 # 从指定的 Excel 文件中读取并处理大类资产的数据
 def data_prepare(excel_path, sheet, asset_list):
     """
@@ -380,5 +452,14 @@ if __name__ == '__main__':
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
     s_t_1 = time.time()
     res_df = generate_alloc_perf_numba(a_list, re_df, weight_list)
-    print(res_df)
+    print(res_df.head())
     print(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")  # 10%:0.94秒, 1%:30.84秒, 0.5%:SIGKILL
+
+    # 3) 画图：有效前沿 + 抽样其他点
+    plot_efficient_frontier_plotly(
+        res_df,
+        asset_cols=a_list,
+        title='资产组合有效前沿（抽样非前沿点）',
+        sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
+        save_html='efficient_frontier.html'
+    )
