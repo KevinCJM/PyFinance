@@ -11,7 +11,7 @@ import time
 import datetime
 import numpy as np
 import pandas as pd
-from numba import njit, prange, set_num_threads
+from numba import njit, prange, set_num_threads, float64, int64, types
 from multiprocessing import Pool, cpu_count
 from 工具对比01_单纯形网格点生成 import generate_simplex_grid_numba
 
@@ -152,8 +152,14 @@ def generate_alloc_perf_new(asset_list, return_df, weight_array: np.ndarray, p95
 
 
 # -------------------- Numba: 零拷贝并行计算 -------------------- #
-@njit(parallel=True)
-def _compute_perf_numba(R: np.ndarray, W: np.ndarray, trading_days: float, ddof: int, p95: float):
+@njit(
+    types.UniTuple(float64[:], 3)(float64[:, :], float64[:, :], float64, int64, float64),
+    parallel=True,
+    nogil=True,
+    fastmath=True,
+    cache=True,
+)
+def _compute_perf_numba(R, W, trading_days, ddof, p95):
     """
     在不创建 (T,M) 大矩阵的前提下，逐组合并行计算：
       - 按天累积 log(1 + w·r_t) 的均值与方差（Welford）
@@ -262,7 +268,7 @@ if __name__ == '__main__':
     a_list = ['货币现金类', '固定收益类', '混合策略类', '权益投资类', '另类投资类']
     re_df = data_prepare(e, s, a_list)
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 200)
+    weight_list = generate_simplex_grid_numba(len(a_list), 100)
     print(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
 
     # ''' 1) 计算收益风险指标(老版本) ------------------------------------------------------------------- '''
