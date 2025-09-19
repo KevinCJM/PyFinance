@@ -29,6 +29,31 @@ VAR_PARAMS = {
 }
 
 
+def _parse_series_from_dict(d):
+    s = pd.Series(d)
+    try:
+        idx = pd.to_datetime(s.index, format="%Y%m%d")
+    except Exception:
+        idx = pd.to_datetime(s.index)
+    s.index = idx
+    s = pd.to_numeric(s, errors='coerce').astype(float)
+    return s.dropna().sort_index()
+
+
+def _load_returns_from_nv(nv_dict, asset_list):
+    ser_list = []
+    for asset in asset_list:
+        if asset not in nv_dict:
+            raise ValueError("缺少大类 '%s' 的净值数据(nv)" % asset)
+        v = nv_dict[asset]
+        if not isinstance(v, dict):
+            raise ValueError("nv['%s'] 的格式应为 {date->nav} 字典" % asset)
+        ser_list.append(_parse_series_from_dict(v).rename(asset))
+    df_nv = pd.concat(ser_list, axis=1, join='inner')
+    df_ret = df_nv.pct_change().replace([np.inf, -np.inf], np.nan).dropna(how='any')
+    return df_ret.values.astype(np.float32, copy=False)
+
+
 # 解析Json参数 & 读取大类收益率
 def analysis_json_and_read_data(json_input, excel_name, sheet_name):
     # Json转字典
@@ -38,8 +63,15 @@ def analysis_json_and_read_data(json_input, excel_name, sheet_name):
     draw_plt = json_dict.get('draw_plt', None)  # 是否绘图展示
     draw_plt_filename = json_dict.get('draw_plt_filename', None)  # 绘图保存文件名, None表示不保存直接显示
     weight_range = json_dict.get('WeightRange', None)  # 标准组合约束
-    # 读取excel，生成日收益二维数组
-    returns, assets = load_returns_from_excel(excel_name, sheet_name, asset_list)
+    # 读取数据：优先 nv，再 Excel，否则报错
+    nv_data = json_dict.get('nv')
+    if nv_data is not None:
+        returns = _load_returns_from_nv(nv_data, asset_list)
+    else:
+        if excel_name and sheet_name:
+            returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
+        else:
+            raise ValueError("未提供净值数据(nv)，且缺少 Excel 读取参数(excel_name/sheet_name)")
     return asset_list, draw_plt, draw_plt_filename, weight_range, returns
 
 

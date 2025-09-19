@@ -38,6 +38,31 @@ VAR_PARAMS = {
 }
 
 
+def _parse_series_from_dict(d):
+    s = pd.Series(d)
+    try:
+        idx = pd.to_datetime(s.index, format="%Y%m%d")
+    except Exception:
+        idx = pd.to_datetime(s.index)
+    s.index = idx
+    s = pd.to_numeric(s, errors='coerce').astype(float)
+    return s.dropna().sort_index()
+
+
+def _load_returns_from_nv(nv_dict, asset_list):
+    ser_list = []
+    for asset in asset_list:
+        if asset not in nv_dict:
+            raise ValueError("缺少大类 '%s' 的净值数据(nv)" % asset)
+        v = nv_dict[asset]
+        if not isinstance(v, dict):
+            raise ValueError("nv['%s'] 的格式应为 {date->nav} 字典" % asset)
+        ser_list.append(_parse_series_from_dict(v).rename(asset))
+    df_nv = pd.concat(ser_list, axis=1, join='inner')
+    df_ret = df_nv.pct_change().replace([np.inf, -np.inf], np.nan).dropna(how='any')
+    return df_ret.values.astype(np.float32, copy=False)
+
+
 def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: str):
     """
     解析JSON输入并从Excel文件中读取数据
@@ -67,8 +92,15 @@ def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: st
     # 开关：是否精炼有效前沿点集
     refine_ef_before_select = bool(params.get("refine_ef_before_select", False))
 
-    # 从Excel文件加载收益率数据
-    returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
+    # 加载收益率：优先使用 JSON 中的 nv；否则 Excel；都无则报错
+    nv_data = params.get("nv")
+    if nv_data is not None:
+        returns = _load_returns_from_nv(nv_data, asset_list)
+    else:
+        if excel_name and sheet_name:
+            returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
+        else:
+            raise ValueError("未提供净值数据(nv)，且缺少 Excel 读取参数(excel_name/sheet_name)")
 
     return asset_list, draw_plt, draw_plt_filename, user_holding, ef_data, returns, refine_ef_before_select
 
