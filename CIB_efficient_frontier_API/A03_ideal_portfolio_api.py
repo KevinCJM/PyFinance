@@ -10,22 +10,17 @@
   3.4 与客户当前持仓换仓最小的有效前沿点（按风险锚点用SLSQP求前沿点后挑选）
 """
 
-from __future__ import annotations
-
+import time
 import json
-from typing import Any, Dict, List, Tuple, Optional
-
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
+from typing import Any, Dict, List, Tuple, Optional
 
 from T04_show_plt import plot_efficient_frontier
-from T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
-from T01_generate_random_weights import (
-    compute_perf_arrays,
-    compute_var_parametric_arrays,
-)
 from T03_weight_limit_cal import hold_weight_limit_cal
+from T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
+from T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
 
 # 全局参数（与其他模块保持一致）
 TRADING_DAYS = 252.0
@@ -37,6 +32,31 @@ VAR_PARAMS = {
     "ddof": 1,
     "clip_non_negative": True,
 }
+
+
+def _parse_series_from_dict(d):
+    s = pd.Series(d)
+    try:
+        idx = pd.to_datetime(s.index, format="%Y%m%d")
+    except Exception:
+        idx = pd.to_datetime(s.index)
+    s.index = idx
+    s = pd.to_numeric(s, errors='coerce').astype(float)
+    return s.dropna().sort_index()
+
+
+def _load_returns_from_nv(nv_dict, asset_list):
+    ser_list = []
+    for asset in asset_list:
+        if asset not in nv_dict:
+            raise ValueError("缺少大类 '%s' 的净值数据(nv)" % asset)
+        v = nv_dict[asset]
+        if not isinstance(v, dict):
+            raise ValueError("nv['%s'] 的格式应为 {date->nav} 字典" % asset)
+        ser_list.append(_parse_series_from_dict(v).rename(asset))
+    df_nv = pd.concat(ser_list, axis=1, join='inner')
+    df_ret = df_nv.pct_change().replace([np.inf, -np.inf], np.nan).dropna(how='any')
+    return df_ret.values.astype(np.float32, copy=False)
 
 
 def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: str):
@@ -68,8 +88,18 @@ def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: st
     # 开关：是否精炼有效前沿点集
     refine_ef_before_select = bool(params.get("refine_ef_before_select", False))
 
-    # 从Excel文件加载收益率数据
-    returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
+    # 加载收益率：优先使用 JSON 中的 nv；否则 Excel；都无则报错
+    nv_data = params.get("nv", None)
+    if nv_data is not None:
+        log("使用 JSON 中的净值数据(nv)加载收益率")
+        returns = _load_returns_from_nv(nv_data, asset_list)
+    else:
+        if excel_name and sheet_name:
+            log("使用 Excel 读取的净值数据加载收益率")
+            returns, _ = load_returns_from_excel(excel_name, sheet_name, asset_list)
+        else:
+            log("未提供净值数据(nv)，且缺少 Excel 读取参数(excel_name/sheet_name)")
+            raise ValueError("未提供净值数据(nv)，且缺少 Excel 读取参数(excel_name/sheet_name)")
 
     return asset_list, draw_plt, draw_plt_filename, user_holding, ef_data, returns, refine_ef_before_select
 
@@ -82,7 +112,7 @@ def _risk_func(
         returns_daily: np.ndarray,
         w: np.ndarray,
         risk_metric: str = RISK_METRIC,
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
         annual_trading_days: float = TRADING_DAYS,
 ) -> float:
     risk_metric = (risk_metric or "vol").lower()
@@ -90,12 +120,15 @@ def _risk_func(
         return ann_log_vol(returns_daily, w, annual_trading_days, ddof=1)
     # 参数法VaR
     vp = var_params or {}
-    from statistics import NormalDist
-
+    try:
+        from scipy.stats import norm
+        z_score = float(norm.ppf(1.0 - float(vp.get("confidence", 0.95))))
+    except Exception:
+        # 退化为常用近似值（95% 左尾约 -1.645）
+        z_score = -1.645
     confidence = float(vp.get("confidence", 0.95))
     horizon_days = float(vp.get("horizon_days", 1.0))
     return_type = str(vp.get("return_type", "log"))
-    z_score = NormalDist().inv_cdf(1.0 - confidence)
 
     if return_type == "log":
         X = np.log1p(returns_daily @ w)
@@ -175,18 +208,21 @@ def _select_hot_start_by_target(
 
     # 按收益模式进行匹配
     if mode == "ret":
-        ret_ann, _ = compute_perf_arrays(returns_daily, W, trading_days=TRADING_DAYS, return_type="log")
+        ret_ann, _ = compute_perf_arrays(returns_daily, W,
+                                         trading_days=TRADING_DAYS, return_type="log")
         idx = int(np.argmin(np.abs(ret_ann - target)))
     else:
         # 按风险模式进行匹配
         if RISK_METRIC == "vol":
             # 使用波动率作为风险指标
-            _, vol_ann = compute_perf_arrays(returns_daily, W, trading_days=TRADING_DAYS, return_type="log")
+            _, vol_ann = compute_perf_arrays(returns_daily, W,
+                                             trading_days=TRADING_DAYS, return_type="log")
             risk_arr = vol_ann
         else:
             # 使用VaR作为风险指标
             risk_arr = compute_var_parametric_arrays(
-                returns_daily, W, confidence=VAR_PARAMS["confidence"], horizon_days=VAR_PARAMS["horizon_days"],
+                returns_daily, W, confidence=VAR_PARAMS["confidence"],
+                horizon_days=VAR_PARAMS["horizon_days"],
                 return_type=VAR_PARAMS["return_type"], ddof=VAR_PARAMS["ddof"],
                 clip_non_negative=VAR_PARAMS["clip_non_negative"],
             )
@@ -203,7 +239,7 @@ def compute_point_metrics(
         w_user: Optional[np.ndarray] = None,
         *,
         risk_metric: str = RISK_METRIC,
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """
     计算单个组合的年化收益、风险与换手率。
@@ -222,7 +258,8 @@ def compute_point_metrics(
         - turnover_l1_half: 换手率（L1/2范数）
     """
     # 计算组合的收益和波动率数组
-    ret_arr, vol_arr = compute_perf_arrays(returns_daily, w.reshape(1, -1), trading_days=TRADING_DAYS,
+    ret_arr, vol_arr = compute_perf_arrays(returns_daily, w.reshape(1, -1),
+                                           trading_days=TRADING_DAYS,
                                            return_type="log")
     ret = float(ret_arr[0])
 
@@ -257,7 +294,7 @@ def compute_array_metrics(
         w_user: Optional[np.ndarray] = None,
         *,
         risk_metric: str = RISK_METRIC,
-        var_params: Dict[str, Any] | None = None,
+        var_params: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
     """批量计算点集的年化收益、风险与(可选)换手率(L1/2)。
 
@@ -583,13 +620,24 @@ def _make_scatter_data(
 
 
 def main(json_input: str, excel_name: str, sheet_name: str) -> str:
+    """
+    主函数：根据输入的JSON配置和Excel数据，计算投资组合优化方案，并可选地绘制有效前沿图。
+
+    参数:
+        json_input (str): 包含用户配置和EF（Efficient Frontier）输入的JSON字符串。
+        excel_name (str): Excel文件名，用于读取资产收益数据。
+        sheet_name (str): Excel工作表名，指定读取数据的具体sheet。
+
+    返回:
+        str: 处理结果的JSON字符串，包含优化后的投资组合权重及性能指标，或错误信息。
+    """
     try:
         # 1) 解析参数 & 读取数据 -------------------------------------------------------------------------------------
         (asset_list, draw_plt, draw_plt_filename, user_holding, ef_data,
          returns, refine_ef_before_select) = analysis_json_and_read_data(
             json_input, excel_name, sheet_name)
 
-        # 2) 计算约束 -----------------------------------------------------------------------------------------------
+        # 2) 计算单个资产与多个资产的持仓约束 -----------------------------------------------------------------------------------------------
         single_limit, multi_limit = hold_weight_limit_cal(asset_list, user_holding)
 
         # 3) 基于EF输入与SLSQP热启动计算点 -----------------------------------------------------------------------------
@@ -662,7 +710,7 @@ def main(json_input: str, excel_name: str, sheet_name: str) -> str:
                 output_filename=draw_plt_filename,
             )
 
-        # 5) 返回 JSON 结果
+        # 5) 构造并返回 JSON 结果
         result = {
             "success": True,
             "same_return_min_risk": p_same_ret,
@@ -702,5 +750,7 @@ if __name__ == '__main__':
     excel_sheet = '历史净值数据'
 
     ''' 计算并输出结果 ------------------------------------------------------------------------------------------ '''
+    s_t = time.time()
     str_res = main(json_str, excel_path, excel_sheet)
-    print("\n最终返回的结果 Json 字符串为：\n", str_res)
+    log(f"最终返回的结果 Json 字符串为：\n{str_res}")
+    log(f"总计算耗时: {time.time() - s_t:.3f} 秒")
