@@ -304,7 +304,7 @@ if __name__ == '__main__':
     s_t = time.time()
     print("\nLayer 1: 10% precision (resolution=10)")
     w_r10 = generate_simplex_grid(n_assets=5, resolution=100)
-    print(f"创建了{len(w_r10)} 个点, 耗时: {time.time() - start_time:.2f} 秒")
+    print(f"创建了{len(w_r10)} 个点, 耗时: {time.time() - s_t:.2f} 秒")
     start_time = time.time()
     r10, best_r10 = find_best(w_r10)
     print(f"计算完成，耗时: {time.time() - start_time:.2f} 秒")
