@@ -303,12 +303,11 @@ if __name__ == '__main__':
     # 第一层：1% 精度
     s_t = time.time()
     print("\nLayer 1: 10% precision (resolution=10)")
-    start_time = time.time()
     w_r10 = generate_simplex_grid(n_assets=5, resolution=100)
-    print(f"Generated {len(w_r10):,} weight combinations")
+    print(f"创建了{len(w_r10)} 个点, 耗时: {time.time() - start_time:.2f} 秒")
+    start_time = time.time()
     r10, best_r10 = find_best(w_r10)
-    time_r10 = time.time() - start_time
-    print(f"Found {len(best_r10)} efficient frontier points in {time_r10:.2f} seconds")
+    print(f"计算完成，耗时: {time.time() - start_time:.2f} 秒")
 
     # 使用 Plotly 展示（抽样非前沿点以避免浏览器/内存压力）
     try:
@@ -323,4 +322,4 @@ if __name__ == '__main__':
     except Exception as e:
         print('Plotly 绘图失败:', repr(e))
 
-    print(f"Layer 1 completed in {time.time() - s_t:.2f} seconds")
+    print(f"全部完成, 总耗时: {time.time() - s_t:.2f} 秒")
