@@ -9,15 +9,16 @@ import os
 import time
 import numpy as np
 import pandas as pd
-from numba import njit, prange, float64, int64, types
 import plotly.graph_objects as go
-from typing import List, Tuple, Optional
 from datetime import date as _date
+from typing import List, Tuple, Optional, Dict
+from numba import njit, prange, float64, int64, types
+
+from T02_other_tools import log
 
 # 数据库/线程池工具
 from T05_db_utils import (
     DatabaseConnectionPool,
-    threaded_read_dataframe,
     get_active_db_url,
     read_dataframe,
     create_connection,
@@ -27,10 +28,7 @@ try:
     # 数据库配置仅包含参数
     from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password  # type: ignore
 except Exception:
-    # 合理的默认值，便于本地快速尝试
-    db_type, db_host, db_port, db_name, db_user, db_password = (
-        'mysql', None, '3306', 'mysql', 'root', '112358'
-    )
+    raise RuntimeError("请先配置 Y01_db_config.py 中的数据库连接参数")
 
 
 # 使用 Numba 加速网格生成，用于构建资产配置的离散化组合空间
@@ -392,19 +390,26 @@ def plot_efficient_frontier_plotly(df: pd.DataFrame,
     )
     if save_html:
         fig.write_html(save_html)
-        print(f"已保存 HTML 到 {save_html}")
+        log(f"已保存 HTML 到 {save_html}")
     fig.show()
 
 
 # 从指定的 Excel 文件中读取并处理大类资产的数据
 def fetch_returns_from_db(mdl_ver_id: str,
                           start_dt: Optional[_date] = None,
-                          end_dt: Optional[_date] = None) -> Tuple[List[str], pd.DataFrame]:
+                          end_dt: Optional[_date] = None) -> Tuple[List[str], pd.DataFrame, Dict[str, str]]:
     """从数据库 iis_mdl_aset_pct_d 表读取指定模型的五大类日收益数据。
 
+    参数:
+        mdl_ver_id (str): 模型版本ID，用于筛选特定模型的数据。
+        start_dt (Optional[_date]): 查询起始日期，默认为 None，表示不限制开始时间。
+        end_dt (Optional[_date]): 查询结束日期，默认为 None，表示不限制结束时间。
+
     返回:
-        a_list: 资产大类名称列表（列名）
-        re_df: 以日期为索引、资产大类为列、pct_yld 为值的 DataFrame
+        Tuple[List[str], pd.DataFrame, Dict[str, str]]:
+            - a_list (List[str]): 资产大类名称列表（列名），按字母顺序排序。
+            - re_df (pd.DataFrame): 以日期为索引、资产大类为列、pct_yld 为值的 DataFrame。
+            - code_name_map (Dict[str, str]): 资产代码到资产名称的映射字典。
     """
     # 构造连接串（支持容器/本机自动主机判定；ENV: DB_URL 覆盖）
     db_url = get_active_db_url(
@@ -417,6 +422,7 @@ def fetch_returns_from_db(mdl_ver_id: str,
     )
     pool = DatabaseConnectionPool(url=db_url, pool_size=4)
 
+    # 构建 WHERE 条件和参数
     where_parts = ["mdl_ver_id = :mdl_ver_id"]
     params = {"mdl_ver_id": mdl_ver_id}
     if start_dt is not None:
@@ -427,41 +433,49 @@ def fetch_returns_from_db(mdl_ver_id: str,
         params["end_dt"] = end_dt
     where_sql = " WHERE " + " AND ".join(where_parts)
 
-    sql_assets = (
-        "SELECT DISTINCT aset_bclass_nm AS nm FROM iis_mdl_aset_pct_d" + where_sql + " ORDER BY nm"
-    )
+    # 查询SQL语句：获取资产大类代码、名称、日期及收益率
     sql_series = (
-        "SELECT aset_bclass_nm AS nm, pct_yld_date AS dt, pct_yld AS yld FROM iis_mdl_aset_pct_d" + where_sql
+            "SELECT aset_bclass_cd AS cd, aset_bclass_nm AS nm, pct_yld_date AS dt, pct_yld AS yld FROM iis_mdl_aset_pct_d" + where_sql
     )
 
-    df_assets, df_series = threaded_read_dataframe(
-        pool,
-        [
-            (sql_assets, params),
-            (sql_series, params),
-        ],
-        max_workers=2,
-    )
+    # 执行查询并转换为DataFrame
+    df = read_dataframe(pool, sql_series, params=params)
+    if df.empty:
+        raise RuntimeError("数据库中未查询到模型 {} 的收益数据".format(mdl_ver_id))
 
-    if df_assets.empty or df_series.empty:
-        raise RuntimeError("数据库中未查询到模型 {} 的资产或收益数据".format(mdl_ver_id))
+    # 处理资产名称与代码映射关系，并生成排序后的资产名称列表
+    df["nm"] = df["nm"].astype(str)
+    if "cd" in df.columns:
+        df["cd"] = df["cd"].astype(str)
+        code_name_map: Dict[str, str] = df[["cd", "nm"]].dropna().drop_duplicates().set_index("cd")["nm"].to_dict()
+    else:
+        code_name_map = {}
+    asset_list = sorted(df["nm"].unique().tolist())
 
-    a_list = df_assets["nm"].astype(str).tolist()
-
-    df = df_series.copy()
+    # 设置日期索引并重塑数据为透视表格式
     df["dt"] = pd.to_datetime(df["dt"])  # 保证为 datetime 索引
     df = df.pivot_table(index="dt", columns="nm", values="yld", aggfunc="first")
     df = df.sort_index().dropna(how='any')
 
-    # reindex columns to a_list to keep stable ordering
-    re_df = df.reindex(columns=a_list)
-    return a_list, re_df
+    # 根据资产名称排序重新排列列顺序
+    return_df = df.reindex(columns=asset_list)
+    return asset_list, return_df, code_name_map
 
 
 def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
     """从 iis_wght_cfg_attc_mdl 表中获取第一条 mdl_ver_id、cal_strt_dt、cal_end_dt。
 
-    若无数据则抛出异常。
+    该函数连接数据库，查询模型配置表中的第一条记录，返回模型版本ID和计算日期范围。
+    如果表中没有数据，则抛出运行时异常。
+
+    Returns:
+        Tuple[str, Optional[_date], Optional[_date]]: 包含以下元素的元组：
+            - str: 模型版本ID (mdl_ver_id)
+            - Optional[_date]: 计算开始日期 (cal_strt_dt)，如果为空则返回None
+            - Optional[_date]: 计算结束日期 (cal_end_dt)，如果为空则返回None
+
+    Raises:
+        RuntimeError: 当数据库中没有找到可用的模型版本时抛出
     """
     db_url = get_active_db_url(
         db_type=db_type,
@@ -482,12 +496,15 @@ def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
         raise RuntimeError("数据库中未找到可用的模型版本（iis_wght_cfg_attc_mdl 为空）")
     row = df.iloc[0]
     mdl = str(row["mdl_ver_id"]) if "mdl_ver_id" in df.columns else str(row[0])
+
+    # 日期转换辅助函数：处理可能为空的日期值
     def _to_date(v):
         if pd.isna(v):
             return None
         if hasattr(v, 'date'):
             return v.date()
         return v
+
     s_dt = _to_date(row.get("cal_strt_dt")) if "cal_strt_dt" in row else None
     e_dt = _to_date(row.get("cal_end_dt")) if "cal_end_dt" in row else None
     return mdl, s_dt, e_dt
@@ -496,31 +513,33 @@ def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
 if __name__ == '__main__':
     ''' 0) 数据准备（从数据库） ------------------------------------------------------------------------ '''
     mdl_ver_id, cal_sta_dt, cal_end_dt = fetch_default_mdl_ver_id()
-    print(f"使用大类资产指数配置模型版本: {mdl_ver_id} | 起止: {cal_sta_dt} ~ {cal_end_dt}")
-    a_list, re_df = fetch_returns_from_db(mdl_ver_id, start_dt=cal_sta_dt, end_dt=cal_end_dt)
-    print("使用模型: {} | 资产大类: {} | 日期范围: {} ~ {}".format(
+    log(f"使用大类资产指数配置模型版本: {mdl_ver_id} | 起止: {cal_sta_dt} ~ {cal_end_dt}")
+    a_list, re_df, asset_id_map = fetch_returns_from_db(mdl_ver_id, start_dt=cal_sta_dt, end_dt=cal_end_dt)
+    log("使用模型: {} | 资产大类: {} | 日期范围: {} ~ {}".format(
         mdl_ver_id,
         ", ".join(a_list),
         re_df.index.min().date() if len(re_df.index) else None,
         re_df.index.max().date() if len(re_df.index) else None,
     ))
+    log(f"大类资产ID映射: {asset_id_map}")
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()
     weight_list = generate_simplex_grid_numba(len(a_list), 100)
-    print(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
+    log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
     s_t_1 = time.time()
     res_df = generate_alloc_perf_numba(a_list, re_df, weight_list)
-    print(res_df.head())
-    print(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")  # 10%:0.94秒, 1%:30.84秒, 0.5%:SIGKILL
+    log(f"{res_df.head()}")
+    log(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")  # 10%:0.94秒, 1%:30.84秒, 0.5%:SIGKILL
 
     ''' 3) 画图 ------------------------------------------------------------------------------------- '''
-    plot_efficient_frontier_plotly(
-        res_df,
-        asset_cols=a_list,
-        title='资产组合有效前沿（抽样非前沿点）',
-        sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
-        save_html='efficient_frontier.html'
-    )
+    if db_host is None or db_host in ('localhost', '127.0.0.1'):  # 仅本机环境下进行画图
+        plot_efficient_frontier_plotly(
+            res_df,
+            asset_cols=a_list,
+            title='资产组合有效前沿（抽样非前沿点）',
+            sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
+            save_html='efficient_frontier.html'
+        )
