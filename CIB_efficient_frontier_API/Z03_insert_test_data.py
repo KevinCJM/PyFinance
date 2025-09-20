@@ -31,6 +31,11 @@ import numpy as np
 import pandas as pd
 
 from T05_db_utils import DatabaseConnectionPool, insert_dataframe
+try:
+    # 优先使用仓库内的数据库配置（自动检测容器/本机）
+    from Y01_db_config import get_active_db_url  # type: ignore
+except Exception:
+    get_active_db_url = None  # type: ignore
 
 ASSET_CLASSES = [
     ("权益", "权益"),
@@ -157,12 +162,16 @@ def build_pct_d_rows(mdl_ver_id: str, start: date, end: date, seed: int = 0) -> 
 
 
 def main() -> None:
-    db_url = os.environ.get("DB_URL")
+    # 连接串优先级：环境变量 DB_URL > 配置文件 Y01_db_config.get_active_db_url()
+    db_url = os.environ.get("DB_URL") or (get_active_db_url() if get_active_db_url else None)
     if not db_url:
-        print("[ERROR] 未设置环境变量 DB_URL（例如 mysql+pymysql://user:pwd@host:3306/db?charset=utf8mb4）。")
+        print("[ERROR] 未找到数据库连接串。请设置环境变量 DB_URL 或在 Y01_db_config.py 中提供 db_url。")
         sys.exit(2)
 
     pool = DatabaseConnectionPool(url=db_url, pool_size=2)
+    print("[INFO] Using DB URL from {}".format(
+        "ENV(DB_URL)" if os.environ.get("DB_URL") else "Y01_db_config.get_active_db_url()"
+    ))
 
     # 1) iis_wght_cfg_attc_mdl: 2 行
     df_attc = build_cfg_attc_models()
@@ -177,7 +186,6 @@ def main() -> None:
     print(f"[OK] 写入 iis_wght_cnfg_mdl: {len(df_cfg_1) + len(df_cfg_2)} 行")
 
     # 3) iis_mdl_aset_pct_d: 选择一个模型（MDL_SIM_001），五大类，各 2 年日度数据
-    # 时间区间：从两年前的第一天到昨天
     end_dt = _today() - timedelta(days=1)
     start_dt = date(end_dt.year - 2, end_dt.month, end_dt.day)
     df_pct_d = build_pct_d_rows("MDL_SIM_001", start=start_dt, end=end_dt, seed=2024)
