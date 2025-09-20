@@ -11,6 +11,26 @@ import numpy as np
 import pandas as pd
 from numba import njit, prange, float64, int64, types
 import plotly.graph_objects as go
+from typing import List, Tuple, Optional
+from datetime import date as _date
+
+# 数据库/线程池工具
+from T05_db_utils import (
+    DatabaseConnectionPool,
+    threaded_read_dataframe,
+    get_active_db_url,
+    read_dataframe,
+    create_connection,
+)
+
+try:
+    # 数据库配置仅包含参数
+    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password  # type: ignore
+except Exception:
+    # 合理的默认值，便于本地快速尝试
+    db_type, db_host, db_port, db_name, db_user, db_password = (
+        'mysql', None, '3306', 'mysql', 'root', '112358'
+    )
 
 
 # 使用 Numba 加速网格生成，用于构建资产配置的离散化组合空间
@@ -377,68 +397,113 @@ def plot_efficient_frontier_plotly(df: pd.DataFrame,
 
 
 # 从指定的 Excel 文件中读取并处理大类资产的数据
-def data_prepare(excel_path, sheet, asset_list):
-    """
-    从指定的 Excel 文件中读取并处理历史数据，返回指定资产的日收益率数据。
-
-    参数:
-        excel_path (str): Excel 文件的路径。
-        sheet (str or int): 要读取的工作表名称或索引。
-        asset_list (list of str): 需要保留的资产类别名称列表。
+def fetch_returns_from_db(mdl_ver_id: str,
+                          start_dt: Optional[_date] = None,
+                          end_dt: Optional[_date] = None) -> Tuple[List[str], pd.DataFrame]:
+    """从数据库 iis_mdl_aset_pct_d 表读取指定模型的五大类日收益数据。
 
     返回:
-        pandas.DataFrame: 包含指定资产日收益率的数据框，索引为日期，列名为资产名称。
+        a_list: 资产大类名称列表（列名）
+        re_df: 以日期为索引、资产大类为列、pct_yld 为值的 DataFrame
     """
+    # 构造连接串（支持容器/本机自动主机判定；ENV: DB_URL 覆盖）
+    db_url = get_active_db_url(
+        db_type=db_type,
+        db_user=db_user,
+        db_password=db_password,
+        db_host=db_host,
+        db_port=db_port,
+        db_name=db_name,
+    )
+    pool = DatabaseConnectionPool(url=db_url, pool_size=4)
 
-    def _read_excel_auto(path, sheet_name=None):
-        """
-        健壮的 Excel 读取：依据扩展名选择引擎；.xlsx/.xlsm 用 openpyxl；.xls 用 xlrd。
-        若缺少对应引擎，会抛出带指引的异常。
-        """
-        ext = os.path.splitext(path)[1].lower()
-        if ext in {'.xlsx', '.xlsm', '.xltx', '.xltm'}:
-            engine = 'openpyxl'
-        elif ext == '.xls':
-            engine = 'xlrd'
-        else:
-            engine = None  # 让 pandas 自行判断
-        try:
-            return pd.read_excel(path, sheet_name=sheet_name, engine=engine)
-        except ImportError as e:
-            hint = (
-                    "读取 Excel 失败：缺少引擎。对于 .xlsx/.xlsm 请安装 openpyxl；"
-                    "对于 .xls 请安装 xlrd<2.0.0。原始错误: %r" % (e,)
-            )
-            raise RuntimeError(hint)
+    where_parts = ["mdl_ver_id = :mdl_ver_id"]
+    params = {"mdl_ver_id": mdl_ver_id}
+    if start_dt is not None:
+        where_parts.append("pct_yld_date >= :start_dt")
+        params["start_dt"] = start_dt
+    if end_dt is not None:
+        where_parts.append("pct_yld_date <= :end_dt")
+        params["end_dt"] = end_dt
+    where_sql = " WHERE " + " AND ".join(where_parts)
 
-    # 读取原始数据
-    hist_value = _read_excel_auto(excel_path, sheet)
+    sql_assets = (
+        "SELECT DISTINCT aset_bclass_nm AS nm FROM iis_mdl_aset_pct_d" + where_sql + " ORDER BY nm"
+    )
+    sql_series = (
+        "SELECT aset_bclass_nm AS nm, pct_yld_date AS dt, pct_yld AS yld FROM iis_mdl_aset_pct_d" + where_sql
+    )
 
-    # 设置日期为索引，并转换为 datetime 类型，去除缺失值后按日期升序排列
-    hist_value = hist_value.set_index('date')
-    hist_value.index = pd.to_datetime(hist_value.index)
-    hist_value = hist_value.dropna().sort_index(ascending=True)
+    df_assets, df_series = threaded_read_dataframe(
+        pool,
+        [
+            (sql_assets, params),
+            (sql_series, params),
+        ],
+        max_workers=2,
+    )
 
-    # 标准化列名，统一资产类别命名
-    hist_value = hist_value.rename({
-        "货基指数": "货币现金类",
-        '固收类': '固定收益类',
-        '混合类': '混合策略类',
-        '权益类': '权益投资类',
-        '另类': '另类投资类'
-    }, axis=1)
+    if df_assets.empty or df_series.empty:
+        raise RuntimeError("数据库中未查询到模型 {} 的资产或收益数据".format(mdl_ver_id))
 
-    # 计算每日收益率，并去除计算后产生的空值
-    hist_value = hist_value.pct_change().dropna()
-    # 返回用户指定的资产列表对应的数据
-    return hist_value[asset_list]
+    a_list = df_assets["nm"].astype(str).tolist()
+
+    df = df_series.copy()
+    df["dt"] = pd.to_datetime(df["dt"])  # 保证为 datetime 索引
+    df = df.pivot_table(index="dt", columns="nm", values="yld", aggfunc="first")
+    df = df.sort_index().dropna(how='any')
+
+    # reindex columns to a_list to keep stable ordering
+    re_df = df.reindex(columns=a_list)
+    return a_list, re_df
+
+
+def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
+    """从 iis_wght_cfg_attc_mdl 表中获取第一条 mdl_ver_id、cal_strt_dt、cal_end_dt。
+
+    若无数据则抛出异常。
+    """
+    db_url = get_active_db_url(
+        db_type=db_type,
+        db_user=db_user,
+        db_password=db_password,
+        db_host=db_host,
+        db_port=db_port,
+        db_name=db_name,
+    )
+    # 单次查询：取第一条记录（可按需调整排序口径）
+    sql = "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt FROM iis_wght_cfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
+    conn = create_connection(db_url)
+    try:
+        df = pd.read_sql_query(sql, conn)
+    finally:
+        conn.close()
+    if df.empty:
+        raise RuntimeError("数据库中未找到可用的模型版本（iis_wght_cfg_attc_mdl 为空）")
+    row = df.iloc[0]
+    mdl = str(row["mdl_ver_id"]) if "mdl_ver_id" in df.columns else str(row[0])
+    def _to_date(v):
+        if pd.isna(v):
+            return None
+        if hasattr(v, 'date'):
+            return v.date()
+        return v
+    s_dt = _to_date(row.get("cal_strt_dt")) if "cal_strt_dt" in row else None
+    e_dt = _to_date(row.get("cal_end_dt")) if "cal_end_dt" in row else None
+    return mdl, s_dt, e_dt
 
 
 if __name__ == '__main__':
-    ''' 0) 数据准备 --------------------------------------------------------------------------------- '''
-    e, s = '历史净值数据.xlsx', '历史净值数据'
-    a_list = ['货币现金类', '固定收益类', '混合策略类', '权益投资类', '另类投资类']
-    re_df = data_prepare(e, s, a_list)
+    ''' 0) 数据准备（从数据库） ------------------------------------------------------------------------ '''
+    mdl_ver_id, cal_sta_dt, cal_end_dt = fetch_default_mdl_ver_id()
+    print(f"使用大类资产指数配置模型版本: {mdl_ver_id} | 起止: {cal_sta_dt} ~ {cal_end_dt}")
+    a_list, re_df = fetch_returns_from_db(mdl_ver_id, start_dt=cal_sta_dt, end_dt=cal_end_dt)
+    print("使用模型: {} | 资产大类: {} | 日期范围: {} ~ {}".format(
+        mdl_ver_id,
+        ", ".join(a_list),
+        re_df.index.min().date() if len(re_df.index) else None,
+        re_df.index.max().date() if len(re_df.index) else None,
+    ))
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()

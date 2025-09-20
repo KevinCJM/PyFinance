@@ -155,7 +155,12 @@ def read_dataframe(
     """
 
     LOGGER.debug("执行查询: %s, params=%s", query, params)
-    return pd.read_sql_query(query, pool.engine, params=params, chunksize=chunksize)
+    # 使用 SQLAlchemy text() 包装，保证命名绑定参数（:name）在各方言下正确编译
+    try:
+        stmt = text(query)
+    except Exception:
+        stmt = query
+    return pd.read_sql_query(stmt, pool.engine, params=params, chunksize=chunksize)
 
 
 def insert_dataframe(
