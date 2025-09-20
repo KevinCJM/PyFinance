@@ -27,5 +27,13 @@ pybind11==2.6.2
 tqdm==4.64.1
 
 plotly==4.14.3
+xlrd >= 1.0.0
+openpyxl==2.6.4
 
-
+# ---- 数据库相关 ----
+cx-Oracle==8.3.0
+mysql-connector-python==8.0.16
+PyMySQL==1.0.2
+psycopg2==2.7.7
+pyodbc==4.0.39
+SQLAlchemy==1.2.12
