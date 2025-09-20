@@ -20,6 +20,18 @@ CREATE TABLE iis_wght_cfg_attc_mdl
     PRIMARY KEY (mdl_ver_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权重配置模型参数附件表';
 
+CREATE TABLE iis_wght_cnfg_mdl
+(
+    pk_id          int(10) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
+    mdl_ver_id     varchar(64)    DEFAULT NULL COMMENT '模型编号',
+    aset_bclass_cd varchar(10)    DEFAULT NULL COMMENT '资产大类',
+    indx_num       varchar(100)   DEFAULT NULL COMMENT '指数编码',
+    indx_nm        varchar(500)   DEFAULT NULL COMMENT '指数名称',
+    wght           decimal(11, 7) DEFAULT NULL COMMENT '权重',
+    crt_tm         datetime       DEFAULT NULL COMMENT '新增时间',
+    PRIMARY KEY (pk_id)
+) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COMMENT='权重配置模型参数表';
+
 CREATE TABLE iis_mdl_aset_pct_d
 (
     mdl_ver_id     varchar(64) NOT NULL COMMENT '模型版本id',
@@ -90,17 +102,5 @@ CREATE TABLE iis_aset_allc_indx_rtrn
     crt_tm         datetime        DEFAULT NULL COMMENT '创建时间',
     PRIMARY KEY (mdl_ver_id, aset_bclass_cd)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资产指数收益信息表';
-
-CREATE TABLE iis_wght_cnfg_mdl
-(
-    pk_id          int(10) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
-    mdl_ver_id     varchar(64)    DEFAULT NULL COMMENT '模型编号',
-    aset_bclass_cd varchar(10)    DEFAULT NULL COMMENT '资产大类',
-    indx_num       varchar(100)   DEFAULT NULL COMMENT '指数编码',
-    indx_nm        varchar(500)   DEFAULT NULL COMMENT '指数名称',
-    wght           decimal(11, 7) DEFAULT NULL COMMENT '权重',
-    crt_tm         datetime       DEFAULT NULL COMMENT '新增时间',
-    PRIMARY KEY (pk_id)
-) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COMMENT='权重配置模型参数表';
 
 COMMIT;
