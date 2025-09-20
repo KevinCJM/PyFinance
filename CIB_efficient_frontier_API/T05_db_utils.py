@@ -43,6 +43,8 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
+import os
+import socket
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -402,4 +404,108 @@ __all__ = [
     "threaded_read_dataframe",
     "threaded_insert_dataframe",
     "threaded_update_dataframe",
+]
+
+
+# ======== 环境与连接串工具（供配置/脚本复用） ========
+
+def is_in_docker() -> bool:
+    """粗略判断当前是否运行于容器中。"""
+    if os.path.exists('/.dockerenv'):
+        return True
+    try:
+        with open('/proc/1/cgroup', 'rt') as f:
+            data = f.read()
+            if 'docker' in data or 'kubepods' in data or 'containerd' in data:
+                return True
+    except Exception:
+        pass
+    return os.environ.get('RUNNING_IN_DOCKER', '').lower() in ('1', 'true', 'yes')
+
+
+def resolve_container_host(default_gateway: str = '172.17.0.1') -> str:
+    """在容器内解析宿主机地址。
+
+    优先 host.docker.internal，失败回退到网桥网关地址（可用环境变量 HOST_DOCKER_GATEWAY 覆盖）。
+    """
+    host = 'host.docker.internal'
+    try:
+        socket.gethostbyname(host)
+        return host
+    except Exception:
+        return os.environ.get('HOST_DOCKER_GATEWAY', default_gateway)
+
+
+def default_db_host() -> str:
+    """根据是否在容器内返回默认数据库主机。"""
+    return resolve_container_host() if is_in_docker() else '127.0.0.1'
+
+
+def build_db_url(
+        db_type: str,
+        db_user: str,
+        db_password: str,
+        db_host: str,
+        db_port: str,
+        db_name: str,
+) -> str:
+    if db_type.lower() == 'mysql':
+        db_driver = 'pymysql'
+        return f'mysql+{db_driver}://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}?charset=utf8mb4'
+    elif db_type.lower() == 'postgresql':
+        return f'postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+    elif db_type.lower() == 'sqlite':
+        return f'sqlite:///{db_name}'
+    else:
+        raise ValueError('Unsupported db_type: {}'.format(db_type))
+
+
+def get_active_db_url(
+        db_type: str,
+        db_user: str,
+        db_password: str,
+        db_host: Optional[str] = None,
+        db_port: str = '3306',
+        db_name: str = '',
+        env_var: str = 'DB_URL',
+) -> str:
+    """返回最终使用的数据库连接串。
+
+    优先使用环境变量 env_var。否则：
+    - 若 db_host 为 None、'127.0.0.1' 或 'localhost'，则按环境自动判断主机：
+      容器内使用 host.docker.internal/网关，本机使用 127.0.0.1。
+    - 其他情况直接按传入的 db_host 使用。
+    """
+    url = os.environ.get(env_var)
+    if url:
+        return url
+    if db_host is None or str(db_host).lower() in ('127.0.0.1', 'localhost'):
+        host = default_db_host()
+    else:
+        host = db_host
+    return build_db_url(db_type, db_user, db_password, host, db_port, db_name)
+
+
+def try_connect(url: str, timeout: int = 5) -> bool:
+    """尝试连接数据库并执行简单探活查询。"""
+    try:
+        engine = create_engine(url, connect_args={'connect_timeout': timeout}, pool_pre_ping=True)
+        with engine.connect() as conn:
+            ver = conn.execute(text('SELECT VERSION()')).scalar()
+            one = conn.execute(text('SELECT 1')).scalar()
+        LOGGER.info('[OK] 数据库连接成功 | VERSION=%s | SELECT 1 -> %s', ver, one)
+        return True
+    except Exception:
+        LOGGER.exception('[ERROR] 数据库连接失败: %s', url)
+        return False
+
+
+# 将新增工具导出
+__all__ += [
+    'is_in_docker',
+    'resolve_container_host',
+    'default_db_host',
+    'build_db_url',
+    'get_active_db_url',
+    'try_connect',
 ]

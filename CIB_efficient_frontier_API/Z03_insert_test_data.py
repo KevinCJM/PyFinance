@@ -30,12 +30,17 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from T05_db_utils import DatabaseConnectionPool, insert_dataframe
+from T05_db_utils import DatabaseConnectionPool, insert_dataframe, get_active_db_url
 try:
-    # 优先使用仓库内的数据库配置（自动检测容器/本机）
-    from Y01_db_config import get_active_db_url  # type: ignore
+    # 读取数据库配置（仅参数，不包含功能函数）
+    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password  # type: ignore
 except Exception:
-    get_active_db_url = None  # type: ignore
+    db_type = 'mysql'
+    db_host = None
+    db_port = '3306'
+    db_name = 'mysql'
+    db_user = 'root'
+    db_password = '112358'
 
 ASSET_CLASSES = [
     ("权益", "权益"),
@@ -162,15 +167,22 @@ def build_pct_d_rows(mdl_ver_id: str, start: date, end: date, seed: int = 0) -> 
 
 
 def main() -> None:
-    # 连接串优先级：环境变量 DB_URL > 配置文件 Y01_db_config.get_active_db_url()
-    db_url = os.environ.get("DB_URL") or (get_active_db_url() if get_active_db_url else None)
+    # 连接串优先级：环境变量 DB_URL > 基于配置自动构造
+    db_url = os.environ.get("DB_URL") or get_active_db_url(
+        db_type=db_type,
+        db_user=db_user,
+        db_password=db_password,
+        db_host=db_host,
+        db_port=db_port,
+        db_name=db_name,
+    )
     if not db_url:
         print("[ERROR] 未找到数据库连接串。请设置环境变量 DB_URL 或在 Y01_db_config.py 中提供 db_url。")
         sys.exit(2)
 
     pool = DatabaseConnectionPool(url=db_url, pool_size=2)
     print("[INFO] Using DB URL from {}".format(
-        "ENV(DB_URL)" if os.environ.get("DB_URL") else "Y01_db_config.get_active_db_url()"
+        "ENV(DB_URL)" if os.environ.get("DB_URL") else "config(auto-detect host)"
     ))
 
     # 1) iis_wght_cfg_attc_mdl: 2 行
