@@ -409,9 +409,20 @@ def _build_weight_cols(df_weights: pd.DataFrame, asset_cols: List[str]) -> Dict[
 def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame, return_df: pd.DataFrame) -> None:
     """将计算结果批量写入两张表，使用线程池并发分块插入。
 
-    - iis_aset_allc_indx_wght：全部点
-    - iis_aset_allc_indx_pub：仅有效前沿点（on_ef=True）
+    本函数会将完整的投资组合数据写入全量表 `iis_aset_allc_indx_wght` 和精简的有效前沿表 `iis_aset_allc_indx_pub`。
+    插入前会先清空目标表，然后通过线程池并发分块插入提升性能。
+
+    参数:
+        mdl_ver_id (str): 模型版本标识符，用于标记数据来源。
+        a_list (List[str]): 资产名称列表，用于构建权重列。
+        res_df (pd.DataFrame): 包含原始计算结果的数据框，包含各资产权重及绩效指标。
+        return_df (pd.DataFrame): 原始收益率数据框，用于重新计算缺失标准组合的绩效。
+
+    返回:
+        None
     """
+    log(f"正在将计算结果写入数据库...")
+    s_t = time.time()
     db_url = get_active_db_url(
         db_type=db_type,
         db_user=db_user,
@@ -471,6 +482,8 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     }, index=combined.index)
     for k, v in _build_weight_cols(combined, a_list).items():
         base_df_all[k] = v
+
+    log(f"构建全量表数据...")
     wght_df = base_df_all.copy()
     is_nan = wght_df['rsk_lvl'].isna()
     if is_nan.any():
@@ -479,7 +492,7 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     wght_df['rsk_lvl'] = wght_df['rsk_lvl'].astype(int)
     wght_df['isefct_fond'] = combined['on_ef'].astype(bool).astype(int).values
 
-    # 公共表：仅有效前沿 + 标准组合；非标准组合按收益升序分配 11 起自增
+    log(f"构建有效前沿表数据...")
     pub_df = combined[(combined['on_ef'] == True) | (combined['rsk_lvl'].isin([1, 2, 3, 4, 5, 6]))].copy()
     pub_df = pub_df.sort_values(by='ret_annual', ascending=True)
     is_nan_pub = pub_df['rsk_lvl'].isna()
@@ -487,7 +500,6 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
         seq_pub = np.arange(11, 11 + int(is_nan_pub.sum()), dtype=np.int64)
         pub_df.loc[is_nan_pub, 'rsk_lvl'] = seq_pub
     pub_df['rsk_lvl'] = pub_df['rsk_lvl'].astype(int)
-
     pub_base = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
         'rsk_lvl': pub_df['rsk_lvl'].astype(int),
@@ -500,6 +512,8 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     pub_df = pub_base
 
     # 分块并发写入
+    log("正在准备分批写入的数据块...")
+
     def _chunker(df: pd.DataFrame, size: int):
         n = len(df)
         for i in range(0, n, size):
@@ -515,6 +529,7 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
                          'method': 'multi'})
 
     # 清空后再插入（TRUNCATE）
+    log("清空目标表...")
     with pool.begin() as conn:
         try:
             conn.execute("TRUNCATE TABLE iis_aset_allc_indx_wght")
@@ -524,7 +539,10 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
             raise
 
     from T05_db_utils import threaded_insert_dataframe
+    log("正在写入数据库...")
     threaded_insert_dataframe(pool, datasets, max_workers=4)
+    log("结果已分别写入：iis_aset_allc_indx_wght（全量）、iis_aset_allc_indx_pub（有效前沿）")
+    log(f"写入完成，耗时 {time.time() - s_t:.1f} 秒")
 
 
 # 从指定的 Excel 文件中读取并处理大类资产的数据
@@ -679,4 +697,3 @@ if __name__ == '__main__':
 
     ''' 4) 结果写入数据库 ----------------------------------------------------------------------------- '''
     insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
-    log("结果已分表写入：iis_aset_allc_indx_wght（全量）、iis_aset_allc_indx_pub（有效前沿）")
