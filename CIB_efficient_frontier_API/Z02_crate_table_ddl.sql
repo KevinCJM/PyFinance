@@ -45,7 +45,7 @@ CREATE TABLE iis_mdl_aset_pct_d
 CREATE TABLE iis_aset_allc_indx_wght
 (
     mdl_ver_id       varchar(64) NOT NULL COMMENT '模型版本id',
-    rsk_lvl          varchar(10) NOT NULL COMMENT '风险等级',
+    rsk_lvl          varchar(10) NOT NULL COMMENT '风险等级 (标准组合为1至6,其他组合从11开始递增)',
     rate             decimal(11, 7) DEFAULT NULL COMMENT '预期收益率',
     liquid           decimal(11, 7) DEFAULT NULL COMMENT '预期成功性',
     csh_mgt_typ_pos  decimal(11, 7) DEFAULT NULL COMMENT '现金管理类持仓',
@@ -70,7 +70,7 @@ CREATE TABLE iis_aset_allc_indx_wght
 CREATE TABLE iis_aset_allc_indx_pub
 (
     mdl_ver_id       varchar(64) NOT NULL COMMENT '模型版本id',
-    rsk_lvl          varchar(10) NOT NULL COMMENT '风险等级',
+    rsk_lvl          varchar(10) NOT NULL COMMENT '风险等级 (标准组合为1至6,其他组合从11开始递增)',
     rate             decimal(11, 7) DEFAULT NULL COMMENT '预期收益率',
     liquid           decimal(11, 7) DEFAULT NULL COMMENT '预期成功性',
     csh_mgt_typ_pos  decimal(11, 7) DEFAULT NULL COMMENT '现金管理类持仓',
