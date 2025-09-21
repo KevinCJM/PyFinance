@@ -15,6 +15,7 @@ from typing import List, Tuple, Optional, Dict
 from numba import njit, prange, float64, int64, types
 
 from T02_other_tools import log
+from Y02_asset_id_map import asset_to_weight_column_map
 
 # 数据库/线程池工具
 from T05_db_utils import (
@@ -394,6 +395,81 @@ def plot_efficient_frontier_plotly(df: pd.DataFrame,
     fig.show()
 
 
+def _build_weight_cols(df_weights: pd.DataFrame, asset_cols: List[str]) -> Dict[str, pd.Series]:
+    """按照资产->字段映射生成持仓列字典。未知资产映射将被忽略。"""
+    out: Dict[str, pd.Series] = {}
+    for asset_cd, col_name in asset_to_weight_column_map.items():
+        if asset_cd in asset_cols and asset_cd in df_weights.columns:
+            out[col_name] = df_weights[asset_cd].astype(float).fillna(0.0)
+    return out
+
+
+def insert_results_to_db(risk_level: str, mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame) -> None:
+    """将计算结果批量写入两张表，使用线程池并发分块插入。
+
+    - iis_aset_allc_indx_wght：全部点
+    - iis_aset_allc_indx_pub：仅有效前沿点（on_ef=True）
+    """
+    db_url = get_active_db_url(
+        db_type=db_type,
+        db_user=db_user,
+        db_password=db_password,
+        db_host=db_host,
+        db_port=db_port,
+        db_name=db_name,
+    )
+    pool = DatabaseConnectionPool(url=db_url, pool_size=4)
+
+    # 基础列
+    base_df = pd.DataFrame({
+        'mdl_ver_id': mdl_ver_id,
+        'rsk_lvl': risk_level,
+        'shrp_prprtn': res_df['sharpe_ratio'].astype(float),
+        # VaR95_b 为“正常计算出来的95%VaR”，VaR95 将无亏损值取 0
+        'VaR95_b': res_df['var_annual'].astype(float),
+        'VaR95': res_df['var_annual'].astype(float).clip(upper=0.0),
+    }, index=res_df.index)
+
+    # 权重列
+    weight_cols = _build_weight_cols(res_df, a_list)
+    for k, v in weight_cols.items():
+        base_df[k] = v
+
+    # 1) 全量表
+    wght_df = base_df.copy()
+    wght_df['isefct_fond'] = res_df['on_ef'].astype(bool).astype(int)
+
+    # 2) 有效前沿表
+    pub_df = base_df[res_df['on_ef'] == True].copy()
+
+    # 分块并发写入
+    def _chunker(df: pd.DataFrame, size: int):
+        n = len(df)
+        for i in range(0, n, size):
+            yield df.iloc[i:i + size].copy()
+
+    datasets = []
+    chunk_size = 5000
+    for chunk in _chunker(wght_df, chunk_size):
+        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_wght', 'replace': False, 'batch_size': 1000,
+                         'method': 'multi'})
+    for chunk in _chunker(pub_df, chunk_size):
+        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_pub', 'replace': False, 'batch_size': 1000,
+                         'method': 'multi'})
+
+    # 清空后再插入（TRUNCATE）
+    with pool.begin() as conn:
+        try:
+            conn.execute("TRUNCATE TABLE iis_aset_allc_indx_wght")
+            conn.execute("TRUNCATE TABLE iis_aset_allc_indx_pub")
+        except Exception as e:
+            log(f"TRUNCATE 失败: {e}")
+            raise
+
+    from T05_db_utils import threaded_insert_dataframe
+    threaded_insert_dataframe(pool, datasets, max_workers=4)
+
+
 # 从指定的 Excel 文件中读取并处理大类资产的数据
 def fetch_returns_from_db(mdl_ver_id: str,
                           start_dt: Optional[_date] = None,
@@ -525,7 +601,7 @@ if __name__ == '__main__':
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 100)
+    weight_list = generate_simplex_grid_numba(len(a_list), 10)
     log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
@@ -543,3 +619,7 @@ if __name__ == '__main__':
             sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
             save_html='efficient_frontier.html'
         )
+
+    ''' 4) 结果写入数据库 ----------------------------------------------------------------------------- '''
+    insert_results_to_db('C1', mdl_ver_id, a_list, res_df)
+    log("结果已分表写入：iis_aset_allc_indx_wght（全量）、iis_aset_allc_indx_pub（有效前沿）")
