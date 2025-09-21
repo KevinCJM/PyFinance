@@ -259,6 +259,22 @@ def _compute_perf_numba(r, w, trading_days, dof, p95):
     return out_ret, out_vol, out_var, out_sharpe
 
 
+# 公共：计算有效前沿掩码
+def efficient_frontier_mask(ret_v: np.ndarray, vol_v: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+    valid = np.isfinite(ret_v) & np.isfinite(vol_v)
+    mask = np.zeros(ret_v.shape[0], dtype=bool)
+    if not np.any(valid):
+        return mask
+    # 收益降序排列；对排序后的波动做累计最小
+    idx = np.nonzero(valid)[0]
+    order = np.argsort(ret_v[valid])[::-1]
+    sorted_vol = vol_v[valid][order]
+    cum_min = np.minimum.accumulate(sorted_vol)
+    on_sorted = sorted_vol <= (cum_min + tol)
+    mask[idx[order]] = on_sorted
+    return mask
+
+
 # 计算资产组合的年度化收益,波动率,和在险价值
 def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p95=1.96,
                               trading_days: float = 252.0, dof: int = 1):
@@ -306,22 +322,8 @@ def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p
     })
     perf_df = pd.concat([weight_df, perf_df], axis=1)
 
-    # 标记有效前沿上的点
-    def _efficient_frontier_mask(ret_v: np.ndarray, vol_v: np.ndarray, tol: float = 1e-9) -> np.ndarray:
-        valid = np.isfinite(ret_v) & np.isfinite(vol_v)
-        mask = np.zeros(ret_v.shape[0], dtype=bool)
-        if not np.any(valid):
-            return mask
-        # 收益降序排列；对排序后的波动做累计最小
-        idx = np.nonzero(valid)[0]
-        order = np.argsort(ret_v[valid])[::-1]
-        sorted_vol = vol_v[valid][order]
-        cum_min = np.minimum.accumulate(sorted_vol)
-        on_sorted = sorted_vol <= (cum_min + tol)
-        mask[idx[order]] = on_sorted
-        return mask
-
-    perf_df['on_ef'] = _efficient_frontier_mask(perf_df['ret_annual'].values, perf_df['vol_annual'].values)
+    # 标记有效前沿上的点（公共方法）
+    perf_df['on_ef'] = efficient_frontier_mask(perf_df['ret_annual'].values, perf_df['vol_annual'].values)
     return perf_df
 
 
@@ -421,89 +423,81 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     pool = DatabaseConnectionPool(url=db_url, pool_size=4)
     std_portfolios = [(1, C1), (2, C2), (3, C3), (4, C4), (5, C5), (6, C6)]
 
-    # 遍历标准投资组合，提取并标准化权重数据
+    # 构造标准组合向量
     std_weights, std_lvls = [], []
-    for lvl, wdict in std_portfolios:  # 对于每个风险等级，将投资组合中存在于a_list中的资产权重提取出来
+    for lvl, wdict in std_portfolios:
         row = [float(wdict.get(name, 0.0)) for name in a_list]
         s = sum(row)
-        if s > 0:  # 如果权重和大于0，则进行标准化处理（使权重和为1）
+        if s > 0:
             row = [x / s for x in row]
         std_weights.append(row)
         std_lvls.append(lvl)
 
-    # 基于标准化权重数据生成投资组合性能数据框
-    std_df = pd.DataFrame()
-    if std_weights:
-        std_arr = np.array(std_weights, dtype=np.float64)
-        std_df = generate_alloc_perf_numba(a_list, return_df, std_arr)
-        std_df['rsk_lvl'] = std_lvls
+    std_arr = np.array(std_weights, dtype=np.float64)
 
-    # 先从原始组合中剔除标准组合（避免重复），再给原始组合生成 rsk_lvl
+    # 判断原始集合中是否已有标准组合；缺失的重新计算指标
     res_df_all = res_df.copy()
-    if std_weights:
-        W = res_df_all[a_list].values.astype(np.float64, copy=False)
-        rm_mask = np.zeros(W.shape[0], dtype=bool)
-        for v in std_arr:
-            diff = np.max(np.abs(W - v), axis=1)
-            rm_mask |= (diff <= 1e-6)
-        if rm_mask.any():
-            res_df_all = res_df_all.loc[~rm_mask].copy()
-    res_df_all['rsk_lvl'] = np.arange(11, 11 + len(res_df_all), dtype=np.int64)
+    res_df_all['rsk_lvl'] = np.nan
+    W = res_df_all[a_list].values.astype(np.float64, copy=False) if len(res_df_all) else np.empty((0, len(a_list)))
+    missing_mask = []
+    for v in std_arr:
+        diff = np.max(np.abs(W - v), axis=1) if W.size else np.array([])  # 寻找最接近的组合
+        if diff.size > 0 and (diff <= 1e-6).any():
+            hit = np.where(diff <= 1e-6)[0][0]
+            res_df_all.loc[res_df_all.index[hit], 'rsk_lvl'] = float(std_lvls[len(missing_mask)])
+            missing_mask.append(False)
+        else:
+            missing_mask.append(True)
 
-    # 1) 构造 iis_aset_allc_indx_wght 全量数据（含标准组合）
+    missing_indices = [i for i, m in enumerate(missing_mask) if m]
+    std_missing_df = pd.DataFrame()
+    if missing_indices:
+        miss_arr = std_arr[missing_indices]
+        std_missing_df = generate_alloc_perf_numba(a_list, return_df, miss_arr)
+        std_missing_df['rsk_lvl'] = [std_lvls[i] for i in missing_indices]
+
+    # 合并并统一计算 on_ef
+    combined = pd.concat([res_df_all, std_missing_df], axis=0,
+                         ignore_index=True) if not std_missing_df.empty else res_df_all.copy()
+    combined['on_ef'] = efficient_frontier_mask(combined['ret_annual'].values, combined['vol_annual'].values)
+
+    # 全量表：为非标准组合分配 rsk_lvl（11 起自增）
     base_df_all = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
-        'rsk_lvl': res_df_all['rsk_lvl'].astype(int),
-        'shrp_prprtn': res_df_all['sharpe_ratio'].astype(float),
-        'VaR95_b': res_df_all['var_annual'].astype(float),
-        'VaR95': res_df_all['var_annual'].astype(float).clip(lower=0.0),
-    }, index=res_df_all.index)
-    for k, v in _build_weight_cols(res_df_all, a_list).items():
+        'rsk_lvl': combined['rsk_lvl'],
+        'shrp_prprtn': combined['sharpe_ratio'].astype(float),
+        'VaR95_b': combined['var_annual'].astype(float),
+        'VaR95': combined['var_annual'].astype(float).clip(lower=0.0),
+    }, index=combined.index)
+    for k, v in _build_weight_cols(combined, a_list).items():
         base_df_all[k] = v
-    wght_df = base_df_all
-    # 拼接标准组合
-    if not std_df.empty:
-        base_std = pd.DataFrame({
-            'mdl_ver_id': mdl_ver_id,
-            'rsk_lvl': std_df['rsk_lvl'].astype(int),
-            'shrp_prprtn': std_df['sharpe_ratio'].astype(float),
-            'VaR95_b': std_df['var_annual'].astype(float),
-            'VaR95': std_df['var_annual'].astype(float).clip(lower=0.0),
-        }, index=std_df.index)
-        for k, v in _build_weight_cols(std_df, a_list).items():
-            base_std[k] = v
-        wght_df = pd.concat([wght_df, base_std], axis=0, ignore_index=True)
-    # 是否有效前沿标记
-    wght_df['isefct_fond'] = 0
-    if 'on_ef' in res_df_all.columns:
-        ef_flags = res_df_all['on_ef'].astype(bool).astype(int).tolist()
-        wght_df.loc[:len(ef_flags) - 1, 'isefct_fond'] = ef_flags
+    wght_df = base_df_all.copy()
+    is_nan = wght_df['rsk_lvl'].isna()
+    if is_nan.any():
+        seq = np.arange(11, 11 + int(is_nan.sum()), dtype=np.int64)
+        wght_df.loc[is_nan, 'rsk_lvl'] = seq
+    wght_df['rsk_lvl'] = wght_df['rsk_lvl'].astype(int)
+    wght_df['isefct_fond'] = combined['on_ef'].astype(bool).astype(int).values
 
-    # 2) 构造 iis_aset_allc_indx_pub：仅 on_ef + 标准组合
-    ef_df = res_df_all[res_df_all['on_ef'] == True].copy()
-    ef_df = ef_df.sort_values(by='ret_annual', ascending=True)
-    ef_df['rsk_lvl'] = np.arange(11, 11 + len(ef_df), dtype=np.int64)
+    # 公共表：仅有效前沿 + 标准组合；非标准组合按收益升序分配 11 起自增
+    pub_df = combined[(combined['on_ef'] == True) | (combined['rsk_lvl'].isin([1, 2, 3, 4, 5, 6]))].copy()
+    pub_df = pub_df.sort_values(by='ret_annual', ascending=True)
+    is_nan_pub = pub_df['rsk_lvl'].isna()
+    if is_nan_pub.any():
+        seq_pub = np.arange(11, 11 + int(is_nan_pub.sum()), dtype=np.int64)
+        pub_df.loc[is_nan_pub, 'rsk_lvl'] = seq_pub
+    pub_df['rsk_lvl'] = pub_df['rsk_lvl'].astype(int)
+
     pub_base = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
-        'rsk_lvl': ef_df['rsk_lvl'].astype(int),
-        'shrp_prprtn': ef_df['sharpe_ratio'].astype(float),
-        'VaR95_b': ef_df['var_annual'].astype(float),
-        'VaR95': ef_df['var_annual'].astype(float).clip(lower=0.0),
-    }, index=ef_df.index)
-    for k, v in _build_weight_cols(ef_df, a_list).items():
+        'rsk_lvl': pub_df['rsk_lvl'].astype(int),
+        'shrp_prprtn': pub_df['sharpe_ratio'].astype(float),
+        'VaR95_b': pub_df['var_annual'].astype(float),
+        'VaR95': pub_df['var_annual'].astype(float).clip(lower=0.0),
+    }, index=pub_df.index)
+    for k, v in _build_weight_cols(pub_df, a_list).items():
         pub_base[k] = v
     pub_df = pub_base
-    if not std_df.empty:
-        base_std_pub = pd.DataFrame({
-            'mdl_ver_id': mdl_ver_id,
-            'rsk_lvl': std_df['rsk_lvl'].astype(int),
-            'shrp_prprtn': std_df['sharpe_ratio'].astype(float),
-            'VaR95_b': std_df['var_annual'].astype(float),
-            'VaR95': std_df['var_annual'].astype(float).clip(lower=0.0),
-        }, index=std_df.index)
-        for k, v in _build_weight_cols(std_df, a_list).items():
-            base_std_pub[k] = v
-        pub_df = pd.concat([pub_df, base_std_pub], axis=0, ignore_index=True)
 
     # 分块并发写入
     def _chunker(df: pd.DataFrame, size: int):
@@ -664,7 +658,7 @@ if __name__ == '__main__':
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 10)
+    weight_list = generate_simplex_grid_numba(len(a_list), 100)
     log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
