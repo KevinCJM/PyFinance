@@ -15,7 +15,7 @@ from typing import List, Tuple, Optional, Dict
 from numba import njit, prange, float64, int64, types
 
 from T02_other_tools import log
-from Y02_asset_id_map import asset_to_weight_column_map
+from Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
 
 # 数据库/线程池工具
 from T05_db_utils import (
@@ -404,7 +404,7 @@ def _build_weight_cols(df_weights: pd.DataFrame, asset_cols: List[str]) -> Dict[
     return out
 
 
-def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame) -> None:
+def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame, return_df: pd.DataFrame) -> None:
     """将计算结果批量写入两张表，使用线程池并发分块插入。
 
     - iis_aset_allc_indx_wght：全部点
@@ -419,28 +419,91 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
         db_name=db_name,
     )
     pool = DatabaseConnectionPool(url=db_url, pool_size=4)
+    std_portfolios = [(1, C1), (2, C2), (3, C3), (4, C4), (5, C5), (6, C6)]
 
-    # 基础列
-    base_df = pd.DataFrame({
+    # 遍历标准投资组合，提取并标准化权重数据
+    std_weights, std_lvls = [], []
+    for lvl, wdict in std_portfolios:  # 对于每个风险等级，将投资组合中存在于a_list中的资产权重提取出来
+        row = [float(wdict.get(name, 0.0)) for name in a_list]
+        s = sum(row)
+        if s > 0:  # 如果权重和大于0，则进行标准化处理（使权重和为1）
+            row = [x / s for x in row]
+        std_weights.append(row)
+        std_lvls.append(lvl)
+
+    # 基于标准化权重数据生成投资组合性能数据框
+    std_df = pd.DataFrame()
+    if std_weights:
+        std_arr = np.array(std_weights, dtype=np.float64)
+        std_df = generate_alloc_perf_numba(a_list, return_df, std_arr)
+        std_df['rsk_lvl'] = std_lvls
+
+    # 先从原始组合中剔除标准组合（避免重复），再给原始组合生成 rsk_lvl
+    res_df_all = res_df.copy()
+    if std_weights:
+        W = res_df_all[a_list].values.astype(np.float64, copy=False)
+        rm_mask = np.zeros(W.shape[0], dtype=bool)
+        for v in std_arr:
+            diff = np.max(np.abs(W - v), axis=1)
+            rm_mask |= (diff <= 1e-6)
+        if rm_mask.any():
+            res_df_all = res_df_all.loc[~rm_mask].copy()
+    res_df_all['rsk_lvl'] = np.arange(11, 11 + len(res_df_all), dtype=np.int64)
+
+    # 1) 构造 iis_aset_allc_indx_wght 全量数据（含标准组合）
+    base_df_all = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
-        'rsk_lvl': None,
-        'shrp_prprtn': res_df['sharpe_ratio'].astype(float),
-        # VaR95_b 为“正常计算出来的95%VaR”，VaR95 将无亏损值取 0
-        'VaR95_b': res_df['var_annual'].astype(float),
-        'VaR95': res_df['var_annual'].astype(float).clip(upper=0.0),
-    }, index=res_df.index)
+        'rsk_lvl': res_df_all['rsk_lvl'].astype(int),
+        'shrp_prprtn': res_df_all['sharpe_ratio'].astype(float),
+        'VaR95_b': res_df_all['var_annual'].astype(float),
+        'VaR95': res_df_all['var_annual'].astype(float).clip(lower=0.0),
+    }, index=res_df_all.index)
+    for k, v in _build_weight_cols(res_df_all, a_list).items():
+        base_df_all[k] = v
+    wght_df = base_df_all
+    # 拼接标准组合
+    if not std_df.empty:
+        base_std = pd.DataFrame({
+            'mdl_ver_id': mdl_ver_id,
+            'rsk_lvl': std_df['rsk_lvl'].astype(int),
+            'shrp_prprtn': std_df['sharpe_ratio'].astype(float),
+            'VaR95_b': std_df['var_annual'].astype(float),
+            'VaR95': std_df['var_annual'].astype(float).clip(lower=0.0),
+        }, index=std_df.index)
+        for k, v in _build_weight_cols(std_df, a_list).items():
+            base_std[k] = v
+        wght_df = pd.concat([wght_df, base_std], axis=0, ignore_index=True)
+    # 是否有效前沿标记
+    wght_df['isefct_fond'] = 0
+    if 'on_ef' in res_df_all.columns:
+        ef_flags = res_df_all['on_ef'].astype(bool).astype(int).tolist()
+        wght_df.loc[:len(ef_flags) - 1, 'isefct_fond'] = ef_flags
 
-    # 权重列
-    weight_cols = _build_weight_cols(res_df, a_list)
-    for k, v in weight_cols.items():
-        base_df[k] = v
-
-    # 1) 全量表
-    wght_df = base_df.copy()
-    wght_df['isefct_fond'] = res_df['on_ef'].astype(bool).astype(int)
-
-    # 2) 有效前沿表
-    pub_df = base_df[res_df['on_ef'] == True].copy()
+    # 2) 构造 iis_aset_allc_indx_pub：仅 on_ef + 标准组合
+    ef_df = res_df_all[res_df_all['on_ef'] == True].copy()
+    ef_df = ef_df.sort_values(by='ret_annual', ascending=True)
+    ef_df['rsk_lvl'] = np.arange(11, 11 + len(ef_df), dtype=np.int64)
+    pub_base = pd.DataFrame({
+        'mdl_ver_id': mdl_ver_id,
+        'rsk_lvl': ef_df['rsk_lvl'].astype(int),
+        'shrp_prprtn': ef_df['sharpe_ratio'].astype(float),
+        'VaR95_b': ef_df['var_annual'].astype(float),
+        'VaR95': ef_df['var_annual'].astype(float).clip(lower=0.0),
+    }, index=ef_df.index)
+    for k, v in _build_weight_cols(ef_df, a_list).items():
+        pub_base[k] = v
+    pub_df = pub_base
+    if not std_df.empty:
+        base_std_pub = pd.DataFrame({
+            'mdl_ver_id': mdl_ver_id,
+            'rsk_lvl': std_df['rsk_lvl'].astype(int),
+            'shrp_prprtn': std_df['sharpe_ratio'].astype(float),
+            'VaR95_b': std_df['var_annual'].astype(float),
+            'VaR95': std_df['var_annual'].astype(float).clip(lower=0.0),
+        }, index=std_df.index)
+        for k, v in _build_weight_cols(std_df, a_list).items():
+            base_std_pub[k] = v
+        pub_df = pd.concat([pub_df, base_std_pub], axis=0, ignore_index=True)
 
     # 分块并发写入
     def _chunker(df: pd.DataFrame, size: int):
@@ -621,5 +684,5 @@ if __name__ == '__main__':
         )
 
     ''' 4) 结果写入数据库 ----------------------------------------------------------------------------- '''
-    insert_results_to_db(mdl_ver_id, a_list, res_df)
+    insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
     log("结果已分表写入：iis_aset_allc_indx_wght（全量）、iis_aset_allc_indx_pub（有效前沿）")
