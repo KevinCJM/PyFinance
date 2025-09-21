@@ -404,7 +404,7 @@ def _build_weight_cols(df_weights: pd.DataFrame, asset_cols: List[str]) -> Dict[
     return out
 
 
-def insert_results_to_db(risk_level: str, mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame) -> None:
+def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame) -> None:
     """将计算结果批量写入两张表，使用线程池并发分块插入。
 
     - iis_aset_allc_indx_wght：全部点
@@ -423,7 +423,7 @@ def insert_results_to_db(risk_level: str, mdl_ver_id: str, a_list: List[str], re
     # 基础列
     base_df = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
-        'rsk_lvl': risk_level,
+        'rsk_lvl': None,
         'shrp_prprtn': res_df['sharpe_ratio'].astype(float),
         # VaR95_b 为“正常计算出来的95%VaR”，VaR95 将无亏损值取 0
         'VaR95_b': res_df['var_annual'].astype(float),
@@ -621,5 +621,5 @@ if __name__ == '__main__':
         )
 
     ''' 4) 结果写入数据库 ----------------------------------------------------------------------------- '''
-    insert_results_to_db('C1', mdl_ver_id, a_list, res_df)
+    insert_results_to_db(mdl_ver_id, a_list, res_df)
     log("结果已分表写入：iis_aset_allc_indx_wght（全量）、iis_aset_allc_indx_pub（有效前沿）")
