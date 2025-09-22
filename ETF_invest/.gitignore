@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Data outputs
+data/*.parquet
+data/*.xlsx
+data/*.csv
+
+# Frontend build
+frontend/node_modules/
+frontend/dist/
+
+# Env/config
+.env
+
