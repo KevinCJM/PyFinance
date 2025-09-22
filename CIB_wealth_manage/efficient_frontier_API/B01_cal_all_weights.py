@@ -1,0 +1,720 @@
+# -*- encoding: utf-8 -*-
+"""
+@File: cal_all_weights.py
+@Modify Time: 2025/9/19 14:31       
+@Author: Kevin-Chen
+@Descriptions: 
+"""
+import os
+import time
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from datetime import date as _date
+from typing import List, Tuple, Optional, Dict
+from numba import njit, prange, float64, int64, types
+
+from T02_other_tools import log
+from Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
+
+# 数据库/线程池工具
+from T05_db_utils import (
+    DatabaseConnectionPool,
+    get_active_db_url,
+    read_dataframe,
+    create_connection,
+)
+
+try:
+    # 数据库配置仅包含参数
+    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password  # type: ignore
+except Exception:
+    raise RuntimeError("请先配置 Y01_db_config.py 中的数据库连接参数")
+
+
+# 使用 Numba 加速网格生成，用于构建资产配置的离散化组合空间
+def generate_simplex_grid_numba(assets_num: int, resolution_ratio: int):
+    """
+    使用 Numba(njit+prange) 加速的网格生成函数。
+
+    本函数用于在 n_assets 维空间中生成所有满足权重和为 1 的离散单纯形网格点。
+    采用“星与杠”（Stars and Bars）方法枚举非负整数解，并映射为浮点权重向量。
+    利用 Numba 的 njit 和并行 prange 加速组合生成过程，适用于高维、高分辨率场景。
+
+    参数:
+        assets_num (int): 资产维度，必须 ≥ 2。
+        resolution_ratio (int): 权重划分精度，即将 1 划分为 resolution 份，步长 Δ = 1/resolution。
+
+    返回:
+        np.ndarray: shape 为 (C(resolution+n_assets-1, n_assets-1), n_assets) 的二维数组，
+                    每一行表示一个权重向量，所有元素非负且和为 1。
+
+    说明：
+    - 旧实现基于 Python 的 itertools.combinations，生成 400 万级组合会非常慢；
+    - 新实现预分配结果矩阵，使用组合字典序枚举，并在第一维上并行分块填充；
+    - 需 numba==0.49.1（见 requirements.txt）。
+    """
+
+    @njit
+    def _comb(n: int, k: int) -> np.int64:
+        """
+        计算组合数 C(n, k)，使用数值稳定的方式避免溢出。
+
+        参数:
+            n (int): 总数。
+            k (int): 选取数。
+
+        返回:
+            np.int64: 组合数 C(n, k)。
+        """
+        if k < 0 or k > n:
+            return np.int64(0)
+        if k > n - k:
+            k = n - k
+        res = 1
+        for i in range(1, k + 1):
+            res = (res * (n - k + i)) // i
+        return np.int64(res)
+
+    @njit
+    def _fill_block_given_first(out: np.ndarray, start_row: int,
+                                first_bar: int, total_slots: int,
+                                k: int, n_assets: int, resolution: int) -> int:
+        """
+        填充所有以 first_bar 作为第一个“杠”的组合块。
+
+        参数:
+            out (np.ndarray): 输出数组。
+            start_row (int): 当前块起始行索引。
+            first_bar (int): 第一个“杠”的位置。
+            total_slots (int): 总槽位数（resolution + n_assets - 1）。
+            k (int): 需要放置的“杠”数（n_assets - 1）。
+            n_assets (int): 资产数。
+            resolution (int): 分辨率。
+
+        返回:
+            int: 写入的行数。
+        """
+        # 处理只剩一个杠的情况（递归终止条件）
+        k2 = k - 1
+        if k2 == 0:
+            prev = -1
+            row = start_row
+            out[row, 0] = (first_bar - prev - 1) / resolution
+            prev = first_bar
+            out[row, n_assets - 1] = (total_slots - prev - 1) / resolution
+            for j in range(1, n_assets - 1):
+                out[row, j] = 0.0
+            return 1
+
+        # 初始化剩余“杠”的位置索引
+        base = first_bar + 1
+        n2 = total_slots - base
+        idx2 = np.empty(k2, dtype=np.int64)
+        for i in range(k2):
+            idx2[i] = i
+
+        row = start_row
+        while True:
+            # 根据当前“杠”位置构造权重向量
+            prev = -1
+            out[row, 0] = (first_bar - prev - 1) / resolution
+            prev = first_bar
+            for j in range(k2):
+                b = base + idx2[j]
+                out[row, j + 1] = (b - prev - 1) / resolution
+                prev = b
+            out[row, n_assets - 1] = (total_slots - prev - 1) / resolution
+            row += 1
+
+            # 更新下一个组合索引（字典序递增）
+            p = k2 - 1
+            while p >= 0 and idx2[p] == p + n2 - k2:
+                p -= 1
+            if p < 0:
+                break
+            idx2[p] += 1
+            for j in range(p + 1, k2):
+                idx2[j] = idx2[j - 1] + 1
+
+        return row - start_row
+
+    @njit(parallel=True)
+    def _generate(n_assets: int, resolution: int) -> np.ndarray:
+        """
+        并行生成整个单纯形网格。
+
+        参数:
+            n_assets (int): 资产维度。
+            resolution (int): 权重划分精度。
+
+        返回:
+            np.ndarray: 生成的权重矩阵。
+        """
+        # 总槽位数和杠数
+        total_slots = resolution + n_assets - 1
+        k = n_assets - 1
+
+        # 预分配输出数组
+        M = _comb(total_slots, k)
+        out = np.empty((M, n_assets), dtype=np.float64)
+
+        # 计算每个 first_bar 对应的组合数和偏移量
+        first_max = total_slots - k
+        F = first_max + 1
+        counts = np.empty(F, dtype=np.int64)
+        for f in range(F):
+            counts[f] = _comb(total_slots - (f + 1), k - 1)
+
+        offsets = np.empty(F + 1, dtype=np.int64)
+        offsets[0] = 0
+        for i in range(F):
+            offsets[i + 1] = offsets[i] + counts[i]
+
+        # 并行填充每个 first_bar 对应的块
+        for f in prange(F):
+            start = offsets[f]
+            _ = _fill_block_given_first(out, start, f, total_slots, k, n_assets, resolution)
+
+        return out
+
+    return _generate(assets_num, resolution_ratio)
+
+
+@njit(
+    types.UniTuple(float64[:], 4)(float64[:, :], float64[:, :], float64, int64, float64),
+    parallel=True, nogil=True, fastmath=True, cache=True,
+)
+def _compute_perf_numba(r, w, trading_days, dof, p95):
+    """
+    在不创建 (T,M) 大矩阵的前提下，逐组合并行计算：
+      - 按天累积 log(1 + w·r_t) 的均值与方差
+      - 年化收益与年化波动
+
+    参数:
+        r: (T, N) 资产日收益矩阵（float64，C 连续）
+        w: (M, N) 权重矩阵（float64，C 连续）
+        trading_days: 年化交易日数
+        dof: 样本方差自由度
+        p95: VaR 系数
+
+    返回:
+        (ret_annual, vol_annual, var_annual): 三个 shape=(M,) 的数组
+    """
+    big_t = r.shape[0]
+    big_n = r.shape[1]
+    big_m = w.shape[0]
+
+    out_ret = np.empty(big_m, dtype=np.float64)
+    out_vol = np.empty(big_m, dtype=np.float64)
+    out_sharpe = np.empty(big_m, dtype=np.float64)
+
+    sqrt_td = np.sqrt(trading_days)
+
+    # 并行遍历所有组合，计算每个组合的年化收益、波动率和VaR
+    for j in prange(big_m):
+        mean = 0.0
+        m2 = 0.0
+        n = 0
+        invalid = False
+
+        # 遍历时间维度，按天增量更新均值与方差
+        for t in range(big_t):
+            s = 0.0
+            # 点乘：w_j 与 r_t
+            for k in range(big_n):
+                s += r[t, k] * w[j, k]
+            # 若出现 1+s <= 0（如 r=-100%），该组合无效
+            if s <= -0.999999999:
+                invalid = True
+                break
+            x = np.log1p(s)
+            n += 1
+            delta = x - mean
+            mean += delta / n
+            m2 += delta * (x - mean)
+
+        # 若组合无效或样本不足，则输出 NaN
+        if invalid or n <= 1 or (n - dof) <= 0:
+            out_ret[j] = np.nan
+            out_vol[j] = np.nan
+            out_sharpe[j] = np.nan
+            continue
+
+        # 计算年化收益与年化波动率
+        var = m2 / (n - dof)
+        if var < 0.0:
+            var = 0.0
+        annual_ret = mean * trading_days
+        annual_vol = np.sqrt(var) * sqrt_td
+        out_ret[j] = annual_ret
+        out_vol[j] = annual_vol
+        if annual_vol > 0.0:
+            out_sharpe[j] = annual_ret / annual_vol
+        else:
+            out_sharpe[j] = np.nan
+
+    # 计算 VaR：年化收益 - 年化波动 * VaR 系数
+    out_var = out_ret - out_vol * p95
+    return out_ret, out_vol, out_var, out_sharpe
+
+
+# 公共：计算有效前沿掩码
+def efficient_frontier_mask(ret_v: np.ndarray, vol_v: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+    valid = np.isfinite(ret_v) & np.isfinite(vol_v)
+    mask = np.zeros(ret_v.shape[0], dtype=bool)
+    if not np.any(valid):
+        return mask
+    # 收益降序排列；对排序后的波动做累计最小
+    idx = np.nonzero(valid)[0]
+    order = np.argsort(ret_v[valid])[::-1]
+    sorted_vol = vol_v[valid][order]
+    cum_min = np.minimum.accumulate(sorted_vol)
+    on_sorted = sorted_vol <= (cum_min + tol)
+    mask[idx[order]] = on_sorted
+    return mask
+
+
+# 计算资产组合的年度化收益,波动率,和在险价值
+def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p95=1.96,
+                              trading_days: float = 252.0, dof: int = 1):
+    """
+    基于 numba 的零拷贝并行实现，用于计算资产组合的年度化收益、波动率和风险价值（VaR）等指标。
+    该函数避免创建中间的 (T,M) 大小矩阵，从而降低内存占用。
+
+    参数:
+        asset_list (list): 资产列名列表，其顺序应与权重矩阵 weight_array 的列顺序一致。
+        return_df (pd.DataFrame): 包含各资产日收益率的时间序列数据。
+        weight_array (np.ndarray): 权重矩阵，形状为 (M, N)，其中 M 为组合数，N 为资产数。
+        p95 (float): VaR 计算所用的分位数参数，默认为 1.96（即 95% 置信水平）。
+        trading_days (float): 年化交易日数量，默认为 252。
+        dof (int): 自由度参数，用于波动率调整，默认为 1。
+
+    返回:
+        pd.DataFrame: 包含每组权重及对应年度化收益(ret_annual)、波动率(vol_annual)、风险价值(var_annual)的结果表。
+    """
+
+    # 列对齐：按照权重矩阵的列数截断资产列，确保维度匹配
+    nw = int(weight_array.shape[1])
+    asset_cols = list(asset_list)[:nw]
+
+    # 保证输入为 float64 且 C 连续，以提升 numba 执行效率
+    r = return_df[asset_cols].values
+    if r.dtype != np.float64:
+        r = r.astype(np.float64)
+    if not r.flags.c_contiguous:
+        r = np.ascontiguousarray(r)
+
+    w = np.asarray(weight_array, dtype=np.float64)
+    if not w.flags.c_contiguous:
+        w = np.ascontiguousarray(w)
+
+    # 调用核心计算函数，获取年度化收益、波动率、VaR 与夏普比率
+    ret, vol, var, sharpe = _compute_perf_numba(r, w, float(trading_days), int(dof), float(p95))
+
+    # 构造结果 DataFrame，注意当 M 很大时，拼接 DataFrame 可能导致高内存占用
+    weight_df = pd.DataFrame(w, columns=asset_cols)
+    perf_df = pd.DataFrame({
+        'ret_annual': ret,
+        'vol_annual': vol,
+        'var_annual': var,
+        'sharpe_ratio': sharpe,
+    })
+    perf_df = pd.concat([weight_df, perf_df], axis=1)
+
+    # 标记有效前沿上的点（公共方法）
+    perf_df['on_ef'] = efficient_frontier_mask(perf_df['ret_annual'].values, perf_df['vol_annual'].values)
+    return perf_df
+
+
+def plot_efficient_frontier_plotly(df: pd.DataFrame,
+                                   asset_cols,
+                                   title: str = '资产组合有效前沿',
+                                   sample_non_ef: int = 50000,
+                                   save_html=None) -> None:
+    def _build_hover_text(row, a_cols):
+        parts = [
+            f"年化收益率: {row['ret_annual']:.2%}",
+            f"年化波动率: {row['vol_annual']:.2%}",
+            f"VaR95: {row['var_annual']:.2%}",
+            f"Sharpe: {row.get('sharpe_ratio', np.nan):.3f}",
+            "<br><b>资产权重</b>:"
+        ]
+        for col in a_cols:
+            v = row.get(col, np.nan)
+            try:
+                fv = float(v)
+            except Exception:
+                fv = np.nan
+            if np.isfinite(fv) and fv > 1e-4:
+                parts.append(f"<br>{col}: {fv:.1%}")
+        return "".join(parts)
+
+    df = df.copy()
+    ef_df = df[df['on_ef'] == True]
+    non_ef_df = df[df['on_ef'] != True]
+
+    if sample_non_ef is not None and len(non_ef_df) > sample_non_ef:
+        non_ef_df = non_ef_df.sample(n=sample_non_ef, random_state=42)
+
+    ef_df = ef_df.copy()
+    non_ef_df = non_ef_df.copy()
+    ef_df['hover_text'] = ef_df.apply(lambda r: _build_hover_text(r, asset_cols), axis=1)
+    non_ef_df['hover_text'] = non_ef_df.apply(lambda r: _build_hover_text(r, asset_cols), axis=1)
+
+    fig = go.Figure()
+    if len(non_ef_df) > 0:
+        fig.add_trace(go.Scatter(
+            x=non_ef_df['vol_annual'],
+            y=non_ef_df['ret_annual'],
+            mode='markers',
+            marker=dict(color='rgba(150,150,150,0.45)', size=3),
+            hovertext=non_ef_df['hover_text'],
+            hoverinfo='text',
+            name='其他组合'
+        ))
+    if len(ef_df) > 0:
+        fig.add_trace(go.Scatter(
+            x=ef_df['vol_annual'],
+            y=ef_df['ret_annual'],
+            mode='markers',
+            marker=dict(color='rgba(0, 102, 204, 0.9)', size=4),
+            hovertext=ef_df['hover_text'],
+            hoverinfo='text',
+            name='有效前沿'
+        ))
+
+    fig.update_layout(
+        title=title,
+        xaxis_title='年化波动率 (vol_annual)',
+        yaxis_title='年化收益率 (ret_annual)',
+        legend_title='图例',
+        hovermode='closest'
+    )
+    if save_html:
+        fig.write_html(save_html)
+        log(f"已保存 HTML 到 {save_html}")
+    fig.show()
+
+
+def _build_weight_cols(df_weights: pd.DataFrame, asset_cols: List[str]) -> Dict[str, pd.Series]:
+    """按照资产->字段映射生成持仓列字典。未知资产映射将被忽略。"""
+    out: Dict[str, pd.Series] = {}
+    for asset_cd, col_name in asset_to_weight_column_map.items():
+        if asset_cd in asset_cols and asset_cd in df_weights.columns:
+            out[col_name] = df_weights[asset_cd].astype(float).fillna(0.0)
+    return out
+
+
+def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame, return_df: pd.DataFrame) -> None:
+    """将计算结果批量写入两张表，使用线程池并发分块插入。
+
+    本函数会将完整的投资组合数据写入全量表 `iis_aset_allc_indx_wght` 和精简的有效前沿表 `iis_aset_allc_indx_pub`。
+    插入前会先清空目标表，然后通过线程池并发分块插入提升性能。
+
+    参数:
+        mdl_ver_id (str): 模型版本标识符，用于标记数据来源。
+        a_list (List[str]): 资产名称列表，用于构建权重列。
+        res_df (pd.DataFrame): 包含原始计算结果的数据框，包含各资产权重及绩效指标。
+        return_df (pd.DataFrame): 原始收益率数据框，用于重新计算缺失标准组合的绩效。
+
+    返回:
+        None
+    """
+    log(f"正在将计算结果写入数据库...")
+    s_t = time.time()
+    db_url = get_active_db_url(
+        db_type=db_type,
+        db_user=db_user,
+        db_password=db_password,
+        db_host=db_host,
+        db_port=db_port,
+        db_name=db_name,
+    )
+    pool = DatabaseConnectionPool(url=db_url, pool_size=4)
+    std_portfolios = [(1, C1), (2, C2), (3, C3), (4, C4), (5, C5), (6, C6)]
+
+    # 构造标准组合向量
+    std_weights, std_lvls = [], []
+    for lvl, wdict in std_portfolios:
+        row = [float(wdict.get(name, 0.0)) for name in a_list]
+        s = sum(row)
+        if s > 0:
+            row = [x / s for x in row]
+        std_weights.append(row)
+        std_lvls.append(lvl)
+
+    std_arr = np.array(std_weights, dtype=np.float64)
+
+    # 判断原始集合中是否已有标准组合；缺失的重新计算指标
+    res_df_all = res_df.copy()
+    res_df_all['rsk_lvl'] = np.nan
+    W = res_df_all[a_list].values.astype(np.float64, copy=False) if len(res_df_all) else np.empty((0, len(a_list)))
+    missing_mask = []
+    for v in std_arr:
+        diff = np.max(np.abs(W - v), axis=1) if W.size else np.array([])  # 寻找最接近的组合
+        if diff.size > 0 and (diff <= 1e-6).any():
+            hit = np.where(diff <= 1e-6)[0][0]
+            res_df_all.loc[res_df_all.index[hit], 'rsk_lvl'] = float(std_lvls[len(missing_mask)])
+            missing_mask.append(False)
+        else:
+            missing_mask.append(True)
+
+    missing_indices = [i for i, m in enumerate(missing_mask) if m]
+    std_missing_df = pd.DataFrame()
+    if missing_indices:
+        miss_arr = std_arr[missing_indices]
+        std_missing_df = generate_alloc_perf_numba(a_list, return_df, miss_arr)
+        std_missing_df['rsk_lvl'] = [std_lvls[i] for i in missing_indices]
+
+    # 合并并统一计算 on_ef
+    combined = pd.concat([res_df_all, std_missing_df], axis=0,
+                         ignore_index=True) if not std_missing_df.empty else res_df_all.copy()
+    combined['on_ef'] = efficient_frontier_mask(combined['ret_annual'].values, combined['vol_annual'].values)
+
+    # 全量表：为非标准组合分配 rsk_lvl（11 起自增）
+    base_df_all = pd.DataFrame({
+        'mdl_ver_id': mdl_ver_id,
+        'rsk_lvl': combined['rsk_lvl'],
+        'shrp_prprtn': combined['sharpe_ratio'].astype(float),
+        'VaR95_b': combined['var_annual'].astype(float),
+        'VaR95': combined['var_annual'].astype(float).clip(lower=0.0),
+    }, index=combined.index)
+    for k, v in _build_weight_cols(combined, a_list).items():
+        base_df_all[k] = v
+
+    log(f"构建全量表 iis_aset_allc_indx_wght 数据...")
+    wght_df = base_df_all.copy()
+    is_nan = wght_df['rsk_lvl'].isna()
+    if is_nan.any():
+        seq = np.arange(11, 11 + int(is_nan.sum()), dtype=np.int64)
+        wght_df.loc[is_nan, 'rsk_lvl'] = seq
+    wght_df['rsk_lvl'] = wght_df['rsk_lvl'].astype(int)
+    wght_df['isefct_fond'] = combined['on_ef'].astype(bool).astype(int).values
+
+    log(f"构建有效前沿表 iis_aset_allc_indx_pub 数据...")
+    pub_df = combined[(combined['on_ef'] == True) | (combined['rsk_lvl'].isin([1, 2, 3, 4, 5, 6]))].copy()
+    pub_df = pub_df.sort_values(by='ret_annual', ascending=True)
+    is_nan_pub = pub_df['rsk_lvl'].isna()
+    if is_nan_pub.any():
+        seq_pub = np.arange(11, 11 + int(is_nan_pub.sum()), dtype=np.int64)
+        pub_df.loc[is_nan_pub, 'rsk_lvl'] = seq_pub
+    pub_df['rsk_lvl'] = pub_df['rsk_lvl'].astype(int)
+    pub_base = pd.DataFrame({
+        'mdl_ver_id': mdl_ver_id,
+        'rsk_lvl': pub_df['rsk_lvl'].astype(int),
+        'shrp_prprtn': pub_df['sharpe_ratio'].astype(float),
+        'VaR95_b': pub_df['var_annual'].astype(float),
+        'VaR95': pub_df['var_annual'].astype(float).clip(lower=0.0),
+    }, index=pub_df.index)
+    for k, v in _build_weight_cols(pub_df, a_list).items():
+        pub_base[k] = v
+    pub_df = pub_base
+
+    # 分块并发写入
+    log("正在准备分批写入的数据块...")
+
+    def _chunker(df: pd.DataFrame, size: int):
+        n = len(df)
+        for i in range(0, n, size):
+            yield df.iloc[i:i + size].copy()
+
+    datasets = []
+    chunk_size = 5000
+    for chunk in _chunker(wght_df, chunk_size):
+        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_wght', 'replace': False, 'batch_size': 1000,
+                         'method': 'multi'})
+    for chunk in _chunker(pub_df, chunk_size):
+        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_pub', 'replace': False, 'batch_size': 1000,
+                         'method': 'multi'})
+
+    # 清空后再插入（TRUNCATE）
+    log("清空目标表...")
+    with pool.begin() as conn:
+        try:
+            conn.execute("TRUNCATE TABLE iis_aset_allc_indx_wght")
+            conn.execute("TRUNCATE TABLE iis_aset_allc_indx_pub")
+        except Exception as e:
+            log(f"TRUNCATE 失败: {e}")
+            raise
+
+    from T05_db_utils import threaded_insert_dataframe
+    log("正在写入数据库...")
+    threaded_insert_dataframe(pool, datasets, max_workers=4)
+    log("结果已分别写入：iis_aset_allc_indx_wght（全量）、iis_aset_allc_indx_pub（有效前沿）")
+    log(f"写入完成，耗时 {time.time() - s_t:.1f} 秒")
+
+
+# 从指定的 Excel 文件中读取并处理大类资产的数据
+def fetch_returns_from_db(mdl_ver_id: str,
+                          start_dt: Optional[_date] = None,
+                          end_dt: Optional[_date] = None) -> Tuple[List[str], pd.DataFrame, Dict[str, str]]:
+    """从数据库 iis_mdl_aset_pct_d 表读取指定模型的五大类日收益数据。
+
+    参数:
+        mdl_ver_id (str): 模型版本ID，用于筛选特定模型的数据。
+        start_dt (Optional[_date]): 查询起始日期，默认为 None，表示不限制开始时间。
+        end_dt (Optional[_date]): 查询结束日期，默认为 None，表示不限制结束时间。
+
+    返回:
+        Tuple[List[str], pd.DataFrame, Dict[str, str]]:
+            - a_list (List[str]): 资产大类名称列表（列名），按字母顺序排序。
+            - re_df (pd.DataFrame): 以日期为索引、资产大类为列、pct_yld 为值的 DataFrame。
+            - code_name_map (Dict[str, str]): 资产代码到资产名称的映射字典。
+    """
+    # 构造连接串（支持容器/本机自动主机判定；ENV: DB_URL 覆盖）
+    db_url = get_active_db_url(
+        db_type=db_type,
+        db_user=db_user,
+        db_password=db_password,
+        db_host=db_host,
+        db_port=db_port,
+        db_name=db_name,
+    )
+    pool = DatabaseConnectionPool(url=db_url, pool_size=4)
+
+    # 构建 WHERE 条件和参数
+    where_parts = ["mdl_ver_id = :mdl_ver_id"]
+    params = {"mdl_ver_id": mdl_ver_id}
+    if start_dt is not None:
+        where_parts.append("pct_yld_date >= :start_dt")
+        params["start_dt"] = start_dt
+    if end_dt is not None:
+        where_parts.append("pct_yld_date <= :end_dt")
+        params["end_dt"] = end_dt
+    where_sql = " WHERE " + " AND ".join(where_parts)
+
+    # 查询SQL语句：获取资产大类代码、名称、日期及收益率
+    sql_series = (
+            "SELECT aset_bclass_cd AS cd, aset_bclass_nm AS nm, pct_yld_date AS dt, pct_yld AS yld FROM iis_mdl_aset_pct_d" + where_sql
+    )
+
+    # 执行查询并转换为DataFrame
+    df = read_dataframe(pool, sql_series, params=params)
+    if df.empty:
+        raise RuntimeError("数据库中未查询到模型 {} 的收益数据".format(mdl_ver_id))
+
+    # 处理资产名称与代码映射关系，并生成排序后的资产名称列表
+    df["nm"] = df["nm"].astype(str)
+    if "cd" in df.columns:
+        df["cd"] = df["cd"].astype(str)
+        code_name_map: Dict[str, str] = df[["cd", "nm"]].dropna().drop_duplicates().set_index("cd")["nm"].to_dict()
+    else:
+        code_name_map = {}
+    asset_list = sorted(df["nm"].unique().tolist())
+
+    # 设置日期索引并重塑数据为透视表格式
+    df["dt"] = pd.to_datetime(df["dt"])  # 保证为 datetime 索引
+    df = df.pivot_table(index="dt", columns="nm", values="yld", aggfunc="first")
+    df = df.sort_index().dropna(how='any')
+
+    # 根据资产名称排序重新排列列顺序
+    return_df = df.reindex(columns=asset_list)
+    return asset_list, return_df, code_name_map
+
+
+def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
+    """从 iis_wght_cfg_attc_mdl 表中获取第一条 mdl_ver_id、cal_strt_dt、cal_end_dt。
+
+    该函数连接数据库，查询模型配置表中的第一条记录，返回模型版本ID和计算日期范围。
+    如果表中没有数据，则抛出运行时异常。
+
+    Returns:
+        Tuple[str, Optional[_date], Optional[_date]]: 包含以下元素的元组：
+            - str: 模型版本ID (mdl_ver_id)
+            - Optional[_date]: 计算开始日期 (cal_strt_dt)，如果为空则返回None
+            - Optional[_date]: 计算结束日期 (cal_end_dt)，如果为空则返回None
+
+    Raises:
+        RuntimeError: 当数据库中没有找到可用的模型版本时抛出
+    """
+    db_url = get_active_db_url(
+        db_type=db_type,
+        db_user=db_user,
+        db_password=db_password,
+        db_host=db_host,
+        db_port=db_port,
+        db_name=db_name,
+    )
+    # 单次查询：取第一条记录（可按需调整排序口径）
+    sql = "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt FROM iis_wght_cfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
+    conn = create_connection(db_url)
+    try:
+        df = pd.read_sql_query(sql, conn)
+    finally:
+        conn.close()
+    if df.empty:
+        raise RuntimeError("数据库中未找到可用的模型版本（iis_wght_cfg_attc_mdl 为空）")
+    row = df.iloc[0]
+    mdl = str(row["mdl_ver_id"]) if "mdl_ver_id" in df.columns else str(row[0])
+
+    # 日期转换辅助函数：处理可能为空的日期值
+    def _to_date(v):
+        if pd.isna(v):
+            return None
+        if hasattr(v, 'date'):
+            return v.date()
+        return v
+
+    s_dt = _to_date(row.get("cal_strt_dt")) if "cal_strt_dt" in row else None
+    e_dt = _to_date(row.get("cal_end_dt")) if "cal_end_dt" in row else None
+    return mdl, s_dt, e_dt
+
+
+def main() -> None:
+    """
+    主函数，执行资产配置模型的全流程计算与结果展示。
+
+    该函数依次完成以下主要步骤：
+    1. 从数据库获取默认模型版本及对应的资产收益率数据；
+    2. 生成用于资产配置的 simplex 网格点（权重组合）；
+    3. 基于网格点计算各资产组合的绩效指标；
+    4. 在本机环境下绘制有效前沿图；
+    5. 将计算结果写入数据库。
+
+    无参数。
+    返回值：None
+    """
+
+    ''' 0) 数据准备（从数据库） ------------------------------------------------------------------------ '''
+    mdl_ver_id, cal_sta_dt, cal_end_dt = fetch_default_mdl_ver_id()  # 获取默认模型版本ID和计算起止日期
+    log(f"使用大类资产指数配置模型版本: {mdl_ver_id} | 起止: {cal_sta_dt} ~ {cal_end_dt}")
+
+    # 从数据库获取资产收益率数据及相关映射信息
+    a_list, re_df, asset_id_map = fetch_returns_from_db(mdl_ver_id, start_dt=cal_sta_dt, end_dt=cal_end_dt)
+    log("使用模型: {} | 资产大类: {} | 日期范围: {} ~ {}".format(
+        mdl_ver_id,
+        ", ".join(a_list),
+        re_df.index.min().date() if len(re_df.index) else None,
+        re_df.index.max().date() if len(re_df.index) else None,
+    ))
+    log(f"大类资产ID映射: {asset_id_map}")
+
+    ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
+    s_t_0 = time.time()
+    weight_list = generate_simplex_grid_numba(len(a_list), 100)  # 生成 simplex 网格点
+    log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")
+
+    ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
+    s_t_1 = time.time()
+    # 基于资产收益率和权重组合，计算各组合的绩效指标
+    res_df = generate_alloc_perf_numba(a_list, re_df, weight_list)
+    log(f"{res_df.head()}")
+    log(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")
+
+    ''' 3) 画图 ------------------------------------------------------------------------------------- '''
+    if db_host is None or db_host in ('localhost', '127.0.0.1'):  # 仅本机环境下进行画图
+        plot_efficient_frontier_plotly(
+            res_df,
+            asset_cols=a_list,
+            title='资产组合有效前沿（抽样非前沿点）',
+            sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
+            save_html='efficient_frontier.html'
+        )
+
+    ''' 4) 结果写入数据库 ----------------------------------------------------------------------------- '''
+    insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
+
+
+if __name__ == '__main__':
+    main()
