@@ -103,4 +103,51 @@ CREATE TABLE iis_aset_allc_indx_rtrn
     PRIMARY KEY (mdl_ver_id, aset_bclass_cd)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资产指数收益信息表';
 
+CREATE TABLE iis_fnd_indx_info
+(
+    indx_num             varchar(40) NOT NULL COMMENT '指数编码',
+    indx_nm              varchar(100)  DEFAULT NULL COMMENT '指数名称',
+    indx_enm             varchar(200)  DEFAULT NULL COMMENT '指数英文名称',
+    brs_nm               varchar(40)   DEFAULT NULL COMMENT '交易所名称',
+    publisher            varchar(100)  DEFAULT NULL COMMENT '发布人',
+    publish_dt           date          DEFAULT NULL COMMENT '发布日期',
+    publish_end_dt       date          DEFAULT NULL COMMENT '终止发布日期',
+    indx_sty             varchar(40)   DEFAULT NULL COMMENT '指数风格',
+    weight_typ           varchar(100)  DEFAULT NULL COMMENT '权重类型',
+    component_stocks_num decimal(5, 0) DEFAULT NULL COMMENT '成份股数量',
+    indx_rgn_cd          varchar(9)    DEFAULT NULL COMMENT '指数区域代码',
+    indx_scale_cd        varchar(9)    DEFAULT NULL COMMENT '指数规模代码',
+    weight_typ_cd        varchar(9)    DEFAULT NULL COMMENT '权重类型代码',
+    own_mkt_cd           varchar(9)    DEFAULT NULL COMMENT '所属市场代码',
+    income_way_cd        varchar(9)    DEFAULT NULL COMMENT '收益处理方式代码',
+    indx_typ_cd          varchar(9)    DEFAULT NULL COMMENT '指数类别代码',
+    indx_typ_nm          varchar(40)   DEFAULT NULL COMMENT '指数类别名称',
+    indx_rmk             text COMMENT '指数备注',
+    src_tab_enmm         varchar(100)  DEFAULT NULL COMMENT '来源表英文名',
+    src_tab_cnmm         varchar(100)  DEFAULT NULL COMMENT '来源表中文名',
+    PRIMARY KEY (indx_num)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='基金指数信息表';
+
+CREATE TABLE wind_cmfindexeod
+(
+    object_id       varchar(100) NOT NULL COMMENT '对象ID',
+    s_info_windcode varchar(40)    DEFAULT NULL COMMENT 'Wind代码',
+    s_info_name     varchar(100)   DEFAULT NULL COMMENT '指数简称',
+    trade_dt        varchar(8)     DEFAULT NULL COMMENT '交易日期',
+    crncy_code      varchar(10)    DEFAULT NULL COMMENT '货币代码',
+    s_dq_preclose   decimal(20, 4) DEFAULT NULL COMMENT '昨收盘价',
+    s_dq_open       decimal(20, 4) DEFAULT NULL COMMENT '开盘价',
+    s_dq_high       decimal(20, 4) DEFAULT NULL COMMENT '最高价',
+    s_dq_low        decimal(20, 4) DEFAULT NULL COMMENT '最低价',
+    s_dq_close      decimal(20, 4) DEFAULT NULL COMMENT '最新价',
+    s_dq_volume     decimal(20, 4) DEFAULT NULL COMMENT '成交量手',
+    s_dq_amount     decimal(20, 4) DEFAULT NULL COMMENT '成交金额千元',
+    sec_id          varchar(10)    DEFAULT NULL COMMENT '证券ID',
+    s_dq_change     decimal(20, 4) DEFAULT NULL COMMENT '涨跌点',
+    s_dq_pctchange  decimal(20, 4) DEFAULT NULL COMMENT '涨跌幅',
+    opdate          datetime       DEFAULT NULL,
+    opmode          varchar(1)     DEFAULT NULL,
+    PRIMARY KEY (object_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='中国共同基金指数行情';
+
 COMMIT;
