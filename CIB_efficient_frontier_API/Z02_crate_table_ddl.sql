@@ -24,7 +24,7 @@ CREATE TABLE iis_wght_cnfg_mdl
 (
     pk_id          int(10) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
     mdl_ver_id     varchar(64)    DEFAULT NULL COMMENT '模型编号',
-    aset_bclass_cd varchar(10)    DEFAULT NULL COMMENT '资产大类',
+    aset_bclass_cd varchar(10)    DEFAULT NULL COMMENT '资产大类编号',
     indx_num       varchar(100)   DEFAULT NULL COMMENT '指数编码',
     indx_nm        varchar(500)   DEFAULT NULL COMMENT '指数名称',
     wght           decimal(11, 7) DEFAULT NULL COMMENT '权重',
