@@ -483,7 +483,7 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     for k, v in _build_weight_cols(combined, a_list).items():
         base_df_all[k] = v
 
-    log(f"构建全量表数据...")
+    log(f"构建全量表 iis_aset_allc_indx_wght 数据...")
     wght_df = base_df_all.copy()
     is_nan = wght_df['rsk_lvl'].isna()
     if is_nan.any():
@@ -492,7 +492,7 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     wght_df['rsk_lvl'] = wght_df['rsk_lvl'].astype(int)
     wght_df['isefct_fond'] = combined['on_ef'].astype(bool).astype(int).values
 
-    log(f"构建有效前沿表数据...")
+    log(f"构建有效前沿表 iis_aset_allc_indx_pub 数据...")
     pub_df = combined[(combined['on_ef'] == True) | (combined['rsk_lvl'].isin([1, 2, 3, 4, 5, 6]))].copy()
     pub_df = pub_df.sort_values(by='ret_annual', ascending=True)
     is_nan_pub = pub_df['rsk_lvl'].isna()
