@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -93,8 +93,17 @@ def _load_universe() -> List[dict]:
             for x in arr:
                 code = x.get("code") or x.get("ts_code")
                 name = x.get("name") or x.get("fund_name") or ""
+                mgmt = x.get("management") or x.get("manager")
+                fd = x.get("found_date") or x.get("foundation_date")
                 if code and name:
-                    out.append({"code": str(code), "name": str(name)})
+                    out.append(
+                        {
+                            "code": str(code),
+                            "name": str(name),
+                            "management": None if mgmt is None else str(mgmt),
+                            "found_date": _normalize_date(fd),
+                        }
+                    )
             return out
         except Exception:
             pass
@@ -103,14 +112,47 @@ def _load_universe() -> List[dict]:
             df = pd.read_parquet(pq_path)
             code_col = "ts_code" if "ts_code" in df.columns else ("code" if "code" in df.columns else None)
             name_col = "name" if "name" in df.columns else ("fund_name" if "fund_name" in df.columns else None)
+            mgmt_col = "management" if "management" in df.columns else ("manager" if "manager" in df.columns else None)
+            fd_col = "found_date" if "found_date" in df.columns else (
+                "foundation_date" if "foundation_date" in df.columns else None
+            )
             if code_col and name_col:
-                out_df = df[[code_col, name_col]].dropna().drop_duplicates()
-                return [
-                    {"code": str(c), "name": str(n)} for c, n in zip(out_df[code_col].tolist(), out_df[name_col].tolist())
-                ]
+                cols = [code_col, name_col]
+                if mgmt_col:
+                    cols.append(mgmt_col)
+                if fd_col:
+                    cols.append(fd_col)
+                out_df = df[cols].dropna(subset=[code_col, name_col]).drop_duplicates()
+                items: List[dict] = []
+                for _, r in out_df.iterrows():
+                    items.append(
+                        {
+                            "code": str(r[code_col]),
+                            "name": str(r[name_col]),
+                            "management": None if not mgmt_col else (None if pd.isna(r[mgmt_col]) else str(r[mgmt_col])),
+                            "found_date": _normalize_date(None if not fd_col else r[fd_col]),
+                        }
+                    )
+                return items
         except Exception:
             pass
     return []
+
+
+def _normalize_date(v) -> Optional[str]:
+    if v is None:
+        return None
+    try:
+        # handle 20180101 or '2018-01-01'
+        s = str(v)
+        if s.isdigit() and len(s) == 8:
+            return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+        dt = pd.to_datetime(v, errors="coerce")
+        if pd.isna(dt):
+            return None
+        return str(dt.date())
+    except Exception:
+        return None
 
 
 @lru_cache(maxsize=1)
@@ -130,20 +172,37 @@ def _get_universe() -> List[dict]:
 
 
 @app.get("/api/etf/search")
-def etf_search(q: Optional[str] = Query(default=""), k: int = Query(default=10, ge=1, le=200)):
+def etf_search(
+    q: Optional[str] = Query(default=""),
+    k: Optional[int] = Query(default=None),  # deprecated by page/page_size
+    sort_by: str = Query(default="name"),  # one of: name, code, found_date, management
+    sort_dir: str = Query(default="asc"),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=200),
+):
     arr = _get_universe()
     qnorm = (q or "").strip().lower()
+    filtered: List[dict]
     if not qnorm:
-        return JSONResponse(arr[:k])
-    scored = []
-    for x in arr:
-        hay = f"{x.get('code','')} {x.get('name','')}".lower()
-        idx = hay.find(qnorm)
-        if idx >= 0:
-            score = idx + len(qnorm) * 0.2
-            scored.append((score, x))
-    scored.sort(key=lambda t: t[0])
-    return JSONResponse([x for _, x in scored[:k]])
+        filtered = arr
+    else:
+        filtered = []
+        for x in arr:
+            hay = f"{x.get('code','')} {x.get('name','')} {x.get('management','')}".lower()
+            if qnorm in hay:
+                filtered.append(x)
+    reverse = sort_dir.lower() == "desc"
+    key = (lambda x: (x.get(sort_by) or "")) if sort_by in {"name", "code", "management", "found_date"} else (lambda x: x.get("name") or "")
+    filtered.sort(key=key, reverse=reverse)
+    total = len(filtered)
+    if k is not None and k > 0:
+        # compatibility: take top-k of filtered then apply pagination
+        filtered = filtered[:k]
+    # pagination
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = filtered[start:end]
+    return JSONResponse({"items": items, "total": total, "page": page, "page_size": page_size})
 
 
 # ---- 静态页面托管（可选：将前端构建产物放到 frontend/dist 下） ----

@@ -9,6 +9,8 @@ interface ETFItem {
   weight?: number
   riskContribution?: number
   solved?: boolean
+  management?: string
+  found_date?: string
 }
 
 interface AssetClass {
@@ -81,35 +83,17 @@ function equalWeights(n: number): number[] {
 }
 
 export default function AssetClassConstructionPage() {
-  const [classes, setClasses] = useState<AssetClass[]>([
-    {
-      id: uid(),
-      name: '权益类',
-      mode: 'custom',
-      etfs: [
-        { code: 'SPY', name: 'SPDR S&P 500 ETF Trust', weight: 80 },
-        { code: 'QQQ', name: 'Invesco QQQ Trust', weight: 20 },
-      ],
-      riskMetric: 'vol',
-      maxLeverage: 0,
-    },
-    {
-      id: uid(),
-      name: '固收类',
-      mode: 'equal',
-      etfs: [
-        { code: 'TLT', name: 'iShares 20+ Year Treasury' },
-        { code: 'IEF', name: 'iShares 7-10 Year Treasury' },
-      ],
-      riskMetric: 'vol',
-      maxLeverage: 0,
-    },
-  ])
+  const [classes, setClasses] = useState<AssetClass[]>([])
 
   const [loading, setLoading] = useState(false)
   const [searchOpen, setSearchOpen] = useState<{ open: boolean; classId?: string }>({ open: false })
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<{ code: string; name: string }[]>([])
+  const [searchResults, setSearchResults] = useState<ETFItem[]>([])
+  const [sortBy, setSortBy] = useState<'name' | 'code' | 'management' | 'found_date'>('name')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const [total, setTotal] = useState(0)
 
   function updateClass(id: string, updater: (c: AssetClass) => AssetClass) {
     setClasses((prev) => prev.map((c) => (c.id === id ? updater(c) : c)))
@@ -221,24 +205,81 @@ export default function AssetClassConstructionPage() {
     }
   }, [])
 
-  // 搜索：优先从后端读取 data 下的 ETF 列表（JSON/Parquet），失败时回退本地模糊匹配
+  // 页面初始化：从后端读取默认两类
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const fetchTop = async (keyword: string) => {
+          const resp = await fetch(`/api/etf/search?q=${encodeURIComponent(keyword)}&page=1&page_size=2&sort_by=name&sort_dir=asc`)
+          if (!resp.ok) throw new Error('search failed')
+          const data = await resp.json()
+          const items = (data.items || []) as ETFItem[]
+          return items
+        }
+        const eq = await fetchTop('沪深300')
+        const bond = await fetchTop('国债')
+        setClasses([
+          {
+            id: uid(),
+            name: '权益类',
+            mode: 'custom',
+            etfs: eq.map((e, i) => ({ ...e, weight: i === 0 ? 80 : 20 })),
+            riskMetric: 'vol',
+            maxLeverage: 0,
+          },
+          {
+            id: uid(),
+            name: '固收类',
+            mode: 'equal',
+            etfs: bond,
+            riskMetric: 'vol',
+            maxLeverage: 0,
+          },
+        ])
+      } catch {
+        // 回退：保留空列表，用户自行添加
+        setClasses([
+          { id: uid(), name: '权益类', mode: 'custom', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
+          { id: uid(), name: '固收类', mode: 'equal', etfs: [], riskMetric: 'vol', maxLeverage: 0 },
+        ])
+      }
+    }
+    if (classes.length === 0) init()
+  }, [])
+
+  // 搜索：优先从后端读取 data 下的 ETF 列表（JSON/Parquet），失败时回退本地模糊匹配；支持排序与分页
   useEffect(() => {
     const controller = new AbortController()
     const doFetch = async () => {
       try {
-        const url = `/api/etf/search?q=${encodeURIComponent(searchQuery)}&k=10`
+        const params = new URLSearchParams({
+          q: searchQuery,
+          sort_by: sortBy,
+          sort_dir: sortDir,
+          page: String(page),
+          page_size: String(pageSize),
+        })
+        const url = `/api/etf/search?${params.toString()}`
         const resp = await fetch(url, { signal: controller.signal })
         if (!resp.ok) throw new Error(`status ${resp.status}`)
         const data = await resp.json()
-        if (Array.isArray(data)) setSearchResults(data)
-        else setSearchResults(fuzzySearchTop(searchQuery, 10))
+        if (Array.isArray(data?.items)) {
+          setSearchResults(data.items)
+          setTotal(Number(data.total || 0))
+        } else {
+          const local = fuzzySearchTop(searchQuery, pageSize)
+          setSearchResults(local)
+          setTotal(local.length)
+        }
       } catch {
-        setSearchResults(fuzzySearchTop(searchQuery, 10))
+        const local = fuzzySearchTop(searchQuery, pageSize)
+        setSearchResults(local)
+        setTotal(local.length)
       }
     }
     doFetch()
     return () => controller.abort()
-  }, [searchQuery])
+  }, [searchQuery, sortBy, sortDir, page, pageSize])
 
   return (
     <div className="mx-auto max-w-5xl p-6">
@@ -298,11 +339,43 @@ export default function AssetClassConstructionPage() {
                   }}
                   className="flex w-full items-center justify-between border-b px-4 py-2 text-left hover:bg-gray-50"
                 >
-                  <span className="font-mono text-sm">{etf.code}</span>
-                  <span className="ml-3 flex-1 truncate px-4 text-sm text-gray-700">{etf.name}</span>
+                  <div className="flex-1 flex items-center gap-2">
+                    <span className="font-mono text-sm">{etf.code}</span>
+                    <span className="truncate px-2 text-sm text-gray-700">{etf.name}</span>
+                  </div>
+                  <div className="hidden md:block text-right text-xs text-gray-500 mr-3">
+                    <div>基金公司：{etf.management || '—'}</div>
+                    <div>成立日期：{etf.found_date || '—'}</div>
+                  </div>
                   <span className="text-xs text-gray-400">添加</span>
                 </button>
               ))}
+            </div>
+            {/* 分页与排序控制 */}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-600">排序</label>
+                <select className="border rounded px-2 py-1 text-xs" value={sortBy} onChange={(e) => { setSortBy(e.target.value as any); setPage(1) }}>
+                  <option value="name">名称</option>
+                  <option value="code">代码</option>
+                  <option value="management">基金公司</option>
+                  <option value="found_date">成立日期</option>
+                </select>
+                <select className="border rounded px-2 py-1 text-xs" value={sortDir} onChange={(e) => { setSortDir(e.target.value as any); setPage(1) }}>
+                  <option value="asc">升序</option>
+                  <option value="desc">降序</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-600">每页</label>
+                <select className="border rounded px-2 py-1 text-xs" value={pageSize} onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}>
+                  {[5,10,20,50].map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+                <span className="text-xs text-gray-600">共 {total} 条</span>
+                <button className="border rounded px-2 py-1 text-xs" disabled={page<=1} onClick={() => setPage(p=>Math.max(1,p-1))}>上一页</button>
+                <span className="text-xs">第 {page} 页</span>
+                <button className="border rounded px-2 py-1 text-xs" disabled={page*pageSize>=total} onClick={() => setPage(p=>p+1)}>下一页</button>
+              </div>
             </div>
           </div>
         </div>
@@ -460,9 +533,11 @@ function AssetClassCard({
               <div className="flex items-center gap-2">
                 <span className="w-5 text-xs text-gray-500">{idx + 1}.</span>
                 <div className="min-w-0 flex-1 truncate text-sm">
-                  <span className="font-mono">{e.code}</span>
-                  <span className="mx-2 text-gray-400">-</span>
-                  <span className="text-gray-700">{e.name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono">{e.code}</span>
+                    <span className="text-gray-700">{e.name}</span>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">基金公司：{e.management || '—'} ｜ 成立日期：{e.found_date || '—'}</div>
                 </div>
               </div>
             </div>
