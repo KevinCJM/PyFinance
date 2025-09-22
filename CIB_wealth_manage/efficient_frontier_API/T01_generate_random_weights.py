@@ -7,7 +7,6 @@ B01_random_weights_faster.py
 - 性能重点：尽量使用 NumPy 向量化、减少中间对象与 DataFrame 依赖。
 """
 
-
 import time
 from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
 import os
@@ -25,6 +24,7 @@ except Exception:
 import numpy as np
 import pandas as pd
 from T02_other_tools import log, ann_log_return, ann_log_vol
+
 
 def _make_rng(seed: int):
     """Create a NumPy RandomState for compatibility with NumPy<=1.16."""
@@ -169,11 +169,17 @@ def cal_ef_mask(ret_annual: np.ndarray, vol_annual: np.ndarray, eps: float = 1e-
     返回:
         np.ndarray: 布尔数组，shape=(n,)，True表示对应点在有效前沿上
     """
+    # 按收益率降序排序的索引
     idx = np.argsort(ret_annual)[::-1]
     vol_sorted = vol_annual[idx]
+
+    # 计算排序后数组的累积最小波动率
     cummin_vol = np.minimum.accumulate(vol_sorted)
+
+    # 识别有效前沿点：波动率小于等于当前累积最小值（考虑容差）
     on_ef_sorted = vol_sorted <= (cummin_vol + eps)
 
+    # 将排序后的结果映射回原始顺序
     on_ef = np.zeros(ret_annual.shape[0], dtype=bool)
     on_ef[idx] = on_ef_sorted
     return on_ef

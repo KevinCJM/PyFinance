@@ -145,9 +145,8 @@ if __name__ == '__main__':
             "另类": [0.0, 0.0]
         }
     }
-    # 字典转json
-    input_json = json.dumps(input_dict, ensure_ascii=False)
-    log(input_json)
 
+    with open('sample_A05_input.json', 'r', encoding='utf-8') as f:
+        input_json = f.read()
     output_json = main(input_json)
     log(output_json)
