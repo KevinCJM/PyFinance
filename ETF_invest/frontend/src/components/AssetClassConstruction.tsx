@@ -109,7 +109,7 @@ export default function AssetClassConstructionPage() {
   const [loading, setLoading] = useState(false)
   const [searchOpen, setSearchOpen] = useState<{ open: boolean; classId?: string }>({ open: false })
   const [searchQuery, setSearchQuery] = useState('')
-  const searchResults = useMemo(() => fuzzySearchTop(searchQuery, 10), [searchQuery])
+  const [searchResults, setSearchResults] = useState<{ code: string; name: string }[]>([])
 
   function updateClass(id: string, updater: (c: AssetClass) => AssetClass) {
     setClasses((prev) => prev.map((c) => (c.id === id ? updater(c) : c)))
@@ -220,6 +220,25 @@ export default function AssetClassConstructionPage() {
       console.error('内置测试失败:', e)
     }
   }, [])
+
+  // 搜索：优先从后端读取 data 下的 ETF 列表（JSON/Parquet），失败时回退本地模糊匹配
+  useEffect(() => {
+    const controller = new AbortController()
+    const doFetch = async () => {
+      try {
+        const url = `/api/etf/search?q=${encodeURIComponent(searchQuery)}&k=10`
+        const resp = await fetch(url, { signal: controller.signal })
+        if (!resp.ok) throw new Error(`status ${resp.status}`)
+        const data = await resp.json()
+        if (Array.isArray(data)) setSearchResults(data)
+        else setSearchResults(fuzzySearchTop(searchQuery, 10))
+      } catch {
+        setSearchResults(fuzzySearchTop(searchQuery, 10))
+      }
+    }
+    doFetch()
+    return () => controller.abort()
+  }, [searchQuery])
 
   return (
     <div className="mx-auto max-w-5xl p-6">
@@ -526,4 +545,3 @@ function AssetClassCard({
     </div>
   )
 }
-
