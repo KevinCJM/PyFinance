@@ -692,7 +692,7 @@ def main():
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 10)  # 生成 simplex 网格点
+    weight_list = generate_simplex_grid_numba(len(a_list), 100)  # 生成 simplex 网格点
     log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
@@ -714,8 +714,8 @@ def main():
 
     ''' 4) 结果保存到本地文件 -------------------------------------------------------------------------- '''
     folder_path = os.path.dirname(os.path.abspath(__file__))
-    res_df.to_parquet(os.path.join(folder_path, f'alloc_results.parquet'), index=False)
-    log(f"结果保存到: {os.path.join(folder_path, f'alloc_results.parquet')}")
+    res_df.to_parquet(os.path.join(folder_path, f'alloc_results_400w.parquet'), index=False)
+    log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.parquet')}")
 
     ''' 5) 结果写入数据库 ----------------------------------------------------------------------------- '''
     insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
