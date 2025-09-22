@@ -17,6 +17,7 @@ B02_construct_category_yield.py
 - Y01_db_config: 数据库连接参数
 """
 import time
+import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple
 
@@ -85,7 +86,7 @@ def fetch_model_config(pool: DatabaseConnectionPool, mdl_ver_id: str) -> pd.Data
 
 
 def fetch_index_sources(pool: DatabaseConnectionPool, codes: List[str]) -> pd.DataFrame:
-    log("查询 iis_fnd_indx_info 中的指数来源表")
+    log("读取 iis_fnd_indx_info 中的指数来源表")
     if not codes:
         return pd.DataFrame(columns=["indx_num", "src_tab_enmm"])  # 空
     in_clause, params = _build_in_clause("p", list(codes))
@@ -97,14 +98,13 @@ def fetch_index_sources(pool: DatabaseConnectionPool, codes: List[str]) -> pd.Da
 
 
 def fetch_wind_index_eod(pool: DatabaseConnectionPool, codes: List[str]) -> pd.DataFrame:
-    log("从 wind_cmfindexeod 中抽取成分指数的净值数据")
+    log("读取 wind_cmfindexeod 中抽取成分指数的净值数据")
     if not codes:
         raise RuntimeError("无可查询的指数代码")
     in_clause, params = _build_in_clause("w", list(codes))
     sql = (
-        "SELECT s_info_windcode, s_info_name, trade_dt, s_dq_close "
-        "FROM wind_cmfindexeod "
-        f"WHERE s_info_windcode IN {in_clause}"
+        f"SELECT s_info_windcode, s_info_name, trade_dt, s_dq_close "
+        f"FROM wind_cmfindexeod WHERE s_info_windcode IN {in_clause} and s_dq_close is not null"
     )
     return read_dataframe(pool, sql, params=params)
 
@@ -139,19 +139,26 @@ def run() -> pd.DataFrame:
 
     # 统一数据类型与排序
     df_eod["trade_dt"] = pd.to_datetime(df_eod["trade_dt"])  # 日期
-    df_eod = df_eod.sort_values(["s_info_windcode", "trade_dt"]).reset_index(drop=True)
+    df_eod_sorted = df_eod.sort_values(["s_info_windcode", "trade_dt"]).reset_index(drop=True)
 
     ''' 2. 大类收益计算 ------------------------------------------------------------------------- '''
-    # 1) 计算指数日收益（按代码透视）
-    log("计算指数日收益")
-    px = df_eod.pivot_table(index="trade_dt", columns="s_info_windcode", values="s_dq_close", aggfunc="first")
-    px = px.sort_index().dropna(how='all')
-    index_return_df = px.pct_change().replace([pd.NA, float('inf'), float('-inf')], pd.NA).dropna(how='any')
+    # 1) 计算指数日收益（按代码分组后再透视）
+    log("计算指数日收益 ... ")
+    df_eod_sorted["ret"] = df_eod_sorted.groupby("s_info_windcode")["s_dq_close"].pct_change()
+    # 去除首日 NaN 与非有限值（兼容旧版 pandas，避免 pd.NA 带来的歧义）
+    ret_vals = pd.to_numeric(df_eod_sorted["ret"], errors="coerce").astype(float)
+    mask_valid = np.isfinite(ret_vals.values)
+    ret_df = df_eod_sorted.loc[mask_valid].copy()
+    index_return_df = ret_df.pivot_table(index="trade_dt", columns="s_info_windcode", values="ret", aggfunc="first")
+    index_return_df = index_return_df.sort_index().replace([np.inf, -np.inf], np.nan).dropna(how='any')
 
     # 2) 按 cal_strt_dt/cal_end_dt 截取区间
     if pd.notna(cal_strt_dt):
         index_return_df = index_return_df[index_return_df.index >= cal_strt_dt]
     if pd.notna(cal_end_dt):
+        index_return_df = index_return_df[index_return_df.index <= cal_end_dt]
+    else:
+        cal_end_dt = pd.to_datetime("today")
         index_return_df = index_return_df[index_return_df.index <= cal_end_dt]
     if index_return_df.empty:
         raise RuntimeError("指定区间内无指数收益数据，无法构建大类收益")
