@@ -661,7 +661,7 @@ def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
     return mdl, s_dt, e_dt
 
 
-def main() -> None:
+def main():
     """
     主函数，执行资产配置模型的全流程计算与结果展示。
 
@@ -692,7 +692,7 @@ def main() -> None:
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 100)  # 生成 simplex 网格点
+    weight_list = generate_simplex_grid_numba(len(a_list), 10)  # 生成 simplex 网格点
     log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
@@ -712,9 +712,15 @@ def main() -> None:
             save_html='efficient_frontier.html'
         )
 
-    ''' 4) 结果写入数据库 ----------------------------------------------------------------------------- '''
+    ''' 4) 结果保存到本地文件 -------------------------------------------------------------------------- '''
+    folder_path = os.path.dirname(os.path.abspath(__file__))
+    res_df.to_parquet(os.path.join(folder_path, f'alloc_results.parquet'), index=False)
+    log(f"结果保存到: {os.path.join(folder_path, f'alloc_results.parquet')}")
+
+    ''' 5) 结果写入数据库 ----------------------------------------------------------------------------- '''
     insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
 
 
 if __name__ == '__main__':
-    main()
+    res = main()
+    print(res)
