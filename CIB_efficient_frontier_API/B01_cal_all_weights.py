@@ -661,10 +661,26 @@ def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
     return mdl, s_dt, e_dt
 
 
-if __name__ == '__main__':
+def main() -> None:
+    """
+    主函数，执行资产配置模型的全流程计算与结果展示。
+
+    该函数依次完成以下主要步骤：
+    1. 从数据库获取默认模型版本及对应的资产收益率数据；
+    2. 生成用于资产配置的 simplex 网格点（权重组合）；
+    3. 基于网格点计算各资产组合的绩效指标；
+    4. 在本机环境下绘制有效前沿图；
+    5. 将计算结果写入数据库。
+
+    无参数。
+    返回值：None
+    """
+
     ''' 0) 数据准备（从数据库） ------------------------------------------------------------------------ '''
-    mdl_ver_id, cal_sta_dt, cal_end_dt = fetch_default_mdl_ver_id()
+    mdl_ver_id, cal_sta_dt, cal_end_dt = fetch_default_mdl_ver_id()  # 获取默认模型版本ID和计算起止日期
     log(f"使用大类资产指数配置模型版本: {mdl_ver_id} | 起止: {cal_sta_dt} ~ {cal_end_dt}")
+
+    # 从数据库获取资产收益率数据及相关映射信息
     a_list, re_df, asset_id_map = fetch_returns_from_db(mdl_ver_id, start_dt=cal_sta_dt, end_dt=cal_end_dt)
     log("使用模型: {} | 资产大类: {} | 日期范围: {} ~ {}".format(
         mdl_ver_id,
@@ -676,14 +692,15 @@ if __name__ == '__main__':
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 100)
-    log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")  # 10%:1.87秒, 1%:1.97秒, 0.5%:2.0秒
+    weight_list = generate_simplex_grid_numba(len(a_list), 100)  # 生成 simplex 网格点
+    log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
     s_t_1 = time.time()
+    # 基于资产收益率和权重组合，计算各组合的绩效指标
     res_df = generate_alloc_perf_numba(a_list, re_df, weight_list)
     log(f"{res_df.head()}")
-    log(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")  # 10%:0.94秒, 1%:30.84秒, 0.5%:SIGKILL
+    log(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")
 
     ''' 3) 画图 ------------------------------------------------------------------------------------- '''
     if db_host is None or db_host in ('localhost', '127.0.0.1'):  # 仅本机环境下进行画图
@@ -697,3 +714,7 @@ if __name__ == '__main__':
 
     ''' 4) 结果写入数据库 ----------------------------------------------------------------------------- '''
     insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
+
+
+if __name__ == '__main__':
+    main()
