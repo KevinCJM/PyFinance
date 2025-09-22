@@ -6,24 +6,11 @@
 @Descriptions: 
 """
 
-import time
 import os
-from datetime import datetime
-from typing import Any, Dict, Iterable, List, Tuple
-import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-try:
-    from numba import njit, prange
-
-    HAS_NUMBA = True
-    print("Numba 可用，启用 JIT 加速。")
-except Exception:
-    HAS_NUMBA = False
-    print("Numba 不可用，使用纯 Python 版本。")
-
 import numpy as np
 import pandas as pd
+from datetime import datetime
+from typing import List, Tuple
 
 
 # 返回当前时间戳字符串
@@ -113,6 +100,8 @@ def ann_log_vol(
     Rt = returns_daily @ np.asarray(w, dtype=np.float64)
     Xt = np.log1p(Rt)
     return float(Xt.std(ddof=int(ddof))) * float(np.sqrt(trading_days))
+
+
 # 读取 Excel，兼容老环境引擎选择
 def read_excel_compat(excel_path: str, sheet_name: str) -> pd.DataFrame:
     """兼容性读取 Excel：

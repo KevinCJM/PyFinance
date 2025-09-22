@@ -26,6 +26,7 @@ from T05_db_utils import (
     read_dataframe,
     get_active_db_url,
     threaded_insert_dataframe,
+    create_connection,
 )
 
 try:
@@ -191,8 +192,12 @@ def run() -> pd.DataFrame:
     ''' 3. 结果入库 ----------------------------------------------------------------------------- '''
     # 1) 清空目标表
     log("清空目标表 iis_mdl_aset_pct_d ...")
-    with pool.begin() as conn:
-        conn.execute("TRUNCATE TABLE iis_mdl_aset_pct_d")
+    # 使用单连接执行 TRUNCATE，无需连接池上下文
+    single_conn = create_connection(pool.engine.url)
+    try:
+        single_conn.execute("TRUNCATE TABLE iis_mdl_aset_pct_d")
+    finally:
+        single_conn.close()
 
     # 2) 分批并发插入 iis_mdl_aset_pct_d
     log("将大类收益率数据分批并发插入 iis_mdl_aset_pct_d ...")
