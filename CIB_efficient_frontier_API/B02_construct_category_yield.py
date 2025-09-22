@@ -16,15 +16,20 @@ B02_construct_category_yield.py
 - T05_db_utils: DatabaseConnectionPool, read_dataframe, get_active_db_url
 - Y01_db_config: 数据库连接参数
 """
-
+import time
+import pandas as pd
 from typing import Dict, List, Tuple
 
-import pandas as pd
-
-from T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url
+from T02_other_tools import log
+from T05_db_utils import (
+    DatabaseConnectionPool,
+    read_dataframe,
+    get_active_db_url,
+    threaded_insert_dataframe,
+)
 
 try:
-    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password  # type: ignore
+    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 
@@ -55,8 +60,9 @@ def _build_in_clause(name_prefix: str, values: List[str]) -> Tuple[str, Dict[str
 
 
 def fetch_first_model(pool: DatabaseConnectionPool) -> pd.Series:
+    log("读取 iis_wght_cfg_attc_mdl 表的第一条记录")
     sql = (
-        "SELECT mdl_ver_id, on_ln_dt, off_ln_dt "
+        "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt "
         "FROM iis_wght_cfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
     )
     df = read_dataframe(pool, sql)
@@ -66,6 +72,7 @@ def fetch_first_model(pool: DatabaseConnectionPool) -> pd.Series:
 
 
 def fetch_model_config(pool: DatabaseConnectionPool, mdl_ver_id: str) -> pd.DataFrame:
+    log(f"读取 iis_wght_cnfg_mdl 表中大类模型 {mdl_ver_id} 的配置")
     sql = (
         "SELECT mdl_ver_id, aset_bclass_cd, indx_num, indx_nm, wght "
         "FROM iis_wght_cnfg_mdl WHERE mdl_ver_id = :mdl"
@@ -77,6 +84,7 @@ def fetch_model_config(pool: DatabaseConnectionPool, mdl_ver_id: str) -> pd.Data
 
 
 def fetch_index_sources(pool: DatabaseConnectionPool, codes: List[str]) -> pd.DataFrame:
+    log("查询 iis_fnd_indx_info 中的指数来源表")
     if not codes:
         return pd.DataFrame(columns=["indx_num", "src_tab_enmm"])  # 空
     in_clause, params = _build_in_clause("p", list(codes))
@@ -88,6 +96,7 @@ def fetch_index_sources(pool: DatabaseConnectionPool, codes: List[str]) -> pd.Da
 
 
 def fetch_wind_index_eod(pool: DatabaseConnectionPool, codes: List[str]) -> pd.DataFrame:
+    log("从 wind_cmfindexeod 中抽取成分指数的净值数据")
     if not codes:
         raise RuntimeError("无可查询的指数代码")
     in_clause, params = _build_in_clause("w", list(codes))
@@ -100,11 +109,14 @@ def fetch_wind_index_eod(pool: DatabaseConnectionPool, codes: List[str]) -> pd.D
 
 
 def run() -> pd.DataFrame:
+    s_t = time.time()
     pool = _db_pool()
-
+    ''' 1. 数据获取 ----------------------------------------------------------------------------- '''
     # 1) 模型头信息
     head = fetch_first_model(pool)
     mdl_ver_id = str(head["mdl_ver_id"]) if "mdl_ver_id" in head else str(head.iloc[0])
+    cal_strt_dt = pd.to_datetime(head.get("cal_strt_dt")) if "cal_strt_dt" in head else None
+    cal_end_dt = pd.to_datetime(head.get("cal_end_dt")) if "cal_end_dt" in head else None
 
     # 2) 模型成分与权重
     cfg_df = fetch_model_config(pool, mdl_ver_id)
@@ -117,7 +129,7 @@ def run() -> pd.DataFrame:
     invalid_src = src_df["src_tab_enmm"].astype(str).unique().tolist()
     invalid = [s for s in invalid_src if s != 'wind_cmfindexeod']
     if invalid:
-        raise RuntimeError(f"存在不支持的数据来源表: {invalid}，仅支持 'wind_cmfindexeod'")
+        raise RuntimeError(f"存在不支持的数据来源表: {invalid}，目前仅支持 'wind_cmfindexeod'")
 
     # 4) 从 wind_cmfindexeod 抽取数据
     df_eod = fetch_wind_index_eod(pool, codes)
@@ -127,12 +139,78 @@ def run() -> pd.DataFrame:
     # 统一数据类型与排序
     df_eod["trade_dt"] = pd.to_datetime(df_eod["trade_dt"])  # 日期
     df_eod = df_eod.sort_values(["s_info_windcode", "trade_dt"]).reset_index(drop=True)
-    return df_eod
+
+    ''' 2. 大类收益计算 ------------------------------------------------------------------------- '''
+    # 1) 计算指数日收益（按代码透视）
+    log("计算指数日收益")
+    px = df_eod.pivot_table(index="trade_dt", columns="s_info_windcode", values="s_dq_close", aggfunc="first")
+    px = px.sort_index().dropna(how='all')
+    index_return_df = px.pct_change().replace([pd.NA, float('inf'), float('-inf')], pd.NA).dropna(how='any')
+
+    # 2) 按 cal_strt_dt/cal_end_dt 截取区间
+    if pd.notna(cal_strt_dt):
+        index_return_df = index_return_df[index_return_df.index >= cal_strt_dt]
+    if pd.notna(cal_end_dt):
+        index_return_df = index_return_df[index_return_df.index <= cal_end_dt]
+    if index_return_df.empty:
+        raise RuntimeError("指定区间内无指数收益数据，无法构建大类收益")
+
+    # 3) 按资产大类加权拟合收益
+    log("按资产大类加权拟合收益")
+    out_frames: List[pd.DataFrame] = []
+    for aset_cd, grp in cfg_df.groupby("aset_bclass_cd"):
+        g = grp.copy()
+        g["indx_num"] = g["indx_num"].astype(str)
+        # 仅保留在收益矩阵中的成分
+        cols = [c for c in g["indx_num"].tolist() if c in index_return_df.columns]
+        if not cols:
+            continue
+        # 对应权重并归一化
+        w_map = dict(zip(g["indx_num"], g["wght"].astype(float)))
+        w = pd.Series([w_map[c] for c in cols], index=cols)
+        s = float(w.sum())
+        if s <= 0:
+            continue
+        w = w / s
+        # 计算加权收益
+        cat_ret = (index_return_df[cols] * w.values).sum(axis=1)
+        tmp = pd.DataFrame({
+            "mdl_ver_id": mdl_ver_id,
+            "aset_bclass_cd": str(aset_cd),
+            "aset_bclass_nm": str(aset_cd),
+            "pct_yld_date": cat_ret.index.date,
+            "pct_yld": cat_ret.values.astype(float),
+        })
+        out_frames.append(tmp)
+
+    if not out_frames:
+        raise RuntimeError("未能为任何大类生成收益序列")
+
+    result_df = pd.concat(out_frames, ignore_index=True)
+
+    ''' 3. 结果入库 ----------------------------------------------------------------------------- '''
+    # 1) 清空目标表
+    log("清空目标表 iis_mdl_aset_pct_d ...")
+    with pool.begin() as conn:
+        conn.execute("TRUNCATE TABLE iis_mdl_aset_pct_d")
+
+    # 2) 分批并发插入 iis_mdl_aset_pct_d
+    log("将大类收益率数据分批并发插入 iis_mdl_aset_pct_d ...")
+    datasets = []
+    for aset_cd, sub in result_df.groupby("aset_bclass_cd"):
+        datasets.append({
+            "dataframe": sub,
+            "table": "iis_mdl_aset_pct_d",
+            "batch_size": 2000,
+            "method": "multi",
+        })
+    threaded_insert_dataframe(pool, datasets, max_workers=4)
+    log(f"大类收益率数据拟合插入完成，耗时 {time.time() - s_t:.2f} 秒")
+    return result_df
 
 
 if __name__ == '__main__':
     df = run()
-    print(df.head())
-    print(f"共返回 {len(df)} 行 | 指数数: {df['s_info_windcode'].nunique()} | "
-          f"日期范围: {df['trade_dt'].min()} ~ {df['trade_dt'].max()}")
-
+    log(f"\n{df.head()}")
+    log(f"共插入 {len(df)} 行 | 大类数: {df['aset_bclass_cd'].nunique()} | "
+        f"日期范围: {df['pct_yld_date'].min()} ~ {df['pct_yld_date'].max()}")

@@ -29,8 +29,12 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 from T05_db_utils import DatabaseConnectionPool, insert_dataframe, get_active_db_url
+
+try:
+    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+except Exception:
+    raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 
 ASSET_CLASSES = [
     ("权益", "权益"),
@@ -61,6 +65,8 @@ def build_cfg_attc_models() -> pd.DataFrame:
     一行 cal_end_dt 非空；一行 cal_end_dt 为空。
     """
     start_dt = date(2023, 1, 1)
+    on_dt = date(2023, 6, 1)
+    off_dt = date(2024, 6, 1)
     rows = [
         {
             "mdl_ver_id": "MDL_SIM_001",
@@ -68,6 +74,8 @@ def build_cfg_attc_models() -> pd.DataFrame:
             "mdl_st": "2",  # 1待审核；2已上线；3已下线
             "cal_strt_dt": start_dt,
             "cal_end_dt": date(2024, 12, 31),
+            "on_ln_dt": on_dt,
+            "off_ln_dt": off_dt,
         },
         {
             "mdl_ver_id": "MDL_SIM_002",
@@ -75,6 +83,8 @@ def build_cfg_attc_models() -> pd.DataFrame:
             "mdl_st": "1",
             "cal_strt_dt": start_dt,
             "cal_end_dt": None,  # 按要求：一行结束日期为空
+            "on_ln_dt": None,
+            "off_ln_dt": None,
         },
     ]
     return pd.DataFrame(rows)
