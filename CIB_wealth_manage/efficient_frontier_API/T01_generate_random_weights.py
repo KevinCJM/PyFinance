@@ -154,8 +154,20 @@ def refine_frontier_with_slsqp(
 
 def cal_ef_mask(ret_annual: np.ndarray, vol_annual: np.ndarray, eps: float = 1e-6) -> np.ndarray:
     """
-    识别有效前沿：对收益降序排序，保留波动率新的“前缀最小”点。
-    返回布尔掩码（与原顺序对齐）。
+    识别有效前沿上的点并返回对应的布尔掩码。
+
+    有效前沿是指在给定收益率水平下具有最小波动率的投资组合集合。
+    该函数通过以下方式识别有效前沿：
+    1. 按收益率降序排序
+    2. 对于每个点，如果其波动率是当前所有更高收益率点中的最小值（考虑容差），则认为在有效前沿上
+
+    参数:
+        ret_annual: 年化收益率数组，shape=(n,)
+        vol_annual: 年化波动率数组，shape=(n,)
+        eps: 数值容差，用于处理浮点数比较，默认为1e-6
+
+    返回:
+        np.ndarray: 布尔数组，shape=(n,)，True表示对应点在有效前沿上
     """
     idx = np.argsort(ret_annual)[::-1]
     vol_sorted = vol_annual[idx]
