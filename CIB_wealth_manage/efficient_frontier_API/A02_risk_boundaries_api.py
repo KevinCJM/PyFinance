@@ -58,10 +58,10 @@ def _load_returns_from_nv(nv_dict, asset_list):
 def analysis_json_and_read_data(json_input, excel_name, sheet_name):
     # 判断入参是字典还是字符串
     if isinstance(json_input, dict):
-        json_dict = json_input['data']
+        json_dict = json_input['in_data']
     else:
         # Json转字典
-        json_dict = json.loads(json_input)['data']
+        json_dict = json.loads(json_input)['in_data']
     # 分解参数
     asset_list = json_dict['asset_list']  # 大类列表
     draw_plt = json_dict.get('draw_plt', None)  # 是否绘图展示
@@ -352,35 +352,75 @@ def main(json_str, excel_path=None, excel_sheet=None):
     """
 
     ''' 1. 处理Json & 读取数据 ----------------------------------------------------------------------------------- '''
-    (asset_list, draw_plt, draw_plt_filename, weight_range,
-     returns) = analysis_json_and_read_data(json_str, excel_path, excel_sheet)
+    try:
+        (asset_list, draw_plt, draw_plt_filename, weight_range,
+         returns) = analysis_json_and_read_data(json_str, excel_path, excel_sheet)
+    except Exception as e:
+        log(f"入参解析失败: {e}")
+        final_result = {
+            "code": 1,
+            "msg": f"入参解析失败: {e}",
+        }
+        return json.dumps(final_result, ensure_ascii=False)
 
     ''' 2) 计算约束 ---------------------------------------------------------------------------------------------- '''
-    single_limit, multi_limit = level_weight_limit_cal(asset_list, weight_range)
-    log(f"单层约束: {single_limit}; 多层约束: {multi_limit}")
+    try:
+        single_limit, multi_limit = level_weight_limit_cal(asset_list, weight_range)
+        log(f"单层约束: {single_limit}; 多层约束: {multi_limit}")
+    except Exception as e:
+        log(f"计算约束失败: {e}")
+        final_result = {
+            "code": 1,
+            "msg": f"计算约束失败: {e}",
+        }
+        return json.dumps(final_result, ensure_ascii=False)
 
     ''' 3) 计算两端风险水平 --------------------------------------------------------------------------------------- '''
     log(f"\n步骤 1: 生成 {NUM_RANDOM_SAMPLES} 个随机权重用于热启动...")
-    w_random = generate_weights_random_walk(
-        N=len(asset_list),
-        single_limits=single_limit,
-        multi_limits=multi_limit,
-        seed=RANDOM_SEED,
-        num_samples=NUM_RANDOM_SAMPLES,
-        step_size=RANDOM_WALK_STEP_SIZE,
-    )
-    log(f"生成了 {w_random.shape[0]} 个有效的随机权重。")
+    try:
+        w_random = generate_weights_random_walk(
+            N=len(asset_list),
+            single_limits=single_limit,
+            multi_limits=multi_limit,
+            seed=RANDOM_SEED,
+            num_samples=NUM_RANDOM_SAMPLES,
+            step_size=RANDOM_WALK_STEP_SIZE,
+        )
+        log(f"生成了 {w_random.shape[0]} 个有效的随机权重。")
+    except Exception as e:
+        log(f"随机权重生成失败: {e}")
+        final_result = {
+            "code": 1,
+            "msg": f"随机权重生成失败: {e}",
+        }
+        return json.dumps(final_result, ensure_ascii=False)
 
     log("\n步骤 2: 从随机权重中寻找风险最大/最小的组合作为热启动点...")
-    ret_annual_random, risk_arr_random, w0_min_risk, w0_max_risk = find_min_max_risk(
-        w_random, returns, RISK_METRIC, TRADING_DAYS, VAR_PARAMS)
-    log(
-        f"最小风险热启动点 (风险={np.min(risk_arr_random):.4f}); 最大风险热启动点 (风险={np.max(risk_arr_random):.4f})")
+    try:
+        ret_annual_random, risk_arr_random, w0_min_risk, w0_max_risk = find_min_max_risk(
+            w_random, returns, RISK_METRIC, TRADING_DAYS, VAR_PARAMS)
+        log(f"最小风险热启动点 (风险={np.min(risk_arr_random):.4f}); "
+            f"最大风险热启动点 (风险={np.max(risk_arr_random):.4f})")
+    except Exception as e:
+        log(f"从随机权重中寻找风险最大/最小的组合作为热启动点失败: {e}")
+        final_result = {
+            "code": 1,
+            "msg": f"从随机权重中寻找风险最大/最小的组合作为热启动点失败: {e}",
+        }
+        return json.dumps(final_result, ensure_ascii=False)
 
     log("\n步骤 3: 使用SLSQP优化器精确寻找风险边界...")
-    res_min, res_max = use_optimizer(single_limit, multi_limit, returns,
-                                     RISK_METRIC, VAR_PARAMS, TRADING_DAYS,
-                                     w0_min_risk, w0_max_risk, asset_list)
+    try:
+        res_min, res_max = use_optimizer(single_limit, multi_limit, returns,
+                                         RISK_METRIC, VAR_PARAMS, TRADING_DAYS,
+                                         w0_min_risk, w0_max_risk, asset_list)
+    except Exception as e:
+        log(f"优化器运行失败: {e}")
+        final_result = {
+            "code": 1,
+            "msg": f"优化器运行失败: {e}",
+        }
+        return json.dumps(final_result, ensure_ascii=False)
 
     ''' 4) 绘图展示 ----------------------------------------------------------------------------------------------- '''
     if draw_plt:
@@ -390,23 +430,21 @@ def main(json_str, excel_path=None, excel_sheet=None):
 
     # 构建可序列化的返回结果字典
     result_to_serialize = {}
-    if res_min:
+    if res_min and res_max:
         result_to_serialize['min_risk'] = {'risk_value': res_min.fun, 'weights': res_min.x.tolist()}
-    else:
-        result_to_serialize['min_risk'] = {
-            'success': False,
-            'message': "Optimization not run or failed."
-        }
-
-    if res_max:
         result_to_serialize['max_risk'] = {'risk_value': -res_max.fun, 'weights': res_min.x.tolist()}
+        final_result = {
+            "code": 0,
+            "msg": "",
+            "data": result_to_serialize
+        }
     else:
-        result_to_serialize['max_risk'] = {
-            'success': False,
-            'message': "Optimization not run or failed."
+        final_result = {
+            "code": 1,
+            "msg": "无法计算出最小风险或最大风险组合",
         }
 
-    return json.dumps(result_to_serialize, ensure_ascii=False)
+    return json.dumps(final_result, ensure_ascii=False)
 
 
 if __name__ == '__main__':

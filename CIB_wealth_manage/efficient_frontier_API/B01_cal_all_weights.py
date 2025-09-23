@@ -715,7 +715,9 @@ def main():
 
     ''' 4) 结果保存到本地文件 -------------------------------------------------------------------------- '''
     folder_path = os.path.dirname(os.path.abspath(__file__))
-    res_df.to_parquet(os.path.join(folder_path, f'alloc_results_400w.parquet'), index=False)
+    asset_id_map = {v: k for k, v in asset_id_map.items()}
+    res_df_cd = res_df.rename(columns=asset_id_map)
+    res_df_cd.to_parquet(os.path.join(folder_path, f'alloc_results_400w.parquet'), index=False)
     log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.parquet')}")
 
     ''' 5) 结果写入数据库 ----------------------------------------------------------------------------- '''
