@@ -17,6 +17,7 @@ B02_construct_category_yield.py
 - Y01_db_config: 数据库连接参数
 """
 import time
+import json
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
@@ -115,111 +116,162 @@ def run():
     pool = _db_pool()
     ''' 1. 数据获取 ----------------------------------------------------------------------------- '''
     # 1) 模型头信息
-    head = fetch_first_model(pool)
-    mdl_ver_id = str(head["mdl_ver_id"]) if "mdl_ver_id" in head else str(head.iloc[0])
-    cal_strt_dt = pd.to_datetime(head.get("cal_strt_dt")) if "cal_strt_dt" in head else None
-    cal_end_dt = pd.to_datetime(head.get("cal_end_dt")) if "cal_end_dt" in head else None
+    try:
+        head = fetch_first_model(pool)
+        mdl_ver_id = str(head["mdl_ver_id"]) if "mdl_ver_id" in head else str(head.iloc[0])
+        cal_strt_dt = pd.to_datetime(head.get("cal_strt_dt")) if "cal_strt_dt" in head else None
+        cal_end_dt = pd.to_datetime(head.get("cal_end_dt")) if "cal_end_dt" in head else None
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"读取 iis_wght_cfg_attc_mdl 表数据失败: {e}"
+        }, ensure_ascii=False)
 
     # 2) 模型成分与权重
-    cfg_df = fetch_model_config(pool, mdl_ver_id)
-    codes = sorted(cfg_df["indx_num"].astype(str).unique().tolist())
+    try:
+        cfg_df = fetch_model_config(pool, mdl_ver_id)
+        codes = sorted(cfg_df["indx_num"].astype(str).unique().tolist())
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"读取 iis_wght_cnfg_mdl 表中大类模型 {mdl_ver_id} 的配置失败: {e}"
+        }, ensure_ascii=False)
 
     # 3) 指数来源表
-    src_df = fetch_index_sources(pool, codes)
-    if src_df.empty:
-        raise RuntimeError("iis_fnd_indx_info 未返回任何指数来源信息")
-    invalid_src = src_df["src_tab_enmm"].astype(str).unique().tolist()
-    invalid = [s for s in invalid_src if s != 'wind_cmfindexeod']
-    if invalid:
-        raise RuntimeError(f"存在不支持的数据来源表: {invalid}，目前仅支持 'wind_cmfindexeod'")
+    try:
+        src_df = fetch_index_sources(pool, codes)
+        if src_df.empty:
+            raise RuntimeError("iis_fnd_indx_info 未返回任何指数来源信息")
+        invalid_src = src_df["src_tab_enmm"].astype(str).unique().tolist()
+        invalid = [s for s in invalid_src if s != 'wind_cmfindexeod']
+        if invalid:
+            return json.dumps({
+                "code": 1,
+                "msg": f"存在不支持的数据来源表: {invalid}，目前仅支持 'wind_cmfindexeod'"
+            }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"读取 iis_fnd_indx_info 中的指数来源表失败: {e}"
+        }, ensure_ascii=False)
 
     # 4) 从 wind_cmfindexeod 抽取数据
-    df_eod = fetch_wind_index_eod(pool, codes)
-    if df_eod.empty:
-        raise RuntimeError("wind_cmfindexeod 中未查询到对应指数的数据")
+    try:
+        df_eod = fetch_wind_index_eod(pool, codes)
+        if df_eod.empty:
+            return json.dumps({
+                "code": 1,
+                "msg": f"wind_cmfindexeod 中未查询到对应指数的数据"
+            }, ensure_ascii=False)
 
-    # 统一数据类型与排序
-    df_eod["trade_dt"] = pd.to_datetime(df_eod["trade_dt"])  # 日期
-    df_eod_sorted = df_eod.sort_values(["s_info_windcode", "trade_dt"]).reset_index(drop=True)
+        # 统一数据类型与排序
+        df_eod["trade_dt"] = pd.to_datetime(df_eod["trade_dt"])  # 日期
+        df_eod_sorted = df_eod.sort_values(["s_info_windcode", "trade_dt"]).reset_index(drop=True)
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"从 wind_cmfindexeod 抽取指数数据失败: {e}"
+        }, ensure_ascii=False)
 
     ''' 2. 大类收益计算 ------------------------------------------------------------------------- '''
-    # 1) 计算指数日收益（按代码分组后再透视）
-    log("计算指数日收益 ... ")
-    df_eod_sorted["ret"] = df_eod_sorted.groupby("s_info_windcode")["s_dq_close"].pct_change()
-    # 去除首日 NaN 与非有限值（兼容旧版 pandas，避免 pd.NA 带来的歧义）
-    ret_vals = pd.to_numeric(df_eod_sorted["ret"], errors="coerce").astype(float)
-    mask_valid = np.isfinite(ret_vals.values)
-    ret_df = df_eod_sorted.loc[mask_valid].copy()
-    index_return_df = ret_df.pivot_table(index="trade_dt", columns="s_info_windcode", values="ret", aggfunc="first")
-    index_return_df = index_return_df.sort_index().replace([np.inf, -np.inf], np.nan).dropna(how='any')
+    try:
+        # 1) 计算指数日收益（按代码分组后再透视）
+        log("计算指数日收益 ... ")
+        df_eod_sorted["ret"] = df_eod_sorted.groupby("s_info_windcode")["s_dq_close"].pct_change()
+        # 去除首日 NaN 与非有限值（兼容旧版 pandas，避免 pd.NA 带来的歧义）
+        ret_vals = pd.to_numeric(df_eod_sorted["ret"], errors="coerce").astype(float)
+        mask_valid = np.isfinite(ret_vals.values)
+        ret_df = df_eod_sorted.loc[mask_valid].copy()
+        index_return_df = ret_df.pivot_table(index="trade_dt", columns="s_info_windcode", values="ret", aggfunc="first")
+        index_return_df = index_return_df.sort_index().replace([np.inf, -np.inf], np.nan).dropna(how='any')
 
-    # 2) 按 cal_strt_dt/cal_end_dt 截取区间
-    if pd.notna(cal_strt_dt):
-        index_return_df = index_return_df[index_return_df.index >= cal_strt_dt]
-    if pd.notna(cal_end_dt):
-        index_return_df = index_return_df[index_return_df.index <= cal_end_dt]
-    else:
-        cal_end_dt = pd.to_datetime("today")
-        index_return_df = index_return_df[index_return_df.index <= cal_end_dt]
-    if index_return_df.empty:
-        raise RuntimeError("指定区间内无指数收益数据，无法构建大类收益")
+        # 2) 按 cal_strt_dt/cal_end_dt 截取区间
+        if pd.notna(cal_strt_dt):
+            index_return_df = index_return_df[index_return_df.index >= cal_strt_dt]
+        if pd.notna(cal_end_dt):
+            index_return_df = index_return_df[index_return_df.index <= cal_end_dt]
+        else:
+            cal_end_dt = pd.to_datetime("today")
+            index_return_df = index_return_df[index_return_df.index <= cal_end_dt]
+        if index_return_df.empty:
+            return json.dumps({
+                "code": 1,
+                "msg": f"指定区间内无指数收益数据，无法构建大类收益"
+            }, ensure_ascii=False)
 
-    # 3) 按资产大类加权拟合收益
-    log("按资产大类加权拟合收益")
-    out_frames: List[pd.DataFrame] = []
-    for aset_cd, grp in cfg_df.groupby("aset_bclass_cd"):
-        g = grp.copy()
-        g["indx_num"] = g["indx_num"].astype(str)
-        # 仅保留在收益矩阵中的成分
-        cols = [c for c in g["indx_num"].tolist() if c in index_return_df.columns]
-        if not cols:
-            continue
-        # 对应权重并归一化
-        w_map = dict(zip(g["indx_num"], g["wght"].astype(float)))
-        w = pd.Series([w_map[c] for c in cols], index=cols)
-        s = float(w.sum())
-        if s <= 0:
-            continue
-        w = w / s
-        # 计算加权收益
-        cat_ret = (index_return_df[cols] * w.values).sum(axis=1)
-        tmp = pd.DataFrame({
-            "mdl_ver_id": mdl_ver_id,
-            "aset_bclass_cd": str(aset_cd),
-            "aset_bclass_nm": str(aset_cd),
-            "pct_yld_date": cat_ret.index.date,
-            "pct_yld": cat_ret.values.astype(float),
-        })
-        out_frames.append(tmp)
+        # 3) 按资产大类加权拟合收益
+        log("按资产大类加权拟合收益")
+        out_frames: List[pd.DataFrame] = []
+        for aset_cd, grp in cfg_df.groupby("aset_bclass_cd"):
+            g = grp.copy()
+            g["indx_num"] = g["indx_num"].astype(str)
+            # 仅保留在收益矩阵中的成分
+            cols = [c for c in g["indx_num"].tolist() if c in index_return_df.columns]
+            if not cols:
+                continue
+            # 对应权重并归一化
+            w_map = dict(zip(g["indx_num"], g["wght"].astype(float)))
+            w = pd.Series([w_map[c] for c in cols], index=cols)
+            s = float(w.sum())
+            if s <= 0:
+                continue
+            w = w / s
+            # 计算加权收益
+            cat_ret = (index_return_df[cols] * w.values).sum(axis=1)
+            tmp = pd.DataFrame({
+                "mdl_ver_id": mdl_ver_id,
+                "aset_bclass_cd": str(aset_cd),
+                "aset_bclass_nm": str(aset_cd),
+                "pct_yld_date": cat_ret.index.date,
+                "pct_yld": cat_ret.values.astype(float),
+            })
+            out_frames.append(tmp)
 
-    if not out_frames:
-        raise RuntimeError("未能为任何大类生成收益序列")
+        if not out_frames:
+            return json.dumps({
+                "code": 1,
+                "msg": f"未能为任何大类生成收益序列"
+            }, ensure_ascii=False)
 
-    result_df = pd.concat(out_frames, ignore_index=True)
+        result_df = pd.concat(out_frames, ignore_index=True)
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"拟合大类收益率数据失败: {e}"
+        }, ensure_ascii=False)
 
     ''' 3. 结果入库 ----------------------------------------------------------------------------- '''
-    # 1) 清空目标表
-    log("清空目标表 iis_mdl_aset_pct_d ...")
-    # 使用单连接执行 TRUNCATE，无需连接池上下文
-    single_conn = create_connection(pool.engine.url)
     try:
-        single_conn.execute(text("TRUNCATE TABLE iis_mdl_aset_pct_d"))
-    finally:
-        single_conn.close()
+        # 1) 清空目标表
+        log("清空目标表 iis_mdl_aset_pct_d ...")
+        # 使用单连接执行 TRUNCATE，无需连接池上下文
+        single_conn = create_connection(pool.engine.url)
+        try:
+            single_conn.execute(text("TRUNCATE TABLE iis_mdl_aset_pct_d"))
+        finally:
+            single_conn.close()
 
-    # 2) 分批并发插入 iis_mdl_aset_pct_d
-    log("将大类收益率数据分批并发插入 iis_mdl_aset_pct_d ...")
-    datasets = []
-    for aset_cd, sub in result_df.groupby("aset_bclass_cd"):
-        datasets.append({
-            "dataframe": sub,
-            "table": "iis_mdl_aset_pct_d",
-            "batch_size": 2000,
-            "method": "multi",
-        })
-    threaded_insert_dataframe(pool, datasets, max_workers=4)
-    log(f"大类收益率数据拟合插入完成，耗时 {time.time() - s_t:.2f} 秒")
-    return True
+        # 2) 分批并发插入 iis_mdl_aset_pct_d
+        log("将大类收益率数据分批并发插入 iis_mdl_aset_pct_d ...")
+        datasets = []
+        for aset_cd, sub in result_df.groupby("aset_bclass_cd"):
+            datasets.append({
+                "dataframe": sub,
+                "table": "iis_mdl_aset_pct_d",
+                "batch_size": 2000,
+                "method": "multi",
+            })
+        threaded_insert_dataframe(pool, datasets, max_workers=4)
+        log(f"大类收益率数据拟合插入完成，耗时 {time.time() - s_t:.2f} 秒")
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"结果入库失败: {e}"
+        }, ensure_ascii=False)
+    return json.dumps({
+        "code": 0,
+        "msg": ""
+    }, ensure_ascii=False)
 
 
 if __name__ == '__main__':

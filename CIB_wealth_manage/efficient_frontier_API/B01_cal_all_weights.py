@@ -7,6 +7,7 @@
 """
 import os
 import time
+import json
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
@@ -678,30 +679,54 @@ def main():
     """
 
     ''' 0) 数据准备（从数据库） ------------------------------------------------------------------------ '''
-    mdl_ver_id, cal_sta_dt, cal_end_dt = fetch_default_mdl_ver_id()  # 获取默认模型版本ID和计算起止日期
-    log(f"使用大类资产指数配置模型版本: {mdl_ver_id} | 起止: {cal_sta_dt} ~ {cal_end_dt}")
+    try:
+        mdl_ver_id, cal_sta_dt, cal_end_dt = fetch_default_mdl_ver_id()  # 获取默认模型版本ID和计算起止日期
+        log(f"使用大类资产指数配置模型版本: {mdl_ver_id} | 起止: {cal_sta_dt} ~ {cal_end_dt}")
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"从 iis_wght_cfg_attc_mdl 表获取模型信息失败: {e}"
+        }, ensure_ascii=False)
 
     # 从数据库获取资产收益率数据及相关映射信息
-    a_list, re_df, asset_id_map = fetch_returns_from_db(mdl_ver_id, start_dt=cal_sta_dt, end_dt=cal_end_dt)
-    log("使用模型: {} | 资产大类: {} | 日期范围: {} ~ {}".format(
-        mdl_ver_id,
-        ", ".join(a_list),
-        re_df.index.min().date() if len(re_df.index) else None,
-        re_df.index.max().date() if len(re_df.index) else None,
-    ))
-    log(f"大类资产ID映射: {asset_id_map}")
+    try:
+        a_list, re_df, asset_id_map = fetch_returns_from_db(mdl_ver_id, start_dt=cal_sta_dt, end_dt=cal_end_dt)
+        log("使用模型: {} | 资产大类: {} | 日期范围: {} ~ {}".format(
+            mdl_ver_id,
+            ", ".join(a_list),
+            re_df.index.min().date() if len(re_df.index) else None,
+            re_df.index.max().date() if len(re_df.index) else None,
+        ))
+        log(f"大类资产ID映射: {asset_id_map}")
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"从数据库 iis_mdl_aset_pct_d 表读取指定模型的五大类日收益数据 失败: {e}"
+        }, ensure_ascii=False)
 
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
-    s_t_0 = time.time()
-    weight_list = generate_simplex_grid_numba(len(a_list), 100)  # 生成 simplex 网格点
-    log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")
+    try:
+        s_t_0 = time.time()
+        weight_list = generate_simplex_grid_numba(len(a_list), 100)  # 生成 simplex 网格点
+        log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"网格生成 失败: {e}"
+        }, ensure_ascii=False)
 
     ''' 2) 指标计算 --------------------------------------------------------------------------------- '''
-    s_t_1 = time.time()
-    # 基于资产收益率和权重组合，计算各组合的绩效指标
-    res_df = generate_alloc_perf_numba(a_list, re_df, weight_list)
-    log(f"{res_df.head()}")
-    log(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")
+    try:
+        s_t_1 = time.time()
+        # 基于资产收益率和权重组合，计算各组合的绩效指标
+        res_df = generate_alloc_perf_numba(a_list, re_df, weight_list)
+        log(f"{res_df.head()}")
+        log(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"计算{len(weight_list)}个权重的指标失败: {e}"
+        }, ensure_ascii=False)
 
     # ''' 3) 画图 ------------------------------------------------------------------------------------- '''
     # if db_host is None or db_host in ('localhost', '127.0.0.1'):  # 仅本机环境下进行画图
@@ -714,17 +739,36 @@ def main():
     #     )
 
     ''' 4) 结果保存到本地文件 -------------------------------------------------------------------------- '''
-    folder_path = os.path.dirname(os.path.abspath(__file__))
-    asset_id_map = {v: k for k, v in asset_id_map.items()}
-    res_df_cd = res_df.rename(columns=asset_id_map)
-    res_df_cd.to_parquet(os.path.join(folder_path, f'alloc_results_400w.parquet'), index=False)
-    log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.parquet')}")
+    try:
+        folder_path = os.path.dirname(os.path.abspath(__file__))
+        asset_id_map = {v: k for k, v in asset_id_map.items()}
+        res_df_cd = res_df.rename(columns=asset_id_map)
+        res_df_cd.to_parquet(os.path.join(folder_path, f'alloc_results_400w.parquet'), index=False)
+        log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.parquet')}")
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"结果保存到本地parquet文件失败: {e}"
+        }, ensure_ascii=False)
 
     ''' 5) 结果写入数据库 ----------------------------------------------------------------------------- '''
-    insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
-    return True
+    try:
+        insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"结果写入数据库失败: {e}"
+        }, ensure_ascii=False)
+
+    return json.dumps({
+        "code": 0,
+        "msg": ""
+    }, ensure_ascii=False)
 
 
 if __name__ == '__main__':
     res = main()
     print(res)
+
+    res = pd.read_parquet('alloc_results_400w.parquet')
+    print(res.head())
