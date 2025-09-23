@@ -176,6 +176,8 @@ if __name__ == '__main__':
                 "ALT": [0.0, 0.0]
             }
         }}
+    with open("sample_A05_input.json", "w") as f:
+        f.write(json.dumps(input_dict, ensure_ascii=False, indent=4))
 
     output_json = main(input_dict)
     log(output_json)
