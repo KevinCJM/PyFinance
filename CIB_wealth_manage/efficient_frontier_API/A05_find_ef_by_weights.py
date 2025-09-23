@@ -71,13 +71,13 @@ def draw_plt_func(a_list, weight_df, ef_points, the_folder_path):
         log(traceback.format_exc())
 
 
-def main(json_input: str) -> str:
+def main(json_input) -> str:
     # json转字典
     try:
-        input_data = json.loads(json_input)
+        input_data = json.loads(json_input)['in_data']
     except Exception as e:
         log(f"输入 JSON 格式错误: {e} - {json_input}")
-        input_data = json.loads(json.dumps(json_input['data']))
+        input_data = json_input['in_data']
     log(input_data)
     # 提取资产列表和约束条件
     asset_list = input_data["asset_list"]
@@ -137,20 +137,20 @@ def main(json_input: str) -> str:
 
 if __name__ == '__main__':
     input_dict = {
-        "asset_list": ["货币", "固收", "混合", "权益", "另类"],  # 大类资产列表, 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_nm 一致
-        "weight_range": {
-            "货币": [  # 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_nm 一致
-                0.0,  # 代表权重下限%
-                1.0  # 代表权重上限%
-            ],
-            "固收": [0.0, 1.0],
-            "混合": [0.0, 0.5],
-            "权益": [0.0, 0.0],
-            "另类": [0.0, 0.0]
-        }
-    }
+        "in_data": {
+            "asset_list": ["货币", "固收", "混合", "权益", "另类"],
+            # 大类资产列表, 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_cd 一致
+            "weight_range": {
+                "货币": [  # 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_cd 一致
+                    0.0,  # 代表权重下限%
+                    1.0  # 代表权重上限%
+                ],
+                "固收": [0.0, 1.0],
+                "混合": [0.0, 0.5],
+                "权益": [0.0, 0.0],
+                "另类": [0.0, 0.0]
+            }
+        }}
 
-    with open('sample_A05_input.json', 'r', encoding='utf-8') as f:
-        input_json = f.read()
-    output_json = main(input_json)
+    output_json = main(input_dict)
     log(output_json)
