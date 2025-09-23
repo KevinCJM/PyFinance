@@ -1,5 +1,5 @@
 {
-  "data": {
+  "in_data": {
     "asset_list": [
       "货币现金类",
       "固定收益类",
@@ -7,7 +7,7 @@
       "权益投资类",
       "另类投资类"
     ],
-    "draw_plt": true,
+    "draw_plt": false,
     "draw_plt_filename": null,
     "user_holding": {
       "WeightRange": {

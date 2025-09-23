@@ -80,10 +80,10 @@ def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: st
     """
     # 判断入参是字典还是字符串
     if isinstance(json_input, dict):
-        params = json_input['data']
+        params = json_input['in_data']
     else:
         # Json转字典
-        params = json.loads(json_input)['data']
+        params = json.loads(json_input)['in_data']
     asset_list = params["asset_list"]
     draw_plt = params.get("draw_plt", False)
     draw_plt_filename = params.get("draw_plt_filename", None)
@@ -636,65 +636,121 @@ def main(json_input, excel_name=None, sheet_name=None) -> str:
     """
     try:
         # 1) 解析参数 & 读取数据 -------------------------------------------------------------------------------------
-        (asset_list, draw_plt, draw_plt_filename, user_holding, ef_data,
-         returns, refine_ef_before_select) = analysis_json_and_read_data(
-            json_input, excel_name, sheet_name)
+        try:
+            (asset_list, draw_plt, draw_plt_filename, user_holding, ef_data,
+             returns, refine_ef_before_select) = analysis_json_and_read_data(
+                json_input, excel_name, sheet_name)
+        except Exception as e:
+            log(f"参数解析失败: {e}")
+            final_result = {
+                "code": 1,
+                "msg": f"参数解析失败: {e}",
+            }
+            return json.dumps(final_result, ensure_ascii=False)
 
-        # 2) 计算单个资产与多个资产的持仓约束 -----------------------------------------------------------------------------------------------
-        single_limit, multi_limit = hold_weight_limit_cal(asset_list, user_holding)
+        # 2) 计算单个资产与多个资产的持仓约束 ----------------------------------------------------------------------------
+        try:
+            single_limit, multi_limit = hold_weight_limit_cal(asset_list, user_holding)
+        except Exception as e:
+            log(f"约束计算失败: {e}")
+            final_result = {
+                "code": 1,
+                "msg": f"约束计算失败: {e}",
+            }
+            return json.dumps(final_result, ensure_ascii=False)
 
         # 3) 基于EF输入与SLSQP热启动计算点 -----------------------------------------------------------------------------
-        W_seed = np.asarray(ef_data.get("weights", []), dtype=float)
-        if W_seed.ndim != 2 or W_seed.shape[1] != len(asset_list):
-            raise ValueError("ef_data['weights'] 维度不正确或与资产列表不匹配")
+        try:
+            W_seed = np.asarray(ef_data.get("weights", []), dtype=float)
+            if W_seed.ndim != 2 or W_seed.shape[1] != len(asset_list):
+                raise ValueError("ef_data['weights'] 维度不正确或与资产列表不匹配")
 
-        ret_seed, vol_seed = compute_perf_arrays(
-            returns, W_seed, trading_days=TRADING_DAYS, return_type="log")
-        risk_seed = vol_seed if RISK_METRIC == "vol" else compute_var_parametric_arrays(
-            returns, W_seed,
-            confidence=VAR_PARAMS["confidence"], horizon_days=VAR_PARAMS["horizon_days"],
-            return_type=VAR_PARAMS["return_type"], ddof=VAR_PARAMS["ddof"],
-            clip_non_negative=VAR_PARAMS["clip_non_negative"],
-        )
-        W_ef = W_seed
-        # 当前持仓
-        w_user = np.array([user_holding["StandardProportion"].get(a, 0.0) for a in asset_list], dtype=float)
-        met_user = compute_point_metrics(returns, w_user)
-        user_point = {"weights": w_user.tolist(), **met_user}
+            ret_seed, vol_seed = compute_perf_arrays(
+                returns, W_seed, trading_days=TRADING_DAYS, return_type="log")
+            risk_seed = vol_seed if RISK_METRIC == "vol" else compute_var_parametric_arrays(
+                returns, W_seed,
+                confidence=VAR_PARAMS["confidence"], horizon_days=VAR_PARAMS["horizon_days"],
+                return_type=VAR_PARAMS["return_type"], ddof=VAR_PARAMS["ddof"],
+                clip_non_negative=VAR_PARAMS["clip_non_negative"],
+            )
+            W_ef = W_seed
+            # 当前持仓
+            w_user = np.array([user_holding["StandardProportion"].get(a, 0.0) for a in asset_list], dtype=float)
+            met_user = compute_point_metrics(returns, w_user)
+            user_point = {"weights": w_user.tolist(), **met_user}
+        except Exception as e:
+            log(f"基于EF输入与SLSQP热启动计算点失败: {e}")
+            final_result = {
+                "code": 1,
+                "msg": f"基于EF输入与SLSQP热启动计算点失败: {e}",
+            }
+            return json.dumps(final_result, ensure_ascii=False)
 
         # 3.1 同收益最小风险 -----------------------------------------------------------------------------------------
-        w0_same_ret = _select_hot_start_by_target(W_ef, met_user["ret_annual"], returns, mode="ret")
-        res_same_ret_x = solve_same_return_min_risk(returns, single_limit, multi_limit,
-                                                    met_user["ret_annual"], w0_same_ret)
-        met_same_ret = compute_point_metrics(returns, res_same_ret_x, w_user)
-        p_same_ret = {"weights": res_same_ret_x.tolist(), **met_same_ret}
+        try:
+            w0_same_ret = _select_hot_start_by_target(W_ef, met_user["ret_annual"], returns, mode="ret")
+            res_same_ret_x = solve_same_return_min_risk(returns, single_limit, multi_limit,
+                                                        met_user["ret_annual"], w0_same_ret)
+            met_same_ret = compute_point_metrics(returns, res_same_ret_x, w_user)
+            p_same_ret = {"weights": res_same_ret_x.tolist(), **met_same_ret}
+        except Exception as e:
+            log(f"同收益最小风险点计算失败: {e}")
+            final_result = {
+                "code": 1,
+                "msg": f"同收益最小风险点计算失败: {e}",
+            }
+            return json.dumps(final_result, ensure_ascii=False)
 
         # 3.2 同风险最大收益 -----------------------------------------------------------------------------------------
-        w0_same_risk = _select_hot_start_by_target(W_ef, met_user["risk_value"], returns, mode="risk")
-        res_same_risk_x = solve_same_risk_max_return(
-            returns, single_limit, multi_limit, met_user["risk_value"], w0_same_risk)
-        met_same_risk = compute_point_metrics(returns, res_same_risk_x, w_user)
-        p_same_risk = {"weights": res_same_risk_x.tolist(), **met_same_risk}
+        try:
+            w0_same_risk = _select_hot_start_by_target(W_ef, met_user["risk_value"], returns, mode="risk")
+            res_same_risk_x = solve_same_risk_max_return(
+                returns, single_limit, multi_limit, met_user["risk_value"], w0_same_risk)
+            met_same_risk = compute_point_metrics(returns, res_same_risk_x, w_user)
+            p_same_risk = {"weights": res_same_risk_x.tolist(), **met_same_risk}
+        except Exception as e:
+            log(f"同风险最大收益点计算失败: {e}")
+            final_result = {
+                "code": 1,
+                "msg": f"同风险最大收益点计算失败: {e}",
+            }
+            return json.dumps(final_result, ensure_ascii=False)
 
         # 3.3 在EF上换仓最小 -----------------------------------------------------------------------------------------
-        w_min_turnover, W_refined = find_min_turnover_on_ef(
-            returns, W_ef, risk_seed, single_limit, multi_limit,
-            w_user, refine_before_select=refine_ef_before_select,
-        )
-        met_min_turn = compute_point_metrics(returns, w_min_turnover, w_user)
-        p_min_turnover = {"weights": w_min_turnover.tolist(), **met_min_turn}
+        try:
+            w_min_turnover, W_refined = find_min_turnover_on_ef(
+                returns, W_ef, risk_seed, single_limit, multi_limit,
+                w_user, refine_before_select=refine_ef_before_select,
+            )
+            met_min_turn = compute_point_metrics(returns, w_min_turnover, w_user)
+            p_min_turnover = {"weights": w_min_turnover.tolist(), **met_min_turn}
+        except Exception as e:
+            log(f"在EF上换仓最小点计算失败: {e}")
+            final_result = {
+                "code": 1,
+                "msg": f"在EF上换仓最小点计算失败: {e}",
+            }
+            return json.dumps(final_result, ensure_ascii=False)
 
         # 3.4 收益↑风险↓ (EF中点)：在 EF 上选择靠近（同收益最小风险点 与 同风险最大收益点）中点的位置 --------------------------
-        ef_for_mid = W_refined if (refine_ef_before_select and W_refined is not None and W_refined.size) else W_ef
-        ret_arr_mid, risk_arr_mid, _ = compute_array_metrics(returns, ef_for_mid, None,
-                                                             risk_metric=RISK_METRIC, var_params=VAR_PARAMS)
-        target_ret = 0.5 * (p_same_ret["ret_annual"] + p_same_risk["ret_annual"])
-        target_risk = 0.5 * (p_same_ret["risk_value"] + p_same_risk["risk_value"])
-        d2 = (ret_arr_mid - target_ret) ** 2 + (risk_arr_mid - target_risk) ** 2
-        mid_idx = int(np.argmin(d2))
-        w_mid = ef_for_mid[mid_idx]
-        met_mid = compute_point_metrics(returns, w_mid, w_user)
-        p_mid_better = {"weights": w_mid.tolist(), **met_mid}
+        try:
+            ef_for_mid = W_refined if (refine_ef_before_select and W_refined is not None and W_refined.size) else W_ef
+            ret_arr_mid, risk_arr_mid, _ = compute_array_metrics(returns, ef_for_mid, None,
+                                                                 risk_metric=RISK_METRIC, var_params=VAR_PARAMS)
+            target_ret = 0.5 * (p_same_ret["ret_annual"] + p_same_risk["ret_annual"])
+            target_risk = 0.5 * (p_same_ret["risk_value"] + p_same_risk["risk_value"])
+            d2 = (ret_arr_mid - target_ret) ** 2 + (risk_arr_mid - target_risk) ** 2
+            mid_idx = int(np.argmin(d2))
+            w_mid = ef_for_mid[mid_idx]
+            met_mid = compute_point_metrics(returns, w_mid, w_user)
+            p_mid_better = {"weights": w_mid.tolist(), **met_mid}
+        except Exception as e:
+            log(f"在收益上升风险减小点计算失败: {e}")
+            final_result = {
+                "code": 1,
+                "msg": f"在收益上升风险减小点计算失败: {e}",
+            }
+            return json.dumps(final_result, ensure_ascii=False)
 
         # 4) 可选绘图 ------------------------------------------------------------------------------------------------
         if draw_plt:
@@ -715,33 +771,33 @@ def main(json_input, excel_name=None, sheet_name=None) -> str:
 
         # 5) 构造并返回 JSON 结果
         result = {
-            "success": True,
-            "same_return_min_risk": p_same_ret,
-            "same_risk_max_return": p_same_risk,
-            "min_turnover_on_ef": p_min_turnover,
-            "better_return_lower_risk": p_mid_better
+            "code": 0,
+            "msg": "",
+            "data": {
+                "same_return_min_risk": p_same_ret,
+                "same_risk_max_return": p_same_risk,
+                "min_turnover_on_ef": p_min_turnover,
+                "better_return_lower_risk": p_mid_better
+            }
         }
         if refine_ef_before_select and W_refined is not None and W_refined.size:
-            result["ef_refined"] = {"weights": W_refined.tolist()}
+            result["data"]["ef_refined"] = {"weights": W_refined.tolist()}
         return json.dumps(result, ensure_ascii=False)
 
     except FileNotFoundError as e:
         return json.dumps({
-            "success": False,
-            "error_code": "DATA_FILE_NOT_FOUND",
-            "message": f"服务器端数据文件未找到: {getattr(e, 'filename', str(e))}"
+            "code": 1,
+            "msg": f"DATA_FILE_NOT_FOUND, 服务器端数据文件未找到: {getattr(e, 'filename', str(e))}"
         }, ensure_ascii=False)
     except ValueError as e:
         return json.dumps({
-            "success": False,
-            "error_code": "INVALID_DATA_OR_CONFIG",
-            "message": f"数据或配置无效: {e}"
+            "code": 1,
+            "msg": f"INVALID_DATA_OR_CONFIG, 数据或配置无效: {e}"
         }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({
-            "success": False,
-            "error_code": "INTERNAL_SERVER_ERROR",
-            "message": f"计算过程中发生未知错误: {type(e).__name__} - {e}"
+            "code": 1,
+            "msg": f"INTERNAL_SERVER_ERROR, 计算过程中发生未知错误: {type(e).__name__} - {e}"
         }, ensure_ascii=False)
 
 
@@ -754,6 +810,6 @@ if __name__ == '__main__':
 
     ''' 计算并输出结果 ------------------------------------------------------------------------------------------ '''
     s_t = time.time()
-    str_res = main(json_str, excel_path, excel_sheet)
+    str_res = main(json_str)
     log(f"最终返回的结果 Json 字符串为：\n{str_res}")
     log(f"总计算耗时: {time.time() - s_t:.3f} 秒")
