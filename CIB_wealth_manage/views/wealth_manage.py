@@ -13,6 +13,8 @@ from datetime import datetime
 
 from efficient_frontier_API import B01_cal_all_weights
 from efficient_frontier_API import B02_construct_category_yield
+from efficient_frontier_API import A02_risk_boundaries_api
+from efficient_frontier_API import A03_ideal_portfolio_api
 from efficient_frontier_API import A05_find_ef_by_weights
 from server.base import app, route_dic
 from views.base import JsonResBaseView
@@ -40,6 +42,16 @@ class WealthManage(JsonResBaseView):
     def cal_asset_category_yield(self, *args, **kwargs):
         res = B02_construct_category_yield.run()
         # 返回: {"data": true, "code": 0, "msg": ""}
+        return res
+
+    # 计算组合的最大最小风险
+    def cal_risk_boundaries(self, *args, **kwargs):
+        res = A02_risk_boundaries_api.main(kwargs)
+        return res
+
+    # 计算推荐组合
+    def cal_ideal_portfolio(self, *args, **kwargs):
+        res = A03_ideal_portfolio_api.main(kwargs)
         return res
 
     def calculate_portfolio_performance(self, *args, **kwargs):

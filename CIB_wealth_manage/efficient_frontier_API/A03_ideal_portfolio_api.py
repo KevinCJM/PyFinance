@@ -78,10 +78,14 @@ def analysis_json_and_read_data(json_input: str, excel_name: str, sheet_name: st
             - returns: 从Excel加载的收益率数据
             - refine_ef_before_select: 是否精炼有效前沿点集的标志
     """
-    # 解析JSON输入参数
-    params = json.loads(json_input)
+    # 判断入参是字典还是字符串
+    if isinstance(json_input, dict):
+        params = json_input['data']
+    else:
+        # Json转字典
+        params = json.loads(json_input)['data']
     asset_list = params["asset_list"]
-    draw_plt = params.get("draw_plt", True)
+    draw_plt = params.get("draw_plt", False)
     draw_plt_filename = params.get("draw_plt_filename", None)
     user_holding = params["user_holding"]
     ef_data = params["ef_data"]  # 需包含 "weights": List[List[float]]
@@ -126,7 +130,6 @@ def _risk_func(
     except Exception:
         # 退化为常用近似值（95% 左尾约 -1.645）
         z_score = -1.645
-    confidence = float(vp.get("confidence", 0.95))
     horizon_days = float(vp.get("horizon_days", 1.0))
     return_type = str(vp.get("return_type", "log"))
 
@@ -619,14 +622,14 @@ def _make_scatter_data(
     return scatter
 
 
-def main(json_input: str, excel_name: str, sheet_name: str) -> str:
+def main(json_input, excel_name=None, sheet_name=None) -> str:
     """
     主函数：根据输入的JSON配置和Excel数据，计算投资组合优化方案，并可选地绘制有效前沿图。
 
     参数:
         json_input (str): 包含用户配置和EF（Efficient Frontier）输入的JSON字符串。
-        excel_name (str): Excel文件名，用于读取资产收益数据。
-        sheet_name (str): Excel工作表名，指定读取数据的具体sheet。
+        excel_name (str|None): Excel文件名，用于读取资产收益数据。
+        sheet_name (str|None): Excel工作表名，指定读取数据的具体sheet。
 
     返回:
         str: 处理结果的JSON字符串，包含优化后的投资组合权重及性能指标，或错误信息。

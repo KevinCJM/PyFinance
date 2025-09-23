@@ -56,8 +56,12 @@ def _load_returns_from_nv(nv_dict, asset_list):
 
 # 解析Json参数 & 读取大类收益率
 def analysis_json_and_read_data(json_input, excel_name, sheet_name):
-    # Json转字典
-    json_dict = json.loads(json_input)
+    # 判断入参是字典还是字符串
+    if isinstance(json_input, dict):
+        json_dict = json_input['data']
+    else:
+        # Json转字典
+        json_dict = json.loads(json_input)['data']
     # 分解参数
     asset_list = json_dict['asset_list']  # 大类列表
     draw_plt = json_dict.get('draw_plt', None)  # 是否绘图展示
@@ -336,14 +340,14 @@ def draw_plt_func(res_min, res_max, returns, w_random, ret_annual_random, risk_a
 
 
 # 主函数
-def main(json_str, excel_path, excel_sheet):
+def main(json_str, excel_path=None, excel_sheet=None):
     """
     主函数，用于执行完整的投资组合风险分析流程。包括解析JSON配置、读取Excel数据、计算权重约束、
     寻找最小和最大风险组合，并可选地绘制风险收益图。
 
     :param json_str: str, 包含资产配置和分析参数的JSON字符串
-    :param excel_path: str, Excel文件路径，包含历史收益率等数据
-    :param excel_sheet: str, Excel工作表名称，用于读取数据
+    :param excel_path: str | None, Excel文件路径，包含历史收益率等数据
+    :param excel_sheet: str | None, Excel工作表名称，用于读取数据
     :return: str, 包含最小风险和最大风险优化结果的JSON字符串
     """
 
