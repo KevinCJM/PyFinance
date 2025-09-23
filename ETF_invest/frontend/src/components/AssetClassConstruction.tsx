@@ -453,22 +453,33 @@ export default function AssetClassConstructionPage() {
           <div className="mt-4 space-y-6">
             <div>
               <h3 className="text-sm font-semibold mb-2">虚拟净值走势（起始=1）</h3>
-              <ReactECharts style={{ height: 320 }} option={{
-                tooltip: { trigger: 'axis' },
-                legend: { bottom: 0 },
-                grid: { left: 40, right: 16, top: 16, bottom: 40 },
-                xAxis: { type: 'category', data: fitResult.dates, axisLabel: { showMaxLabel: true } },
-                yAxis: { type: 'value' },
-                dataZoom: [ { type: 'inside' }, { type: 'slider' } ],
-                series: Object.keys(fitResult.navs).map((k, i)=>({
-                  name: k,
-                  type: 'line',
-                  smooth: true,
-                  symbol: 'none',
-                  lineStyle: { width: 2 },
-                  data: fitResult.navs[k]
-                }))
-              }} />
+              {(() => {
+                const keys = Object.keys(fitResult.navs)
+                const allVals = keys.flatMap(k => fitResult.navs[k])
+                const minV = Math.min(...allVals)
+                const maxV = Math.max(...allVals)
+                const pad = (maxV - minV) * 0.05 || 0.02
+                const yMin = Math.max(0, +(minV - pad).toFixed(2))
+                const yMax = +(maxV + pad).toFixed(2)
+                return (
+                  <ReactECharts style={{ height: 340 }} option={{
+                    tooltip: { trigger: 'axis' },
+                    legend: { bottom: 4 },
+                    grid: { left: 48, right: 16, top: 16, bottom: 70 },
+                    xAxis: { type: 'category', data: fitResult.dates, axisLabel: { showMaxLabel: true } },
+                    yAxis: { type: 'value', min: yMin, max: yMax },
+                    dataZoom: [ { type: 'inside' }, { type: 'slider', bottom: 28 } ],
+                    series: keys.map((k)=>({
+                      name: k,
+                      type: 'line',
+                      smooth: true,
+                      symbol: 'none',
+                      lineStyle: { width: 2 },
+                      data: fitResult.navs[k]
+                    }))
+                  }} />
+                )
+              })()}
             </div>
             <div>
               <h3 className="text-sm font-semibold mb-2">相关系数矩阵</h3>
@@ -485,7 +496,11 @@ export default function AssetClassConstructionPage() {
                   grid: { left: 80, right: 16, top: 16, bottom: 40 },
                   xAxis: { type: 'category', data: labels, axisLabel: { rotate: 30 } },
                   yAxis: { type: 'category', data: labels },
-                  visualMap: { min: -1, max: 1, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#b91c1c','#ffffff','#2563eb'] } },
+                  // 优化配色：更柔和的RdBu分段色带
+                  visualMap: {
+                    min: -1, max: 1, orient: 'horizontal', left: 'center', bottom: 0,
+                    inRange: { color: ['#313695','#4575b4','#74add1','#abd9e9','#e0f3f8','#ffffbf','#fee090','#fdae61','#f46d43','#d73027','#a50026'] }
+                  },
                   series: [{
                     type: 'heatmap',
                     data,
@@ -497,18 +512,53 @@ export default function AssetClassConstructionPage() {
             </div>
             <div>
               <h3 className="text-sm font-semibold mb-2">横向指标对比</h3>
-              <ReactECharts style={{ height: 320 }} option={{
-                tooltip: { trigger: 'axis' },
-                legend: { bottom: 0 },
-                grid: { left: 40, right: 16, top: 16, bottom: 40 },
-                xAxis: { type: 'category', data: fitResult.metrics.map(m=>m.name) },
-                yAxis: { type: 'value' },
-                series: [
-                  { name: '年化收益率(%)', type: 'bar', data: fitResult.metrics.map(m=> (m.annual_return*100).toFixed(2)) },
-                  { name: '年化波动率(%)', type: 'bar', data: fitResult.metrics.map(m=> (m.annual_vol*100).toFixed(2)) },
-                  { name: '夏普比率', type: 'bar', data: fitResult.metrics.map(m=> m.sharpe.toFixed(2)) },
+              {(() => {
+                const classes = fitResult.metrics.map(m => m.name)
+                const rows = [
+                  { label: '年化收益率(%)', values: fitResult.metrics.map(m=> m.annual_return * 100) },
+                  { label: '年化波动率(%)', values: fitResult.metrics.map(m=> m.annual_vol * 100) },
+                  { label: '夏普比率', values: fitResult.metrics.map(m=> m.sharpe) },
                 ]
-              }} />
+                const color = (val:number, min:number, max:number) => {
+                  if (!isFinite(val)) return { background: '#f3f4f6', color: '#6b7280' }
+                  if (max <= min) return { background: '#d1fae5', color: '#065f46' }
+                  const t = (val - min) / (max - min)
+                  // 绿色渐变：低值浅， 高值深
+                  const start = [209, 250, 229]
+                  const end = [5, 150, 105]
+                  const mix = (a:number,b:number)=> Math.round(a + (b-a)*t)
+                  const bg = `rgb(${mix(start[0],end[0])},${mix(start[1],end[1])},${mix(start[2],end[2])})`
+                  const txt = t > 0.6 ? '#ffffff' : '#065f46'
+                  return { background: bg, color: txt }
+                }
+                return (
+                  <div className="overflow-auto">
+                    <table className="min-w-[480px] text-xs border">
+                      <thead>
+                        <tr>
+                          <th className="border px-2 py-1">指标</th>
+                          {classes.map(c => <th key={'mh'+c} className="border px-2 py-1">{c}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((row) => {
+                          const min = Math.min(...row.values.filter(v=>isFinite(v)))
+                          const max = Math.max(...row.values.filter(v=>isFinite(v)))
+                          return (
+                            <tr key={'mr'+row.label}>
+                              <td className="border px-2 py-1 font-medium">{row.label}</td>
+                              {row.values.map((v,i)=> {
+                                const st = color(v, min, max)
+                                return <td key={'mc'+row.label+'-'+i} className="border px-2 py-1 text-right" style={{ background: st.background, color: st.color }}>{isFinite(v)? v.toFixed(2): '-'}</td>
+                              })}
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              })()}
             </div>
           </div>
         )}
