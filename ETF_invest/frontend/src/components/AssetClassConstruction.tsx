@@ -282,7 +282,12 @@ export default function AssetClassConstructionPage() {
   }, [searchQuery, sortBy, sortDir, page, pageSize])
 
   return (
-    <div className="mx-auto max-w-5xl p-6">
+    <div className="mx-auto max-w-5xl p-6 relative">
+      {loading && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="rounded-xl bg-white px-6 py-4 shadow text-sm">正在计算，请稍候...</div>
+        </div>
+      )}
       <h1 className="text-2xl font-semibold">资产大类构建模块</h1>
       <p className="text-sm text-gray-500 mt-1">配置资产大类、ETF 选择与权重；风险平价支持手动风险贡献、最大杠杆与后端反推权重</p>
 
@@ -509,7 +514,7 @@ function AssetClassCard({
                   disabled={loading || sumRisk !== 100}
                   title={sumRisk !== 100 ? '风险贡献合计需等于 100% 才能计算' : ''}
                 >
-                  {loading ? '计算中...' : '计算反推资金权重'}
+                  {loading ? '计算中...' : '反推资金权重'}
                 </button>
               </>
             )}
