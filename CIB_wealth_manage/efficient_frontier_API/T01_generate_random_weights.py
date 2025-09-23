@@ -23,7 +23,7 @@ except Exception:
 
 import numpy as np
 import pandas as pd
-from T02_other_tools import log, ann_log_return, ann_log_vol
+from .T02_other_tools import log, ann_log_return, ann_log_vol
 
 
 def _make_rng(seed: int):

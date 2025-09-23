@@ -12,13 +12,15 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import date as _date
 from typing import List, Tuple, Optional, Dict
+from sqlalchemy import text
 from numba import njit, prange, float64, int64, types
 
-from T02_other_tools import log
-from Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
+from .T02_other_tools import log
+from .T05_db_utils import threaded_insert_dataframe
+from .Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
 
 # 数据库/线程池工具
-from T05_db_utils import (
+from .T05_db_utils import (
     DatabaseConnectionPool,
     get_active_db_url,
     read_dataframe,
@@ -27,7 +29,7 @@ from T05_db_utils import (
 
 try:
     # 数据库配置仅包含参数
-    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password  # type: ignore
+    from .Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password  # type: ignore
 except Exception:
     raise RuntimeError("请先配置 Y01_db_config.py 中的数据库连接参数")
 
@@ -532,13 +534,12 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     log("清空目标表...")
     with pool.begin() as conn:
         try:
-            conn.execute("TRUNCATE TABLE iis_aset_allc_indx_wght")
-            conn.execute("TRUNCATE TABLE iis_aset_allc_indx_pub")
+            conn.execute(text("TRUNCATE TABLE iis_aset_allc_indx_wght"))
+            conn.execute(text("TRUNCATE TABLE iis_aset_allc_indx_pub"))
         except Exception as e:
             log(f"TRUNCATE 失败: {e}")
             raise
 
-    from T05_db_utils import threaded_insert_dataframe
     log("正在写入数据库...")
     threaded_insert_dataframe(pool, datasets, max_workers=4)
     log("结果已分别写入：iis_aset_allc_indx_wght（全量）、iis_aset_allc_indx_pub（有效前沿）")
@@ -702,15 +703,15 @@ def main():
     log(f"{res_df.head()}")
     log(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")
 
-    ''' 3) 画图 ------------------------------------------------------------------------------------- '''
-    if db_host is None or db_host in ('localhost', '127.0.0.1'):  # 仅本机环境下进行画图
-        plot_efficient_frontier_plotly(
-            res_df,
-            asset_cols=a_list,
-            title='资产组合有效前沿（抽样非前沿点）',
-            sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
-            save_html='efficient_frontier.html'
-        )
+    # ''' 3) 画图 ------------------------------------------------------------------------------------- '''
+    # if db_host is None or db_host in ('localhost', '127.0.0.1'):  # 仅本机环境下进行画图
+    #     plot_efficient_frontier_plotly(
+    #         res_df,
+    #         asset_cols=a_list,
+    #         title='资产组合有效前沿（抽样非前沿点）',
+    #         sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
+    #         save_html='efficient_frontier.html'
+    #     )
 
     ''' 4) 结果保存到本地文件 -------------------------------------------------------------------------- '''
     folder_path = os.path.dirname(os.path.abspath(__file__))
@@ -719,6 +720,7 @@ def main():
 
     ''' 5) 结果写入数据库 ----------------------------------------------------------------------------- '''
     insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
+    return True
 
 
 if __name__ == '__main__':

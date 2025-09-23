@@ -17,10 +17,10 @@ import pandas as pd
 from scipy.optimize import minimize
 from typing import Any, Dict, List, Tuple, Optional
 
-from T04_show_plt import plot_efficient_frontier
-from T03_weight_limit_cal import hold_weight_limit_cal
-from T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
-from T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
+from .T04_show_plt import plot_efficient_frontier
+from .T03_weight_limit_cal import hold_weight_limit_cal
+from .T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
+from .T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
 
 # 全局参数（与其他模块保持一致）
 TRADING_DAYS = 252.0

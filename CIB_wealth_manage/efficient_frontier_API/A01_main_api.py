@@ -12,11 +12,11 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
-from T04_show_plt import plot_efficient_frontier
-from T02_other_tools import load_returns_from_excel, log
-from T01_generate_random_weights import compute_var_parametric_arrays
-from T03_weight_limit_cal import level_weight_limit_cal, hold_weight_limit_cal
-from T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays
+from .T04_show_plt import plot_efficient_frontier
+from .T02_other_tools import load_returns_from_excel, log
+from .T01_generate_random_weights import compute_var_parametric_arrays
+from .T03_weight_limit_cal import level_weight_limit_cal, hold_weight_limit_cal
+from .T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays
 
 ''' 0) 准备工作: 配置一些预定义的参数 ----------------------------------------------------------------------------- '''
 # 随机游走与指标参数（仅字典方式）

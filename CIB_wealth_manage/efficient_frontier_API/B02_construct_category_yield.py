@@ -21,8 +21,8 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple
 
-from T02_other_tools import log
-from T05_db_utils import (
+from .T02_other_tools import log
+from .T05_db_utils import (
     DatabaseConnectionPool,
     read_dataframe,
     get_active_db_url,
@@ -31,7 +31,7 @@ from T05_db_utils import (
 )
 
 try:
-    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+    from .Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 
@@ -202,7 +202,7 @@ def run() -> pd.DataFrame:
     # 使用单连接执行 TRUNCATE，无需连接池上下文
     single_conn = create_connection(pool.engine.url)
     try:
-        single_conn.execute("TRUNCATE TABLE iis_mdl_aset_pct_d")
+        single_conn.execute(text("TRUNCATE TABLE iis_mdl_aset_pct_d"))
     finally:
         single_conn.close()
 
@@ -223,6 +223,9 @@ def run() -> pd.DataFrame:
 
 if __name__ == '__main__':
     df = run()
-    log(f"\n{df.head()}")
-    log(f"共插入 {len(df)} 行 | 大类数: {df['aset_bclass_cd'].nunique()} | "
-        f"日期范围: {df['pct_yld_date'].min()} ~ {df['pct_yld_date'].max()}")
+    # log(f"\n{df.head()}")
+    # log(f"共插入 {len(df)} 行 | 大类数: {df['aset_bclass_cd'].nunique()} | "
+    #     f"日期范围: {df['pct_yld_date'].min()} ~ {df['pct_yld_date'].max()}")
+    print(df)
+ax()}")
+    print(df)

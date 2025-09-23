@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
+from efficient_frontier_API import B01_cal_all_weights
+from efficient_frontier_API import A05_find_ef_by_weights
 from server.base import app, route_dic
 from views.base import JsonResBaseView
 from config_py import DEBUG
@@ -21,6 +23,16 @@ class WealthManage(JsonResBaseView):
 
     def test(self, *args, **kwargs):
         return {"msg": "test ok"}
+
+    # 计算有效前沿, 基于400w个权重点挑选
+    def calculate_efficient_frontier(self, *args, **kwargs):
+        res = A05_find_ef_by_weights.main(kwargs)
+        return res
+
+    # 计算生成400w个权重点, 无结果返回, 直接落表
+    def cal_all_weights(self, *args, **kwargs):
+        res = B01_cal_all_weights.main()
+        return res
 
     def calculate_portfolio_performance(self, *args, **kwargs):
         return {"msg": "calculate_portfolio_performance"}
@@ -38,7 +50,7 @@ class WealthManage(JsonResBaseView):
         return {"msg": "calculate_healthy_score"}
 
     def financial_plan_analysis_for_pension(self, *args, **kwargs):
-        return {"msg": "financial_plan_analysis_for_pension"}
+        return {"msg": "financial_plan_analysis_for_pension 测试哈哈哈"}
 
     def financial_plan_analysis_for_housepurchase(self, *args, **kwargs):
         return {"msg": "financial_plan_analysis_for_housepurchase"}

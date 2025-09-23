@@ -12,9 +12,9 @@ import numpy as np
 import pandas as pd
 
 # 复用现有工具函数，避免冗余
-from T02_other_tools import log
-from T04_show_plt import plot_efficient_frontier
-from T01_generate_random_weights import cal_ef_mask
+from .T02_other_tools import log
+from .T04_show_plt import plot_efficient_frontier
+from .T01_generate_random_weights import cal_ef_mask
 
 # df展示1000列
 pd.set_option('display.max_columns', 1000)
@@ -73,7 +73,11 @@ def draw_plt_func(a_list, weight_df, ef_points, the_folder_path):
 
 def main(json_input: str) -> str:
     # json转字典
-    input_data = json.loads(json_input)
+    try:
+        input_data = json.loads(json_input)
+    except Exception as e:
+        log(f"输入 JSON 格式错误: {e} - {json_input}")
+        input_data = json.loads(json.dumps(json_input['data']))
     log(input_data)
     # 提取资产列表和约束条件
     asset_list = input_data["asset_list"]
@@ -133,7 +137,7 @@ def main(json_input: str) -> str:
 
 if __name__ == '__main__':
     input_dict = {
-        "asset_list": ['货币', '固收', '混合', '权益', '另类'],  # 大类资产列表, 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_nm 一致
+        "asset_list": ["货币", "固收", "混合", "权益", "另类"],  # 大类资产列表, 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_nm 一致
         "weight_range": {
             "货币": [  # 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_nm 一致
                 0.0,  # 代表权重下限%
