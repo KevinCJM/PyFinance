@@ -25,6 +25,7 @@ import sys
 import random
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Tuple
+from sqlalchemy import text
 
 import numpy as np
 import pandas as pd
@@ -37,11 +38,11 @@ except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 
 ASSET_CLASSES = [
-    ("权益", "权益"),
-    ("固收", "固收"),
-    ("货币", "货币"),
-    ("混合", "混合"),
-    ("另类", "另类"),
+    ("EQ", "权益"),
+    ("FI", "固收"),
+    ("MM", "货币"),
+    ("MIX", "混合"),
+    ("ALT", "另类"),
 ]
 
 
@@ -147,7 +148,7 @@ def build_pct_d_rows(mdl_ver_id: str, start: date, end: date, seed: int = 0) -> 
     }
     rows = []
     for code, name in ASSET_CLASSES:
-        mu, sigma = profile.get(code, (0.0001, 0.003))
+        mu, sigma = profile.get(name, (0.0001, 0.003))
         # 生成日收益，控制在小数点后 6-8 位范围
         rets = rng.normal(loc=mu, scale=sigma, size=len(dates))
         # 防止极端值
@@ -197,11 +198,11 @@ def main() -> None:
         with pool.begin() as conn:
             for t in tables_to_truncate:
                 try:
-                    conn.execute(f"TRUNCATE TABLE {t}")
+                    conn.execute(text(f"TRUNCATE TABLE {t}"))
                     print(f"[OK] TRUNCATE {t}")
                 except Exception as e:
                     print(f"[WARN] TRUNCATE {t} 失败，尝试 DELETE: {e}")
-                    conn.execute(f"DELETE FROM {t}")
+                    conn.execute(text(f"DELETE FROM {t}"))
                     print(f"[OK] DELETE {t}")
     except Exception as e:
         print(f"[ERROR] 预清理表失败: {e}")
