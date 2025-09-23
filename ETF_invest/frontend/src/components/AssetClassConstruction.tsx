@@ -99,10 +99,10 @@ export default function AssetClassConstructionPage() {
   const [startDate, setStartDate] = useState<string>('2020-01-01')
   const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: number[][]; corr_labels: string[]; metrics: { name: string; annual_return?: number; annual_vol?: number; sharpe?: number; var99?: number; es99?: number; max_drawdown?: number; calmar?: number }[] }>(null)
   const [rollLoading, setRollLoading] = useState(false)
-  const [rollResult, setRollResult] = useState<null | { dates: string[]; series: Record<string, number[]>; metrics: { name: string; sum:number; mean:number; median:number; std:number; skew:number; kurtosis:number }[] }>(null)
+  const [rollResult, setRollResult] = useState<null | { dates: string[]; series: Record<string, number[]>; metrics: { name: string; overall:number; mean:number; median:number; std:number; skew:number; kurtosis:number }[] }>(null)
   const [rollWindow, setRollWindow] = useState<number>(60)
-  const allEtfs = useMemo(()=> Array.from(new Map(classes.flatMap(c=> c.etfs.map(e=> [e.code+e.name, e]))).values()), [classes])
-  const [rollTarget, setRollTarget] = useState<{code:string, name:string} | null>(null)
+  const classOptions = useMemo(()=> classes.map(c=> c.name), [classes])
+  const [rollTargetClass, setRollTargetClass] = useState<string>('')
 
   function updateClass(id: string, updater: (c: AssetClass) => AssetClass) {
     setClasses((prev) => prev.map((c) => (c.id === id ? updater(c) : c)))
@@ -245,18 +245,28 @@ export default function AssetClassConstructionPage() {
   }
 
   async function onRoll() {
-    if (!rollTarget) {
-      alert('请选择研究对象ETF')
+    if (!rollTargetClass) {
+      alert('请选择研究对象大类')
       return
     }
     try {
       setRollLoading(true)
       setRollResult(null)
-      const etfs = allEtfs.map(e=> ({ code: e.code, name: e.name, weight: Number(e.weight||0) }))
-      const resp = await fetch('/api/rolling-corr', {
+      // 准备大类及资金权重
+      const payloadClasses = classes.map((ac) => {
+        let weights: number[] = []
+        if (ac.mode === 'equal') weights = equalWeights(ac.etfs.length)
+        else weights = ac.etfs.map((e)=> Number(e.weight||0))
+        return {
+          id: ac.id,
+          name: ac.name,
+          etfs: ac.etfs.map((e,i)=> ({ code: e.code, name: e.name, weight: weights[i]||0 }))
+        }
+      })
+      const resp = await fetch('/api/rolling-corr-classes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startDate, window: rollWindow, targetCode: rollTarget.code, targetName: rollTarget.name, etfs })
+        body: JSON.stringify({ startDate, window: rollWindow, targetClassName: rollTargetClass, classes: payloadClasses })
       })
       if (!resp.ok) throw new Error(`后端错误 ${resp.status}`)
       const data = await resp.json()
@@ -612,12 +622,9 @@ export default function AssetClassConstructionPage() {
           </div>
           <div className="flex items-center gap-2 text-sm">
             <label className="text-gray-700">研究对象</label>
-            <select className="border rounded px-2 py-1" value={rollTarget?.code||''} onChange={(e)=>{
-              const obj = allEtfs.find(x=> x.code===e.target.value)
-              setRollTarget(obj? {code: obj.code, name: obj.name}: null)
-            }}>
-              <option value="">请选择</option>
-              {allEtfs.map(e=> <option key={e.code} value={e.code}>{e.code} - {e.name}</option>)}
+            <select className="border rounded px-2 py-1" value={rollTargetClass} onChange={(e)=> setRollTargetClass(e.target.value)}>
+              <option value="">请选择大类</option>
+              {classOptions.map(n=> <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
           <button className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700" onClick={onRoll} disabled={busy}>
@@ -628,7 +635,7 @@ export default function AssetClassConstructionPage() {
           <div className="mt-4 space-y-4">
             <ReactECharts style={{ height: 320 }} option={{
               tooltip: { trigger: 'axis', valueFormatter: (v:any)=> Number(v).toFixed(2) },
-              legend: { bottom: 0 },
+              legend: { top: 0 },
               grid: { left: 48, right: 16, top: 16, bottom: 40 },
               xAxis: { type: 'category', data: rollResult.dates },
               yAxis: { type: 'value', min: -1, max: 1 },
@@ -639,8 +646,8 @@ export default function AssetClassConstructionPage() {
               <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
                 <thead>
                   <tr>
-                    <th className="border px-2 py-2">ETF</th>
-                    <th className="border px-2 py-2">总相关系数</th>
+                    <th className="border px-2 py-2">大类</th>
+                    <th className="border px-2 py-2">整体相关系数</th>
                     <th className="border px-2 py-2">均值</th>
                     <th className="border px-2 py-2">中位数</th>
                     <th className="border px-2 py-2">标准差</th>
@@ -652,7 +659,7 @@ export default function AssetClassConstructionPage() {
                   {rollResult.metrics.map(m=> (
                     <tr key={m.name}>
                       <td className="border px-2 py-2">{m.name}</td>
-                      <td className="border px-2 py-2 text-right">{Number.isFinite(m.sum)? m.sum.toFixed(2): '-'}</td>
+                      <td className="border px-2 py-2 text-right">{Number.isFinite(m.overall)? m.overall.toFixed(2): '-'}</td>
                       <td className="border px-2 py-2 text-right">{Number.isFinite(m.mean)? m.mean.toFixed(2): '-'}</td>
                       <td className="border px-2 py-2 text-right">{Number.isFinite(m.median)? m.median.toFixed(2): '-'}</td>
                       <td className="border px-2 py-2 text-right">{Number.isFinite(m.std)? m.std.toFixed(2): '-'}</td>

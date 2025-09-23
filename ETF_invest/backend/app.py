@@ -12,6 +12,7 @@ import json
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
+from fit import compute_rolling_corr_classes
 
 
 class ETFIn(BaseModel):
@@ -303,6 +304,43 @@ def rolling_corr(req: RollingRequest):
     idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName)
     dates = [d.strftime("%Y-%m-%d") for d in idx]
     # 清理 NaN/Inf
+    safe_series = {k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for k, v in series_map.items()}
+    for m in metrics:
+        for k in list(m.keys()):
+            if k == 'name':
+                continue
+            v = m[k]
+            try:
+                if not (isinstance(v, (int, float)) and v == v and abs(v) != float('inf')):
+                    m[k] = 0.0
+            except Exception:
+                m[k] = 0.0
+    return RollingResponse(dates=dates, series=safe_series, metrics=metrics)
+
+
+class RollingClassesRequest(BaseModel):
+    startDate: str
+    window: int = 60
+    targetClassName: str
+    classes: List[FitClassIn]
+
+
+@app.post("/api/rolling-corr-classes", response_model=RollingResponse)
+def rolling_corr_classes(req: RollingClassesRequest):
+    try:
+        start = pd.to_datetime(req.startDate)
+    except Exception:
+        raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
+    classes = [
+        ClassSpec(
+            id=c.id,
+            name=c.name,
+            etfs=[ETFSpec(code=e.code, name=e.name, weight=float(e.weight)) for e in c.etfs],
+        )
+        for c in req.classes
+    ]
+    idx, series_map, metrics = compute_rolling_corr_classes(DATA_DIR, classes, start, int(req.window), req.targetClassName)
+    dates = [d.strftime("%Y-%m-%d") for d in idx]
     safe_series = {k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for k, v in series_map.items()}
     for m in metrics:
         for k in list(m.keys()):

@@ -289,3 +289,100 @@ def compute_rolling_corr(
             }
         metrics_list.append(metrics)
     return ret.index, series_map, metrics_list
+
+
+def compute_rolling_corr_classes(
+    data_dir: Path,
+    classes: List[ClassSpec],
+    start_date: pd.Timestamp,
+    window: int,
+    target_class_name: str,
+) -> Tuple[pd.DatetimeIndex, Dict[str, np.ndarray], List[Dict[str, float]]]:
+    if window <= 1:
+        raise ValueError("window 必须 > 1")
+    # 收集所需代码和名称以便过滤
+    want_codes: List[str] = []
+    want_names: List[str] = []
+    for c in classes:
+        for e in c.etfs:
+            want_codes.append(e.code)
+            want_names.append(e.name)
+    df = _load_adj_nav(data_dir, want_codes, want_names)
+    piv = df.pivot_table(index="date", columns="ts_code", values="adj_nav", aggfunc="last").sort_index()
+    ret_wide = piv.pct_change().iloc[1:]
+    ret_wide = ret_wide.loc[ret_wide.index >= start_date].replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    ts_cols = list(ret_wide.columns.astype(str))
+    def map_to_ts(code: str, name: str) -> Optional[str]:
+        if code in ts_cols:
+            return code
+        ns = _code_nosfx(code)
+        if ns in ts_cols:
+            return ns
+        sub = df[df["name"].astype(str) == name]
+        if not sub.empty:
+            return str(sub.iloc[0]["ts_code"])
+        cand = [c for c in ts_cols if ns and ns in str(c)]
+        return cand[0] if cand else None
+
+    # 构建每个大类的收益序列（矢量化）
+    class_ret: Dict[str, pd.Series] = {}
+    for c in classes:
+        cols: List[str] = []
+        wgt: List[float] = []
+        for e in c.etfs:
+            col = map_to_ts(str(e.code), str(e.name))
+            if col is None or col not in ret_wide.columns:
+                continue
+            cols.append(col)
+            wgt.append(max(0.0, float(e.weight)))
+        if not cols:
+            continue
+        w = np.array(wgt, dtype=float)
+        s = w.sum()
+        if s <= 0:
+            continue
+        w = w / s
+        sub = ret_wide[cols]
+        agg = pd.Series(sub.to_numpy() @ w, index=sub.index)
+        class_ret[c.name] = agg
+
+    if not class_ret:
+        raise ValueError("没有可用的大类收益率：请检查权重或数据匹配。")
+
+    R = pd.DataFrame(class_ret).sort_index().fillna(0.0)
+    if target_class_name not in R.columns:
+        raise ValueError("研究对象大类未找到")
+    base = R[target_class_name]
+    series_map: Dict[str, np.ndarray] = {}
+    metrics_list: List[Dict[str, float]] = []
+    for name, s in R.items():
+        if name == target_class_name:
+            continue
+        rc = s.rolling(window).corr(base)
+        rc = rc.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        series_map[name] = rc.to_numpy()
+        arr = rc.to_numpy()
+        finite = arr[np.isfinite(arr)]
+        overall = float(s.corr(base))
+        if not math.isfinite(overall):
+            overall = 0.0
+        if finite.size == 0:
+            metrics = {"name": name, "overall": overall, "mean": 0.0, "median": 0.0, "std": 0.0, "skew": 0.0, "kurtosis": 0.0}
+        else:
+            mean = float(np.mean(finite))
+            median = float(np.median(finite))
+            std = float(np.std(finite, ddof=1)) if finite.size > 1 else 0.0
+            if finite.size > 2:
+                mu = mean
+                m3 = float(((finite - mu) ** 3).mean())
+                m2 = float(((finite - mu) ** 2).mean())
+                skew = m3 / (m2 ** 1.5 + 1e-12)
+                m4 = float(((finite - mu) ** 4).mean())
+                kurt = m4 / (m2 ** 2 + 1e-12) - 3.0
+            else:
+                skew = 0.0
+                kurt = 0.0
+            metrics = {"name": name, "overall": overall, "mean": mean, "median": median, "std": std, "skew": float(skew), "kurtosis": float(kurt)}
+        metrics_list.append(metrics)
+    return R.index, series_map, metrics_list
