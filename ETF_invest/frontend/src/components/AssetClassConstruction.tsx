@@ -499,10 +499,10 @@ export default function AssetClassConstructionPage() {
                   grid: { left: 80, right: 16, top: 16, bottom: 40 },
                   xAxis: { type: 'category', data: labels, axisLabel: { rotate: 30 } },
                   yAxis: { type: 'category', data: labels },
-                  // 优化配色：更柔和的RdBu分段色带
+                  // 配色：白色 → 天蓝色，隐藏色度图例
                   visualMap: {
-                    min: -1, max: 1, orient: 'horizontal', left: 'center', bottom: 0,
-                    inRange: { color: ['#313695','#4575b4','#74add1','#abd9e9','#e0f3f8','#ffffbf','#fee090','#fdae61','#f46d43','#d73027','#a50026'] }
+                    min: -1, max: 1, show: false,
+                    inRange: { color: ['#ffffff','#e0f2fe','#bae6fd','#7dd3fc','#38bdf8','#0ea5e9'] }
                   },
                   series: [{
                     type: 'heatmap',
