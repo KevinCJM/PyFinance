@@ -1,4 +1,16 @@
 import React, { useMemo, useState, useEffect } from 'react'
+import { Line } from 'react-chartjs-2'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
 
 type WeightMode = 'custom' | 'equal' | 'risk'
 type RiskMetric = 'vol' | 'var' | 'es'
@@ -94,6 +106,9 @@ export default function AssetClassConstructionPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
+  const [fitLoading, setFitLoading] = useState(false)
+  const [startDate, setStartDate] = useState<string>('')
+  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: number[][]; corr_labels: string[]; metrics: { name: string; annual_return: number; annual_vol: number; sharpe: number }[] }>(null)
 
   function updateClass(id: string, updater: (c: AssetClass) => AssetClass) {
     setClasses((prev) => prev.map((c) => (c.id === id ? updater(c) : c)))
@@ -190,6 +205,51 @@ export default function AssetClassConstructionPage() {
     }
   }
 
+  async function onFit() {
+    // 校验参数
+    if (!startDate) {
+      alert('请选择开始日期')
+      return
+    }
+    const payloadClasses = classes.map((ac) => {
+      // 生成资金权重
+      let weights: number[] = []
+      if (ac.mode === 'equal') {
+        weights = equalWeights(ac.etfs.length)
+      } else {
+        weights = ac.etfs.map((e) => Number(e.weight || 0))
+      }
+      const sumW = weights.reduce((a, b) => a + b, 0)
+      if (ac.mode !== 'equal' && Math.abs(sumW - 100) > 1e-4) {
+        throw new Error(`大类【${ac.name}】资金权重合计应为 100%`)
+      }
+      if (ac.mode === 'risk' && sumW <= 0) {
+        throw new Error(`大类【${ac.name}】请先完成“反推资金权重”计算`)
+      }
+      return {
+        id: ac.id,
+        name: ac.name,
+        etfs: ac.etfs.map((e, i) => ({ code: e.code, name: e.name, weight: weights[i] || 0 })),
+      }
+    })
+    try {
+      setFitLoading(true)
+      setFitResult(null)
+      const resp = await fetch('/api/fit-classes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDate, classes: payloadClasses }),
+      })
+      if (!resp.ok) throw new Error(`后端错误 ${resp.status}`)
+      const data = await resp.json()
+      setFitResult(data)
+    } catch (e: any) {
+      alert('拟合失败：' + (e?.message || e))
+    } finally {
+      setFitLoading(false)
+    }
+  }
+
   useEffect(() => {
     try {
       const ew = equalWeights(3)
@@ -281,9 +341,11 @@ export default function AssetClassConstructionPage() {
     return () => controller.abort()
   }, [searchQuery, sortBy, sortDir, page, pageSize])
 
+  const busy = loading || fitLoading
+
   return (
     <div className="mx-auto max-w-5xl p-6 relative">
-      {loading && (
+      {busy && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="rounded-xl bg-white px-6 py-4 shadow text-sm">正在计算，请稍候...</div>
         </div>
@@ -385,6 +447,86 @@ export default function AssetClassConstructionPage() {
           </div>
         </div>
       )}
+
+      {/* 拟合区域 */}
+      <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-4">
+        <SectionTitle title="大类收益率拟合" />
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 text-sm">
+            <label className="text-gray-700">选择开始日期</label>
+            <input type="date" className="border rounded px-2 py-1" value={startDate} onChange={(e)=>setStartDate(e.target.value)} />
+          </div>
+          <button className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700" onClick={onFit} disabled={busy}>
+            拟合大类收益率
+          </button>
+        </div>
+        {fitResult && (
+          <div className="mt-4 space-y-6">
+            <div>
+              <h3 className="text-sm font-semibold mb-2">虚拟净值走势（起始=1）</h3>
+              <Line data={{
+                labels: fitResult.dates,
+                datasets: Object.keys(fitResult.navs).map((k, i)=>({
+                  label: k,
+                  data: fitResult.navs[k],
+                  borderColor: ['#2563eb','#16a34a','#dc2626','#ea580c','#9333ea'][i%5],
+                  backgroundColor: 'transparent',
+                  borderWidth: 1.5,
+                  pointRadius: 0,
+                }))
+              }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { x: { ticks: { maxTicksLimit: 8 } } } }} height={280} />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold mb-2">相关系数矩阵</h3>
+              <div className="overflow-auto">
+                <table className="min-w-[400px] text-xs border">
+                  <thead>
+                    <tr>
+                      <th className="border px-2 py-1">大类</th>
+                      {fitResult.corr_labels.map((c)=>(<th key={'h'+c} className="border px-2 py-1">{c}</th>))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fitResult.corr_labels.map((rowName, rIdx)=> (
+                      <tr key={'r'+rowName}>
+                        <td className="border px-2 py-1 font-medium">{rowName}</td>
+                        {fitResult.corr[rIdx].map((v, cIdx)=> (
+                          <td key={'c'+rIdx+'-'+cIdx} className="border px-2 py-1 text-right">{v.toFixed(2)}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold mb-2">横向指标对比</h3>
+              <div className="overflow-auto">
+                <table className="min-w-[400px] text-xs border">
+                  <thead>
+                    <tr>
+                      <th className="border px-2 py-1">大类</th>
+                      <th className="border px-2 py-1">年化收益率</th>
+                      <th className="border px-2 py-1">年化波动率</th>
+                      <th className="border px-2 py-1">夏普比率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fitResult.metrics.map((m)=> (
+                      <tr key={'m'+m.name}>
+                        <td className="border px-2 py-1">{m.name}</td>
+                        <td className="border px-2 py-1 text-right">{(m.annual_return*100).toFixed(2)}%</td>
+                        <td className="border px-2 py-1 text-right">{(m.annual_vol*100).toFixed(2)}%</td>
+                        <td className="border px-2 py-1 text-right">{m.sharpe.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

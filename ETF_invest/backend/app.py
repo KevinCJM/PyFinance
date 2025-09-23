@@ -11,6 +11,7 @@ from pathlib import Path
 import json
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
+from fit import ClassSpec, ETFSpec, compute_classes_nav
 
 
 class ETFIn(BaseModel):
@@ -28,6 +29,31 @@ class SolveRequest(BaseModel):
 
 class SolveResponse(BaseModel):
     weights: List[float]
+
+
+class FitETFIn(BaseModel):
+    code: str
+    name: str
+    weight: float
+
+
+class FitClassIn(BaseModel):
+    id: str
+    name: str
+    etfs: List[FitETFIn]
+
+
+class FitRequest(BaseModel):
+    startDate: str
+    classes: List[FitClassIn]
+
+
+class FitResponse(BaseModel):
+    dates: List[str]
+    navs: dict
+    corr: List[List[float]]
+    corr_labels: List[str]
+    metrics: List[dict]
 
 
 app = FastAPI(title="Risk Parity Backend")
@@ -197,6 +223,38 @@ def solve(req: SolveRequest):
     scale = 1.0 + max(0.0, float(req.maxLeverage))
     out = [float(x * 100 * scale) for x in out]
     return SolveResponse(weights=[_round2(x) for x in out])
+
+
+@app.post("/api/fit-classes", response_model=FitResponse)
+def fit_classes(req: FitRequest):
+    try:
+        start = pd.to_datetime(req.startDate)
+    except Exception:
+        raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
+    if not req.classes:
+        raise ValueError("classes 不能为空")
+    classes = [
+        ClassSpec(
+            id=c.id,
+            name=c.name,
+            etfs=[ETFSpec(code=e.code, name=e.name, weight=float(e.weight)) for e in c.etfs],
+        )
+        for c in req.classes
+    ]
+    NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start)
+    dates = [d.strftime("%Y-%m-%d") for d in NAV.index]
+    navs = {col: [float(x) for x in NAV[col].tolist()] for col in NAV.columns}
+    corr_labels = list(corr.columns)
+    corr_vals = corr.values.tolist()
+    metrics_out = []
+    for name, row in metrics.iterrows():
+        metrics_out.append({
+            "name": str(name),
+            "annual_return": float(row["年化收益率"]),
+            "annual_vol": float(row["年化波动率"]),
+            "sharpe": float(row["夏普比率"]),
+        })
+    return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out)
 
 
 # -------------------- ETF Universe from data/ --------------------
