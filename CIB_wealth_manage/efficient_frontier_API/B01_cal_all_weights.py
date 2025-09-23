@@ -9,18 +9,18 @@ import os
 import time
 import numpy as np
 import pandas as pd
+from sqlalchemy import text
 import plotly.graph_objects as go
 from datetime import date as _date
 from typing import List, Tuple, Optional, Dict
-from sqlalchemy import text
 from numba import njit, prange, float64, int64, types
 
-from .T02_other_tools import log
-from .T05_db_utils import threaded_insert_dataframe
-from .Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
+from efficient_frontier_API.T02_other_tools import log
+from efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
+from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
 
 # 数据库/线程池工具
-from .T05_db_utils import (
+from efficient_frontier_API.T05_db_utils import (
     DatabaseConnectionPool,
     get_active_db_url,
     read_dataframe,
@@ -29,7 +29,7 @@ from .T05_db_utils import (
 
 try:
     # 数据库配置仅包含参数
-    from .Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password  # type: ignore
+    from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先配置 Y01_db_config.py 中的数据库连接参数")
 
@@ -586,8 +586,8 @@ def fetch_returns_from_db(mdl_ver_id: str,
     where_sql = " WHERE " + " AND ".join(where_parts)
 
     # 查询SQL语句：获取资产大类代码、名称、日期及收益率
-    sql_series = (
-            "SELECT aset_bclass_cd AS cd, aset_bclass_nm AS nm, pct_yld_date AS dt, pct_yld AS yld FROM iis_mdl_aset_pct_d" + where_sql
+    sql_series = text(
+        "SELECT aset_bclass_cd AS cd, aset_bclass_nm AS nm, pct_yld_date AS dt, pct_yld AS yld FROM iis_mdl_aset_pct_d" + where_sql
     )
 
     # 执行查询并转换为DataFrame

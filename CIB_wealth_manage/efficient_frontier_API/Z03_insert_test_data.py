@@ -29,10 +29,10 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from T05_db_utils import DatabaseConnectionPool, insert_dataframe, get_active_db_url
+from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, insert_dataframe, get_active_db_url
 
 try:
-    from Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+    from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 

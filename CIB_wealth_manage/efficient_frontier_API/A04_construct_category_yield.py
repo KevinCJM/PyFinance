@@ -26,7 +26,7 @@ import traceback
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional
-from .T02_other_tools import read_excel_compat
+from efficient_frontier_API.T02_other_tools import read_excel_compat
 
 
 def _parse_series_from_dict(d: Dict[str, Any]) -> pd.Series:

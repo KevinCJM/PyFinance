@@ -39,17 +39,16 @@
     * 模块不会自动创建数据库或数据表结构。
 """
 
-import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 import os
 import socket
-
+import logging
 import pandas as pd
+from contextlib import contextmanager
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
-from sqlalchemy.exc import SQLAlchemyError
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
 LOGGER = logging.getLogger(__name__)
 

@@ -7,9 +7,11 @@ B01_random_weights_faster.py
 - 性能重点：尽量使用 NumPy 向量化、减少中间对象与 DataFrame 依赖。
 """
 
-import time
-from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
 import os
+import time
+import numpy as np
+import pandas as pd
+from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
@@ -21,9 +23,7 @@ except Exception:
     HAS_NUMBA = False
     print("Numba 不可用，使用纯 Python 版本。")
 
-import numpy as np
-import pandas as pd
-from .T02_other_tools import log, ann_log_return, ann_log_vol
+from efficient_frontier_API.T02_other_tools import log, ann_log_return, ann_log_vol
 
 
 def _make_rng(seed: int):

@@ -11,11 +11,11 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
-from .T04_show_plt import plot_efficient_frontier
-from .T02_other_tools import load_returns_from_excel, log
-from .T03_weight_limit_cal import level_weight_limit_cal
-from .T01_generate_random_weights import generate_weights_random_walk
-from .T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
+from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+from efficient_frontier_API.T02_other_tools import load_returns_from_excel, log
+from efficient_frontier_API.T03_weight_limit_cal import level_weight_limit_cal
+from efficient_frontier_API.T01_generate_random_weights import generate_weights_random_walk
+from efficient_frontier_API.T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
 
 ''' 预设计算参数 ---------------------------------------------------------------------------------------- '''
 RANDOM_SEED = 12345

@@ -19,10 +19,11 @@ B02_construct_category_yield.py
 import time
 import numpy as np
 import pandas as pd
+from sqlalchemy import text
 from typing import Dict, List, Tuple
 
-from .T02_other_tools import log
-from .T05_db_utils import (
+from efficient_frontier_API.T02_other_tools import log
+from efficient_frontier_API.T05_db_utils import (
     DatabaseConnectionPool,
     read_dataframe,
     get_active_db_url,
@@ -31,7 +32,7 @@ from .T05_db_utils import (
 )
 
 try:
-    from .Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+    from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 
@@ -228,4 +229,4 @@ if __name__ == '__main__':
     #     f"日期范围: {df['pct_yld_date'].min()} ~ {df['pct_yld_date'].max()}")
     print(df)
 ax()}")
-    print(df)
+print(df)
