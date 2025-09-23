@@ -96,7 +96,7 @@ export default function AssetClassConstructionPage() {
   const [pageSize, setPageSize] = useState(10)
   const [total, setTotal] = useState(0)
   const [fitLoading, setFitLoading] = useState(false)
-  const [startDate, setStartDate] = useState<string>('')
+  const [startDate, setStartDate] = useState<string>('2020-01-01')
   const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: number[][]; corr_labels: string[]; metrics: { name: string; annual_return: number; annual_vol: number; sharpe: number }[] }>(null)
 
   function updateClass(id: string, updater: (c: AssetClass) => AssetClass) {
@@ -465,8 +465,8 @@ export default function AssetClassConstructionPage() {
                     yAxis: {
                       type: 'value',
                       scale: true,
-                      min: (v:any) => v.min - (v.max - v.min) * 0.05,
-                      max: (v:any) => v.max + (v.max - v.min) * 0.05,
+                      min: (v:any) => (Number.isFinite(v.min) && Number.isFinite(v.max)) ? v.min - (v.max - v.min) * 0.05 : 'dataMin',
+                      max: (v:any) => (Number.isFinite(v.min) && Number.isFinite(v.max)) ? v.max + (v.max - v.min) * 0.05 : 'dataMax',
                     },
                     dataZoom: [
                       { type: 'inside' },
@@ -518,16 +518,16 @@ export default function AssetClassConstructionPage() {
               {(() => {
                 const classes = fitResult.metrics.map(m => m.name)
                 const rows = [
-                  { label: '年化收益率(%)', values: fitResult.metrics.map(m=> m.annual_return * 100) },
-                  { label: '年化波动率(%)', values: fitResult.metrics.map(m=> m.annual_vol * 100) },
-                  { label: '夏普比率', values: fitResult.metrics.map(m=> m.sharpe) },
-                  { label: '99%VaR(日)(%)', values: fitResult.metrics.map(m=> m.var99 * 100) },
-                  { label: '99%ES(日)(%)', values: fitResult.metrics.map(m=> m.es99 * 100) },
-                  { label: '最大回撤(%)', values: fitResult.metrics.map(m=> m.max_drawdown * 100) },
-                  { label: '卡玛比率', values: fitResult.metrics.map(m=> m.calmar) },
+                  { label: '年化收益率(%)', values: fitResult.metrics.map(m=> Number((m.annual_return ?? NaN) * 100)) },
+                  { label: '年化波动率(%)', values: fitResult.metrics.map(m=> Number((m.annual_vol ?? NaN) * 100)) },
+                  { label: '夏普比率', values: fitResult.metrics.map(m=> Number(m.sharpe ?? NaN)) },
+                  { label: '99%VaR(日)(%)', values: fitResult.metrics.map(m=> Number((m.var99 ?? NaN) * 100)) },
+                  { label: '99%ES(日)(%)', values: fitResult.metrics.map(m=> Number((m.es99 ?? NaN) * 100)) },
+                  { label: '最大回撤(%)', values: fitResult.metrics.map(m=> Number((m.max_drawdown ?? NaN) * 100)) },
+                  { label: '卡玛比率', values: fitResult.metrics.map(m=> Number(m.calmar ?? NaN)) },
                 ]
                 const color = (val:number, min:number, max:number) => {
-                  if (!isFinite(val)) return { background: '#f3f4f6', color: '#6b7280' }
+                  if (!Number.isFinite(val)) return { background: '#f3f4f6', color: '#6b7280' }
                   if (max <= min) return { background: '#d1fae5', color: '#065f46' }
                   const t = (val - min) / (max - min)
                   // 绿色渐变：低值浅， 高值深
@@ -549,14 +549,15 @@ export default function AssetClassConstructionPage() {
                       </thead>
                       <tbody>
                         {rows.map((row) => {
-                          const min = Math.min(...row.values.filter(v=>isFinite(v)))
-                          const max = Math.max(...row.values.filter(v=>isFinite(v)))
+                          const finiteVals = row.values.filter(v=> Number.isFinite(v))
+                          const min = finiteVals.length ? Math.min(...finiteVals) : 0
+                          const max = finiteVals.length ? Math.max(...finiteVals) : 0
                           return (
                             <tr key={'mr'+row.label}>
                               <td className="border px-2 py-3 font-medium">{row.label}</td>
                               {row.values.map((v,i)=> {
                                 const st = color(v, min, max)
-                                return <td key={'mc'+row.label+'-'+i} className="border px-2 py-3 text-right" style={{ background: st.background, color: st.color }}>{isFinite(v)? v.toFixed(2): '-'}</td>
+                                return <td key={'mc'+row.label+'-'+i} className="border px-2 py-3 text-right" style={{ background: st.background, color: st.color }}>{Number.isFinite(v)? v.toFixed(2): '-'}</td>
                               })}
                             </tr>
                           )
