@@ -74,48 +74,68 @@ def draw_plt_func(a_list, weight_df, ef_points, the_folder_path):
 def main(json_input) -> str:
     # json转字典
     try:
-        input_data = json.loads(json_input)['in_data']
+        try:
+            input_data = json.loads(json_input)['in_data']
+        except Exception as e:
+            input_data = json_input['in_data']
+        log(input_data)
+        # 提取资产列表和约束条件
+        asset_list = input_data["asset_list"]
+        weight_range = input_data["weight_range"]
+        # 读取本地400w个权重点的parquet文件
+        folder_path = os.path.dirname(os.path.abspath(__file__))
+        alloc_results = pd.read_parquet(os.path.join(folder_path, "alloc_results_400w.parquet"))
+        log(f"\n{alloc_results.head()}")
     except Exception as e:
-        log(f"输入 JSON 格式错误: {e} - {json_input}")
-        input_data = json_input['in_data']
-    log(input_data)
-    # 提取资产列表和约束条件
-    asset_list = input_data["asset_list"]
-    weight_range = input_data["weight_range"]
-    # 读取本地400w个权重点的parquet文件
-    folder_path = os.path.dirname(os.path.abspath(__file__))
-    alloc_results = pd.read_parquet(os.path.join(folder_path, "alloc_results_400w.parquet"))
-    log(f"\n{alloc_results.head()}")
+        return json.dumps({
+            "code": 1,
+            "msg": f"json 解析失败: {e}"
+        }, ensure_ascii=False)
 
     # ========== 1) 剔除不符合约束条件的权重点 ==========
-    key_cols = asset_list + ["ret_annual", "var_annual"]
-    alloc_results = alloc_results.dropna(subset=key_cols)  # 清理缺失值（权重或绩效为空则丢弃）
+    try:
+        key_cols = asset_list + ["ret_annual", "var_annual"]
+        alloc_results = alloc_results.dropna(subset=key_cols)  # 清理缺失值（权重或绩效为空则丢弃）
 
-    # 按权重上下限过滤（闭区间）
-    mask = np.ones(len(alloc_results), dtype=bool)
-    for a in asset_list:
-        lo, hi = weight_range.get(a, [0.0, 1.0])
-        mask &= (alloc_results[a] >= float(lo)) & (alloc_results[a] <= float(hi))
-    filtered = alloc_results.loc[mask].copy()
-    log(f"过滤后样本数: {len(filtered):,} / 原始 {len(alloc_results):,}")
+        # 按权重上下限过滤（闭区间）
+        mask = np.ones(len(alloc_results), dtype=bool)
+        for a in asset_list:
+            lo, hi = weight_range.get(a, [0.0, 1.0])
+            mask &= (alloc_results[a] >= float(lo)) & (alloc_results[a] <= float(hi))
+        filtered = alloc_results.loc[mask].copy()
+        log(f"过滤后样本数: {len(filtered):,} / 原始 {len(alloc_results):,}")
 
-    # 若没有满足条件的点，直接退出
-    if len(filtered) == 0:
-        return json.dumps({"error": "no_points_after_filter"}, ensure_ascii=False)
+        # 若没有满足条件的点，直接退出
+        if len(filtered) == 0:
+            return json.dumps({
+                "code": 1,
+                "msg": f"没有找到满足条件的点, 所有的权重点都超出了约束条件"
+            }, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"剔除不符合约束条件的权重点失败: {e}"
+        }, ensure_ascii=False)
 
     # ========== 2) 从剩余的权重点中找到有效前沿 ==========
-    cols_needed = asset_list + ["ret_annual", "var_annual"]
-    df = filtered[cols_needed].copy()
-    # 注意：原始 VaR 为负值（损失为负）。为了使用 cal_ef_mask（最小化“正向风险”），需取负号转为正值。
-    risk_positive = (-df["var_annual"].to_numpy())
-    mask_ef = cal_ef_mask(df["ret_annual"].to_numpy(), risk_positive)
-    ef = df.loc[mask_ef].copy()
-    log(f"有效前沿点数: {len(ef):,}")
-    log(f"\n{ef.head()}")
+    try:
+        cols_needed = asset_list + ["ret_annual", "var_annual"]
+        df = filtered[cols_needed].copy()
+        # 注意：原始 VaR 为负值（损失为负）。为了使用 cal_ef_mask（最小化“正向风险”），需取负号转为正值。
+        risk_positive = (-df["var_annual"].to_numpy())
+        mask_ef = cal_ef_mask(df["ret_annual"].to_numpy(), risk_positive)
+        ef = df.loc[mask_ef].copy()
+        log(f"有效前沿点数: {len(ef):,}")
+        log(f"\n{ef.head()}")
+    except Exception as e:
+        return json.dumps({
+            "code": 1,
+            "msg": f"从剩余的权重点中找到有效前沿失败: {e}"
+        }, ensure_ascii=False)
 
-    # ========== 3) 用 plotly 画出有效前沿 ==========
-    if draw_plt:
-        draw_plt_func(asset_list, df, ef, folder_path)
+    # # ========== 3) 用 plotly 画出有效前沿 ==========
+    # if draw_plt:
+    #     draw_plt_func(asset_list, df, ef, folder_path)
 
     # ========== 4) 将有效前沿结果以 JSON 格式输出 ==========
     # 输出每个前沿点的 风险/收益/权重（按 asset_list 顺序）
@@ -128,27 +148,32 @@ def main(json_input) -> str:
         }
         out_records.append(rec)
 
-    return json.dumps({
-        "asset_list": asset_list,
-        "count": len(out_records),
-        "frontier": out_records,
-    }, ensure_ascii=False)
+    res = {
+        "code": 0,
+        "msg": "",
+        "data": {
+            "asset_list": asset_list,
+            "count": len(out_records),
+            "frontier": out_records,
+        }
+    }
+    return json.dumps(res, ensure_ascii=False)
 
 
 if __name__ == '__main__':
     input_dict = {
         "in_data": {
-            "asset_list": ["货币", "固收", "混合", "权益", "另类"],
+            "asset_list": ["MM", "FI", "MIX", "EQ", "ALT"],
             # 大类资产列表, 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_cd 一致
             "weight_range": {
-                "货币": [  # 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_cd 一致
+                "MM": [  # 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_cd 一致
                     0.0,  # 代表权重下限%
                     1.0  # 代表权重上限%
                 ],
-                "固收": [0.0, 1.0],
-                "混合": [0.0, 0.5],
-                "权益": [0.0, 0.0],
-                "另类": [0.0, 0.0]
+                "FI": [0.0, 1.0],
+                "MIX": [0.0, 0.5],
+                "EQ": [0.0, 0.0],
+                "ALT": [0.0, 0.0]
             }
         }}
 
