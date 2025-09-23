@@ -16,6 +16,7 @@ from efficient_frontier_API import B02_construct_category_yield
 from efficient_frontier_API import A02_risk_boundaries_api
 from efficient_frontier_API import A03_ideal_portfolio_api
 from efficient_frontier_API import A05_find_ef_by_weights
+from efficient_frontier_API import A06_cal_market_ef
 from server.base import app, route_dic
 from views.base import JsonResBaseView
 from config_py import DEBUG
@@ -52,6 +53,11 @@ class WealthManage(JsonResBaseView):
     # 计算推荐组合
     def cal_ideal_portfolio(self, *args, **kwargs):
         res = A03_ideal_portfolio_api.main(kwargs)
+        return res
+
+    # 计算全市场有效前沿以及C1-C6标准组合点位
+    def cal_market_ef(self, *args, **kwargs):
+        res = A06_cal_market_ef.main(kwargs)
         return res
 
     def calculate_portfolio_performance(self, *args, **kwargs):
