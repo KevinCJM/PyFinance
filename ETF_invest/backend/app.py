@@ -91,13 +91,22 @@ def solve(req: SolveRequest):
     # 根据前端给的 code/name 匹配 ts_code/name
     series_list: List[pd.Series] = []
     labels: List[str] = []
+    def _code_nosfx(x: str) -> str:
+        xs = (x or "").strip()
+        if "." in xs:
+            return xs.split(".")[0]
+        return xs
+
     for item in req.etfs:
         code = (item.code or "").strip()
+        code_ns = _code_nosfx(code)
         name = (item.name or "").strip()
-        sub = df[(df["ts_code"].astype(str) == code) | (df["name"].astype(str) == name)]
-        if sub.empty:
-            # 松匹配：code 在 ts_code 中出现
-            sub = df[df["ts_code"].astype(str).str.contains(code, na=False)]
+        ts = df["ts_code"].astype(str)
+        nm = df["name"].astype(str)
+        sub = df[(ts == code) | (ts.str.split(".").str[0] == code_ns) | (nm == name)]
+        if sub.empty and code_ns:
+            # 松匹配：code 片段
+            sub = df[ts.str.contains(code_ns, na=False)]
         if sub.empty:
             continue
         # 以日期为索引，计算日收益率（使用复权净值）
@@ -107,7 +116,7 @@ def solve(req: SolveRequest):
         if s.empty:
             continue
         # 用原始 ts_code 作为列标签，便于对齐
-        label = str(sub.iloc[0]["ts_code"])
+        label = str(sub.iloc[0]["ts_code"])  # 使用 ts_code 作为内部标签
         s.index = range(len(s))  # 统一索引，后续用等长拼接
         series_list.append(s)
         labels.append(label)
@@ -130,56 +139,58 @@ def solve(req: SolveRequest):
     S = np.cov(X, rowvar=False, ddof=1)
 
     # 目标预算 b
-    rc_input = np.array([max(0.0, float(x.riskContribution)) for x in req.etfs], dtype=float)
-    # 只对成功匹配的资产提取对应预算（按 labels 顺序匹配到 req.etfs）
-    # 构建映射 ts_code->riskContribution
+    # 构建预算向量（与 labels 同序），同时兼容 code 无后缀/带后缀；name 作为兜底
     budget_map = {}
     for it in req.etfs:
-        budget_map[str(it.code)] = float(it.riskContribution)
-        budget_map[str(it.name)] = float(it.riskContribution)
+        c = (it.code or "").strip()
+        budget_map[c] = float(it.riskContribution)
+        budget_map[_code_nosfx(c)] = float(it.riskContribution)
+        budget_map[(it.name or "").strip()] = float(it.riskContribution)
     b = []
     for lab in labels:
-        b.append(float(budget_map.get(lab, 0.0)))
+        b.append(float(budget_map.get(lab, 0.0) or 0.0))
     b = np.array(b, dtype=float)
     if b.sum() <= 0:
         b = np.ones(n, dtype=float)
     b = b / b.sum()
 
-    # 风险预算求解：min 0.5 w^T S w - sum_i b_i log w_i, s.t. w>=eps, sum w = 1
-    eps = 1e-8
-    w = np.maximum(b.copy(), eps)
+    # 数值稳定：若协方差半正定，做轻微对角线缩减
+    try:
+        # 尝试 Cholesky 以检测正定性
+        np.linalg.cholesky(S + 1e-12 * np.eye(n))
+    except np.linalg.LinAlgError:
+        S = S + 1e-6 * np.eye(n)
+
+    # 固定点迭代：w_new ∝ b / (S w)
+    eps = 1e-12
+    w = b.copy()
+    w = np.maximum(w, eps)
     w = w / w.sum()
-    lr = 0.05
-    for _ in range(2000):
+    for _ in range(5000):
         Sw = S @ w
-        grad = Sw - (b / np.maximum(w, eps))
-        # 去掉等式约束的平均分量
-        grad = grad - grad.mean()
-        w_new = w - lr * grad
+        denom = np.maximum(Sw, eps)
+        w_new = b / denom
         w_new = np.maximum(w_new, eps)
-        w_new /= w_new.sum()
-        # 检查收敛（风险贡献比例接近目标）
-        Sw = S @ w_new
-        port_var = float(w_new @ Sw)
-        if port_var <= 0:
-            break
-        rc = (w_new * Sw) / port_var
-        if np.linalg.norm(rc - b, ord=1) < 1e-4:
+        w_new = w_new / w_new.sum()
+        if np.linalg.norm(w_new - w, ord=1) < 1e-8:
             w = w_new
             break
-        # 动态调整学习率（简单回溯）
-        if np.linalg.norm(w_new - w) < 1e-6:
-            lr *= 0.5
-            if lr < 1e-6:
-                w = w_new
-                break
-        w = w_new
+        w = 0.7 * w_new + 0.3 * w  # 适度松弛以增强稳定性
+    # 计算风险贡献以检验贴合度（非必须）
+    Sw = S @ w
+    port_var = float(w @ Sw)
+    if port_var > 0:
+        rc = (w * Sw) / port_var
+        # 若偏差很大，做最后一次牛顿修正（可选，略）
 
     # Map weights back to original input order; unknown assets get 0
     weight_map = {lab: float(wi) for lab, wi in zip(labels, w)}
     out = []
     for it in req.etfs:
-        key = str(it.code) if str(it.code) in weight_map else str(it.name)
+        code = (it.code or "").strip()
+        key = code if code in weight_map else _code_nosfx(code)
+        if key not in weight_map:
+            key = (it.name or "").strip()
         out.append(weight_map.get(key, 0.0))
 
     # 杠杆缩放
