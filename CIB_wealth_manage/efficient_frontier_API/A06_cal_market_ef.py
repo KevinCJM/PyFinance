@@ -240,7 +240,8 @@ def main(json_input: str) -> str:
         }
 
         success_response = {
-            "success": True,
+            "code": 0,
+            "msg": "",
             "data": {
                 "market_efficient_frontier": market_ef_data_filtered,
                 "standard_portfolios": standard_points
@@ -251,9 +252,8 @@ def main(json_input: str) -> str:
     except Exception as e:
         log(f"{traceback.format_exc()}")
         error_response = {
-            "success": False,
-            "error_code": "INTERNAL_SERVER_ERROR",
-            "message": f"计算过程中发生未知错误: {type(e).__name__} - {e}"
+            "code": 1,
+            "msg": f"INTERNAL_SERVER_ERROR, 计算过程中发生错误: {type(e).__name__} - {e}"
         }
         return json.dumps(error_response, ensure_ascii=False, indent=2)
 
