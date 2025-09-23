@@ -12,6 +12,7 @@ import pandas as pd
 from datetime import datetime
 
 from efficient_frontier_API import B01_cal_all_weights
+from efficient_frontier_API import B02_construct_category_yield
 from efficient_frontier_API import A05_find_ef_by_weights
 from server.base import app, route_dic
 from views.base import JsonResBaseView
@@ -25,13 +26,20 @@ class WealthManage(JsonResBaseView):
         return {"msg": "test ok"}
 
     # 计算有效前沿, 基于400w个权重点挑选
-    def calculate_efficient_frontier(self, *args, **kwargs):
+    def cal_efficient_frontier(self, *args, **kwargs):
         res = A05_find_ef_by_weights.main(kwargs)
         return res
 
     # 计算生成400w个权重点, 无结果返回, 直接落表
     def cal_all_weights(self, *args, **kwargs):
         res = B01_cal_all_weights.main()
+        # 返回: {"data": true, "code": 0, "msg": ""}
+        return res
+
+    # 用指数数据拟合大类资产的收益率, 无结果返回, 直接落表
+    def cal_asset_category_yield(self, *args, **kwargs):
+        res = B02_construct_category_yield.run()
+        # 返回: {"data": true, "code": 0, "msg": ""}
         return res
 
     def calculate_portfolio_performance(self, *args, **kwargs):

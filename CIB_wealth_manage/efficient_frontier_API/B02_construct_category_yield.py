@@ -110,7 +110,7 @@ def fetch_wind_index_eod(pool: DatabaseConnectionPool, codes: List[str]) -> pd.D
     return read_dataframe(pool, sql, params=params)
 
 
-def run() -> pd.DataFrame:
+def run():
     s_t = time.time()
     pool = _db_pool()
     ''' 1. 数据获取 ----------------------------------------------------------------------------- '''
@@ -219,7 +219,7 @@ def run() -> pd.DataFrame:
         })
     threaded_insert_dataframe(pool, datasets, max_workers=4)
     log(f"大类收益率数据拟合插入完成，耗时 {time.time() - s_t:.2f} 秒")
-    return result_df
+    return True
 
 
 if __name__ == '__main__':
@@ -228,5 +228,3 @@ if __name__ == '__main__':
     # log(f"共插入 {len(df)} 行 | 大类数: {df['aset_bclass_cd'].nunique()} | "
     #     f"日期范围: {df['pct_yld_date'].min()} ~ {df['pct_yld_date'].max()}")
     print(df)
-ax()}")
-print(df)
