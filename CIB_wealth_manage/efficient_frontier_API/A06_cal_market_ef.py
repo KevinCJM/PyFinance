@@ -23,6 +23,7 @@ except ImportError:
     from T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, \
         compute_var_parametric_arrays
 
+# --- Constants ---
 RANDOM_SEED = 12345
 ROUNDS_CONFIG = {
     0: {"init_mode": "exploration", "samples": 300, "step_size": 0.99},
@@ -42,6 +43,8 @@ VAR_PARAMS = {
 PRECISION_CHOICE: Optional[str] = None
 SLSQP_REFINE = {"enable": False, "n_grid": 1000}
 
+
+# --- Helper functions ---
 
 def _parse_series_from_dict(d):
     """将 {date->nav} 字典解析为 Series，日期自动解析，按时间升序，值为 float。"""
@@ -72,8 +75,8 @@ def _load_returns_from_nv(nv_dict, asset_list):
     return df_ret.values.astype(np.float32, copy=False)
 
 
-def calculate_single_port_metrics(weights_array, daily_returns, annual_trading_days, risk_metric, var_params):
-    """计算单个组合的指标"""
+def calculate_single_port_metrics(weights_array, daily_returns, annual_trading_days, var_params):
+    """计算单个组合的收益、波动率、VaR和夏普比率"""
     w_2d = np.asarray(weights_array).reshape(1, -1)
 
     ret_annual_arr, vol_annual_arr = compute_perf_arrays(
@@ -83,27 +86,29 @@ def calculate_single_port_metrics(weights_array, daily_returns, annual_trading_d
         return_type="log"
     )
     annual_ret = ret_annual_arr[0]
+    annual_vol = vol_annual_arr[0]
 
-    if (risk_metric or "vol").lower() == "var":
-        vp = var_params or {}
-        risk_arr = compute_var_parametric_arrays(
-            port_daily=daily_returns,
-            portfolio_allocs=w_2d,
-            confidence=float(vp.get("confidence", 0.95)),
-            horizon_days=float(vp.get("horizon_days", 1.0)),
-            return_type=str(vp.get("return_type", "log")),
-            ddof=int(vp.get("ddof", 1)),
-            clip_non_negative=bool(vp.get("clip_non_negative", True)),
-        )
-        annual_risk = risk_arr[0]
-    else:
-        annual_risk = vol_annual_arr[0]
+    sharpe_ratio = annual_ret / annual_vol if annual_vol > 1e-9 else 0.0
 
-    return annual_ret, annual_risk
+    vp = var_params or {}
+    var_arr = compute_var_parametric_arrays(
+        port_daily=daily_returns,
+        portfolio_allocs=w_2d,
+        confidence=float(vp.get("confidence", 0.95)),
+        horizon_days=float(vp.get("horizon_days", 1.0)),
+        return_type=str(vp.get("return_type", "log")),
+        ddof=int(vp.get("ddof", 1)),
+        clip_non_negative=bool(vp.get("clip_non_negative", True)),
+    )
+    annual_var = var_arr[0]
+
+    return annual_ret, annual_vol, annual_var, sharpe_ratio
 
 
 def format_hover_text(row, title, a_list):
-    text = f"<b>{title}</b><br>年化收益率: {row['ret_annual']:.2%}<br>年化风险: {row['risk_arr']:.2%}"
+    text = f"<b>{title}</b><br>年化收益率: {row['ret_annual']:.2%}<br>年化波动率: {row.get('vol_annual', float('nan')):.2%}<br>年化VaR: {row['risk_arr']:.2%}"
+    if 'sharpe_ratio' in row:
+        text += f"<br>夏普比率: {row['sharpe_ratio']:.2f}"
     text += "<br><br><b>--权重--</b><br>"
     for asset in a_list:
         if asset in row and pd.notna(row[asset]):
@@ -135,7 +140,7 @@ def create_plot_data(asset_list, market_ef_data, standard_points):
 
     if standard_points:
         df_standard_points = pd.DataFrame(standard_points)
-        df_standard_points = df_standard_points.rename(columns={'risk_value': 'risk_arr'})
+        df_standard_points = df_standard_points.rename(columns={'var_value': 'risk_arr'})
 
         weights_df = pd.DataFrame(df_standard_points['weights'].tolist(), columns=asset_list,
                                   index=df_standard_points.index)
@@ -197,15 +202,17 @@ def main(json_input: str) -> str:
         standard_points = []
         for name, w_dict in standard_proportion.items():
             weights = np.array([w_dict.get(asset, 0.0) for asset in asset_list])
-            ret, risk = calculate_single_port_metrics(weights, returns, TRADING_DAYS, RISK_METRIC, VAR_PARAMS)
+            ret, vol, var, sharpe = calculate_single_port_metrics(weights, returns, TRADING_DAYS, VAR_PARAMS)
             point_data = {
                 'name': name,
                 'weights': weights.tolist(),
                 'ret_annual': float(ret),
-                'risk_value': float(risk)
+                'vol_annual': float(vol),
+                'var_value': float(var),
+                'sharpe_ratio': float(sharpe)
             }
             standard_points.append(point_data)
-            log(f"计算完成: {name} - 收益率: {ret:.4f}, 风险: {risk:.4f}")
+            log(f"计算完成: {name} - 收益率: {ret:.4f}, 波动率: {vol:.4f}, VaR: {var:.4f}, 夏普比率: {sharpe:.4f}")
 
         if draw_plt:
             log("步骤 5: 准备绘图数据并生成图表...")
