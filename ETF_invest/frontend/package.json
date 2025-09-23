@@ -11,8 +11,8 @@
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "chart.js": "^4.4.4",
-    "react-chartjs-2": "^5.2.0"
+    "echarts": "^5.5.0",
+    "echarts-for-react": "^3.0.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",

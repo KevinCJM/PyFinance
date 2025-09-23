@@ -1,16 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react'
-import { Line } from 'react-chartjs-2'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Tooltip,
-  Legend,
-} from 'chart.js'
-
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
+import ReactECharts from 'echarts-for-react'
 
 type WeightMode = 'custom' | 'equal' | 'risk'
 type RiskMetric = 'vol' | 'var' | 'es'
@@ -464,65 +453,62 @@ export default function AssetClassConstructionPage() {
           <div className="mt-4 space-y-6">
             <div>
               <h3 className="text-sm font-semibold mb-2">虚拟净值走势（起始=1）</h3>
-              <Line data={{
-                labels: fitResult.dates,
-                datasets: Object.keys(fitResult.navs).map((k, i)=>({
-                  label: k,
-                  data: fitResult.navs[k],
-                  borderColor: ['#2563eb','#16a34a','#dc2626','#ea580c','#9333ea'][i%5],
-                  backgroundColor: 'transparent',
-                  borderWidth: 1.5,
-                  pointRadius: 0,
+              <ReactECharts style={{ height: 320 }} option={{
+                tooltip: { trigger: 'axis' },
+                legend: { bottom: 0 },
+                grid: { left: 40, right: 16, top: 16, bottom: 40 },
+                xAxis: { type: 'category', data: fitResult.dates, axisLabel: { showMaxLabel: true } },
+                yAxis: { type: 'value' },
+                dataZoom: [ { type: 'inside' }, { type: 'slider' } ],
+                series: Object.keys(fitResult.navs).map((k, i)=>({
+                  name: k,
+                  type: 'line',
+                  smooth: true,
+                  symbol: 'none',
+                  lineStyle: { width: 2 },
+                  data: fitResult.navs[k]
                 }))
-              }} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } }, scales: { x: { ticks: { maxTicksLimit: 8 } } } }} height={280} />
+              }} />
             </div>
             <div>
               <h3 className="text-sm font-semibold mb-2">相关系数矩阵</h3>
-              <div className="overflow-auto">
-                <table className="min-w-[400px] text-xs border">
-                  <thead>
-                    <tr>
-                      <th className="border px-2 py-1">大类</th>
-                      {fitResult.corr_labels.map((c)=>(<th key={'h'+c} className="border px-2 py-1">{c}</th>))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fitResult.corr_labels.map((rowName, rIdx)=> (
-                      <tr key={'r'+rowName}>
-                        <td className="border px-2 py-1 font-medium">{rowName}</td>
-                        {fitResult.corr[rIdx].map((v, cIdx)=> (
-                          <td key={'c'+rIdx+'-'+cIdx} className="border px-2 py-1 text-right">{v.toFixed(2)}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <ReactECharts style={{ height: 320 }} option={(function(){
+                const labels = fitResult.corr_labels
+                const data: any[] = []
+                for(let i=0;i<labels.length;i++){
+                  for(let j=0;j<labels.length;j++){
+                    data.push([i, j, Number(fitResult.corr[i][j])])
+                  }
+                }
+                return {
+                  tooltip: { position: 'top', formatter: (p:any)=> `${labels[p.data[1]]} vs ${labels[p.data[0]]}: ${Number(p.data[2]).toFixed(2)}` },
+                  grid: { left: 80, right: 16, top: 16, bottom: 40 },
+                  xAxis: { type: 'category', data: labels, axisLabel: { rotate: 30 } },
+                  yAxis: { type: 'category', data: labels },
+                  visualMap: { min: -1, max: 1, orient: 'horizontal', left: 'center', bottom: 0, inRange: { color: ['#b91c1c','#ffffff','#2563eb'] } },
+                  series: [{
+                    type: 'heatmap',
+                    data,
+                    label: { show: true, formatter: (p:any)=> Number(p.data[2]).toFixed(2), color: '#111827' },
+                    emphasis: { itemStyle: { shadowBlur: 5, shadowColor: 'rgba(0,0,0,0.3)' } }
+                  }]
+                }
+              })()} />
             </div>
             <div>
               <h3 className="text-sm font-semibold mb-2">横向指标对比</h3>
-              <div className="overflow-auto">
-                <table className="min-w-[400px] text-xs border">
-                  <thead>
-                    <tr>
-                      <th className="border px-2 py-1">大类</th>
-                      <th className="border px-2 py-1">年化收益率</th>
-                      <th className="border px-2 py-1">年化波动率</th>
-                      <th className="border px-2 py-1">夏普比率</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {fitResult.metrics.map((m)=> (
-                      <tr key={'m'+m.name}>
-                        <td className="border px-2 py-1">{m.name}</td>
-                        <td className="border px-2 py-1 text-right">{(m.annual_return*100).toFixed(2)}%</td>
-                        <td className="border px-2 py-1 text-right">{(m.annual_vol*100).toFixed(2)}%</td>
-                        <td className="border px-2 py-1 text-right">{m.sharpe.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <ReactECharts style={{ height: 320 }} option={{
+                tooltip: { trigger: 'axis' },
+                legend: { bottom: 0 },
+                grid: { left: 40, right: 16, top: 16, bottom: 40 },
+                xAxis: { type: 'category', data: fitResult.metrics.map(m=>m.name) },
+                yAxis: { type: 'value' },
+                series: [
+                  { name: '年化收益率(%)', type: 'bar', data: fitResult.metrics.map(m=> (m.annual_return*100).toFixed(2)) },
+                  { name: '年化波动率(%)', type: 'bar', data: fitResult.metrics.map(m=> (m.annual_vol*100).toFixed(2)) },
+                  { name: '夏普比率', type: 'bar', data: fitResult.metrics.map(m=> m.sharpe.toFixed(2)) },
+                ]
+              }} />
             </div>
           </div>
         )}
