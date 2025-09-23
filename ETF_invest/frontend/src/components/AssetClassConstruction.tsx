@@ -452,27 +452,30 @@ export default function AssetClassConstructionPage() {
         {fitResult && (
           <div className="mt-4 space-y-6">
             <div>
-              <h3 className="text-sm font-semibold mb-2">虚拟净值走势（起始=1）</h3>
               {(() => {
                 const keys = Object.keys(fitResult.navs)
-                const allVals = keys.flatMap(k => fitResult.navs[k])
-                const minV = Math.min(...allVals)
-                const maxV = Math.max(...allVals)
-                const pad = (maxV - minV) * 0.05 || 0.02
-                const yMin = Math.max(0, +(minV - pad).toFixed(2))
-                const yMax = +(maxV + pad).toFixed(2)
                 return (
-                  <ReactECharts style={{ height: 340 }} option={{
+                  <ReactECharts style={{ height: 360 }} option={{
+                    title: { text: '虚拟净值走势（起始=1）', left: 0, top: 0, textStyle: { fontSize: 13, fontWeight: 600 } },
                     tooltip: { trigger: 'axis' },
-                    legend: { bottom: 4 },
-                    grid: { left: 48, right: 16, top: 16, bottom: 70 },
-                    xAxis: { type: 'category', data: fitResult.dates, axisLabel: { showMaxLabel: true } },
-                    yAxis: { type: 'value', min: yMin, max: yMax },
-                    dataZoom: [ { type: 'inside' }, { type: 'slider', bottom: 28 } ],
+                    legend: { top: 0, right: 0 },
+                    grid: { left: 56, right: 16, top: 36, bottom: 86 },
+                    xAxis: { type: 'category', data: fitResult.dates, axisLabel: { showMaxLabel: true, hideOverlap: true, margin: 12 } },
+                    // 自动范围 + padding，通过函数形式按数据动态设置范围
+                    yAxis: {
+                      type: 'value',
+                      scale: true,
+                      min: (v:any) => v.min - (v.max - v.min) * 0.05,
+                      max: (v:any) => v.max + (v.max - v.min) * 0.05,
+                    },
+                    dataZoom: [
+                      { type: 'inside' },
+                      { type: 'slider', bottom: 36, height: 18 },
+                    ],
                     series: keys.map((k)=>({
                       name: k,
                       type: 'line',
-                      smooth: true,
+                      smooth: false, // 不使用平滑曲线
                       symbol: 'none',
                       lineStyle: { width: 2 },
                       data: fitResult.navs[k]
