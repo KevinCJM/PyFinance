@@ -139,7 +139,7 @@ def plot_combined_dashboard(original_nv: pd.DataFrame,
 
     fig.update_yaxes(title_text='虚拟净值', row=1, col=1)
     fig.update_yaxes(title_text='虚拟净值', row=2, col=1)
-
+    fig.write_html("大类资产构建分析.html")
     fig.show()
 
 
