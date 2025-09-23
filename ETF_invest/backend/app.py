@@ -11,7 +11,7 @@ from pathlib import Path
 import json
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
-from fit import ClassSpec, ETFSpec, compute_classes_nav
+from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
 
 
 class ETFIn(BaseModel):
@@ -53,6 +53,20 @@ class FitResponse(BaseModel):
     navs: dict
     corr: List[List[float]]
     corr_labels: List[str]
+    metrics: List[dict]
+
+
+class RollingRequest(BaseModel):
+    startDate: str
+    window: int = 60
+    targetCode: str
+    targetName: str
+    etfs: List[FitETFIn]
+
+
+class RollingResponse(BaseModel):
+    dates: List[str]
+    series: dict
     metrics: List[dict]
 
 
@@ -242,23 +256,65 @@ def fit_classes(req: FitRequest):
         for c in req.classes
     ]
     NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start)
+
+    def finite_or_none(x: float):
+        try:
+            if x is None:
+                return None
+            if isinstance(x, (int, float)) and (not (x != x) and abs(x) != float('inf')):
+                return float(x)
+        except Exception:
+            pass
+        # 处理 NaN/Inf
+        try:
+            import math
+            if isinstance(x, (int, float)) and (math.isfinite(x)):
+                return float(x)
+        except Exception:
+            pass
+        return None
+
     dates = [d.strftime("%Y-%m-%d") for d in NAV.index]
-    navs = {col: [float(x) for x in NAV[col].tolist()] for col in NAV.columns}
+    navs = {col: [finite_or_none(float(x)) for x in NAV[col].tolist()] for col in NAV.columns}
     corr_labels = list(corr.columns)
-    corr_vals = corr.values.tolist()
+    corr_vals = [[finite_or_none(float(v)) or 0.0 for v in row] for row in corr.values.tolist()]
     metrics_out = []
     for name, row in metrics.iterrows():
         metrics_out.append({
             "name": str(name),
-            "annual_return": float(row.get("年化收益率", float("nan"))),
-            "annual_vol": float(row.get("年化波动率", float("nan"))),
-            "sharpe": float(row.get("夏普比率", float("nan"))),
-            "var99": float(row.get("99%VaR(日)", float("nan"))),
-            "es99": float(row.get("99%ES(日)", float("nan"))),
-            "max_drawdown": float(row.get("最大回撤", float("nan"))),
-            "calmar": float(row.get("卡玛比率", float("nan"))),
+            "annual_return": finite_or_none(row.get("年化收益率", None)),
+            "annual_vol": finite_or_none(row.get("年化波动率", None)),
+            "sharpe": finite_or_none(row.get("夏普比率", None)),
+            "var99": finite_or_none(row.get("99%VaR(日)", None)),
+            "es99": finite_or_none(row.get("99%ES(日)", None)),
+            "max_drawdown": finite_or_none(row.get("最大回撤", None)),
+            "calmar": finite_or_none(row.get("卡玛比率", None)),
         })
     return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out)
+
+
+@app.post("/api/rolling-corr", response_model=RollingResponse)
+def rolling_corr(req: RollingRequest):
+    try:
+        start = pd.to_datetime(req.startDate)
+    except Exception:
+        raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
+    etfs = [ETFSpec(code=e.code, name=e.name, weight=float(e.weight)) for e in req.etfs]
+    idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName)
+    dates = [d.strftime("%Y-%m-%d") for d in idx]
+    # 清理 NaN/Inf
+    safe_series = {k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for k, v in series_map.items()}
+    for m in metrics:
+        for k in list(m.keys()):
+            if k == 'name':
+                continue
+            v = m[k]
+            try:
+                if not (isinstance(v, (int, float)) and v == v and abs(v) != float('inf')):
+                    m[k] = 0.0
+            except Exception:
+                m[k] = 0.0
+    return RollingResponse(dates=dates, series=safe_series, metrics=metrics)
 
 
 # -------------------- ETF Universe from data/ --------------------

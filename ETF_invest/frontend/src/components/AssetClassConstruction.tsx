@@ -97,7 +97,12 @@ export default function AssetClassConstructionPage() {
   const [total, setTotal] = useState(0)
   const [fitLoading, setFitLoading] = useState(false)
   const [startDate, setStartDate] = useState<string>('2020-01-01')
-  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: number[][]; corr_labels: string[]; metrics: { name: string; annual_return: number; annual_vol: number; sharpe: number }[] }>(null)
+  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: number[][]; corr_labels: string[]; metrics: { name: string; annual_return?: number; annual_vol?: number; sharpe?: number; var99?: number; es99?: number; max_drawdown?: number; calmar?: number }[] }>(null)
+  const [rollLoading, setRollLoading] = useState(false)
+  const [rollResult, setRollResult] = useState<null | { dates: string[]; series: Record<string, number[]>; metrics: { name: string; sum:number; mean:number; median:number; std:number; skew:number; kurtosis:number }[] }>(null)
+  const [rollWindow, setRollWindow] = useState<number>(60)
+  const allEtfs = useMemo(()=> Array.from(new Map(classes.flatMap(c=> c.etfs.map(e=> [e.code+e.name, e]))).values()), [classes])
+  const [rollTarget, setRollTarget] = useState<{code:string, name:string} | null>(null)
 
   function updateClass(id: string, updater: (c: AssetClass) => AssetClass) {
     setClasses((prev) => prev.map((c) => (c.id === id ? updater(c) : c)))
@@ -239,6 +244,30 @@ export default function AssetClassConstructionPage() {
     }
   }
 
+  async function onRoll() {
+    if (!rollTarget) {
+      alert('请选择研究对象ETF')
+      return
+    }
+    try {
+      setRollLoading(true)
+      setRollResult(null)
+      const etfs = allEtfs.map(e=> ({ code: e.code, name: e.name, weight: Number(e.weight||0) }))
+      const resp = await fetch('/api/rolling-corr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDate, window: rollWindow, targetCode: rollTarget.code, targetName: rollTarget.name, etfs })
+      })
+      if (!resp.ok) throw new Error(`后端错误 ${resp.status}`)
+      const data = await resp.json()
+      setRollResult(data)
+    } catch (e:any) {
+      alert('滚动相关性计算失败：' + (e?.message||e))
+    } finally {
+      setRollLoading(false)
+    }
+  }
+
   useEffect(() => {
     try {
       const ew = equalWeights(3)
@@ -330,7 +359,7 @@ export default function AssetClassConstructionPage() {
     return () => controller.abort()
   }, [searchQuery, sortBy, sortDir, page, pageSize])
 
-  const busy = loading || fitLoading
+  const busy = loading || fitLoading || rollLoading
 
   return (
     <div className="mx-auto max-w-5xl p-6 relative">
@@ -363,7 +392,7 @@ export default function AssetClassConstructionPage() {
             />
           ))}
 
-          <button className="w-full rounded-xl border border-dashed border-gray-300 py-3 text-sm hover:bg-gray-50" onClick={addAssetClass}>
+          <button className="w-full rounded-xl border border-dashed border-gray-300 py-3 text-sm bg-blue-50/50 hover:bg-blue-50" onClick={addAssetClass}>
             + 添加新大类
           </button>
         </div>
@@ -457,7 +486,7 @@ export default function AssetClassConstructionPage() {
                 return (
                   <ReactECharts style={{ height: 360 }} option={{
                     title: { text: '虚拟净值走势（起始=1）', left: 0, top: 0, textStyle: { fontSize: 13, fontWeight: 600 } },
-                    tooltip: { trigger: 'axis' },
+                    tooltip: { trigger: 'axis', valueFormatter: (v:any)=> Number(v).toFixed(2) },
                     legend: { top: 0, right: 0 },
                     grid: { left: 56, right: 16, top: 36, bottom: 86 },
                     xAxis: { type: 'category', data: fitResult.dates, axisLabel: { showMaxLabel: true, hideOverlap: true, margin: 12 } },
@@ -467,6 +496,7 @@ export default function AssetClassConstructionPage() {
                       scale: true,
                       min: (v:any) => (Number.isFinite(v.min) && Number.isFinite(v.max)) ? v.min - (v.max - v.min) * 0.05 : 'dataMin',
                       max: (v:any) => (Number.isFinite(v.min) && Number.isFinite(v.max)) ? v.max + (v.max - v.min) * 0.05 : 'dataMax',
+                      axisLabel: { formatter: (val:any)=> Number(val).toFixed(2) },
                     },
                     dataZoom: [
                       { type: 'inside' },
@@ -567,6 +597,71 @@ export default function AssetClassConstructionPage() {
                   </div>
                 )
               })()}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 滚动相关性研究 */}
+      <div className="mt-6 rounded-2xl border border-gray-200 bg-white p-4">
+        <SectionTitle title="滚动相关性研究" />
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2 text-sm">
+            <label className="text-gray-700">滚动天数</label>
+            <input type="number" min={5} step={1} className="border rounded px-2 py-1 w-24 text-right" value={rollWindow} onChange={(e)=> setRollWindow(Number(e.target.value)||60)} />
+          </div>
+          <div className="flex items-center gap-2 text-sm">
+            <label className="text-gray-700">研究对象</label>
+            <select className="border rounded px-2 py-1" value={rollTarget?.code||''} onChange={(e)=>{
+              const obj = allEtfs.find(x=> x.code===e.target.value)
+              setRollTarget(obj? {code: obj.code, name: obj.name}: null)
+            }}>
+              <option value="">请选择</option>
+              {allEtfs.map(e=> <option key={e.code} value={e.code}>{e.code} - {e.name}</option>)}
+            </select>
+          </div>
+          <button className="rounded-md bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700" onClick={onRoll} disabled={busy}>
+            计算滚动相关性
+          </button>
+        </div>
+        {rollResult && (
+          <div className="mt-4 space-y-4">
+            <ReactECharts style={{ height: 320 }} option={{
+              tooltip: { trigger: 'axis', valueFormatter: (v:any)=> Number(v).toFixed(2) },
+              legend: { bottom: 0 },
+              grid: { left: 48, right: 16, top: 16, bottom: 40 },
+              xAxis: { type: 'category', data: rollResult.dates },
+              yAxis: { type: 'value', min: -1, max: 1 },
+              dataZoom: [{ type: 'inside' }, { type: 'slider' }],
+              series: Object.keys(rollResult.series).map(k=> ({ name:k, type:'line', symbol:'none', data: rollResult.series[k] }))
+            }} />
+            <div className="overflow-auto">
+              <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
+                <thead>
+                  <tr>
+                    <th className="border px-2 py-2">ETF</th>
+                    <th className="border px-2 py-2">总相关系数</th>
+                    <th className="border px-2 py-2">均值</th>
+                    <th className="border px-2 py-2">中位数</th>
+                    <th className="border px-2 py-2">标准差</th>
+                    <th className="border px-2 py-2">偏度</th>
+                    <th className="border px-2 py-2">峰度</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rollResult.metrics.map(m=> (
+                    <tr key={m.name}>
+                      <td className="border px-2 py-2">{m.name}</td>
+                      <td className="border px-2 py-2 text-right">{Number.isFinite(m.sum)? m.sum.toFixed(2): '-'}</td>
+                      <td className="border px-2 py-2 text-right">{Number.isFinite(m.mean)? m.mean.toFixed(2): '-'}</td>
+                      <td className="border px-2 py-2 text-right">{Number.isFinite(m.median)? m.median.toFixed(2): '-'}</td>
+                      <td className="border px-2 py-2 text-right">{Number.isFinite(m.std)? m.std.toFixed(2): '-'}</td>
+                      <td className="border px-2 py-2 text-right">{Number.isFinite(m.skew)? m.skew.toFixed(2): '-'}</td>
+                      <td className="border px-2 py-2 text-right">{Number.isFinite(m.kurtosis)? m.kurtosis.toFixed(2): '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Iterable
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import math
 
 
 @dataclass
@@ -28,17 +29,43 @@ def _code_nosfx(x: str) -> str:
     return xs
 
 
-def _load_adj_nav(data_dir: Path) -> pd.DataFrame:
+def _load_adj_nav(data_dir: Path, codes: Iterable[str], names: Iterable[str]) -> pd.DataFrame:
+    """高效读取：只取所需列，尽量用 filters 过滤所需 code/name（pyarrow 引擎）。"""
     pq = data_dir / "etf_daily_df.parquet"
     if not pq.exists():
         raise FileNotFoundError("data/etf_daily_df.parquet 不存在")
-    df = pd.read_parquet(pq)
-    for c in ["ts_code", "name", "date", "adj_nav"]:
+    cols = ["ts_code", "name", "date", "adj_nav"]
+    # 使用 pyarrow 过滤（OR 组合）
+    codes = [c for c in set(codes) if c]
+    names = [n for n in set(names) if n]
+    df: pd.DataFrame
+    try:
+        filters = None
+        # pandas.read_parquet(filters=...) 需要 engine='pyarrow'
+        filt_list = []
+        if codes:
+            filt_list.append([("ts_code", "in", codes)])
+        if names:
+            filt_list.append([("name", "in", names)])
+        if filt_list:
+            filters = filt_list  # 这是 OR 逻辑
+        df = pd.read_parquet(pq, columns=cols, engine="pyarrow", filters=filters)
+        if df.empty and not (codes or names):
+            # 兜底情况
+            df = pd.read_parquet(pq, columns=cols, engine="pyarrow")
+    except Exception:
+        # 回退：读取列后再 pandas 过滤
+        df = pd.read_parquet(pq, columns=cols)
+        if codes:
+            df = df[df["ts_code"].astype(str).isin(codes)]
+        if names:
+            df = pd.concat([df, df[df["name"].astype(str).isin(names)]], axis=0).drop_duplicates()
+    # 规范
+    for c in cols:
         if c not in df.columns:
             raise ValueError(f"parquet 缺少必要列：{c}")
-    df = df[["ts_code", "name", "date", "adj_nav"]].copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date", "adj_nav"])  # 保留有效数据
+    df = df.dropna(subset=["date", "adj_nav"]).sort_values("date")
     return df
 
 
@@ -73,74 +100,102 @@ def compute_classes_nav(
     - corr_df: 各大类收益率相关系数矩阵
     - metrics_df: 各大类年化收益、年化波动、夏普
     """
-    df = _load_adj_nav(data_dir)
+    # 收集所需 code/name 以做过滤
+    want_codes = []
+    want_names = []
+    for c in classes:
+        for e in c.etfs:
+            if e.weight is None:
+                continue
+            want_codes.append(e.code)
+            want_names.append(e.name)
+    df = _load_adj_nav(data_dir, want_codes, want_names)
 
-    # 构建每个大类的日收益率（对齐起始日期后共同对齐）
+    # 先构造宽表（日期 x ts_code）便于矢量化
+    piv = df.pivot_table(index="date", columns="ts_code", values="adj_nav", aggfunc="last").sort_index()
+    ret_wide = piv.pct_change().iloc[1:]  # 第一行为 NaN 去掉
+    # 过滤开始日期
+    ret_wide = ret_wide.loc[ret_wide.index >= start_date]
+    ret_wide = ret_wide.fillna(0.0)
+
+    # 为每个输入 ETF 找到对应的 ts_code 列名
+    ts_list = list(ret_wide.columns.astype(str))
+    def map_to_ts(code: str, name: str) -> Optional[str]:
+        if code in ts_list:
+            return code
+        ns = _code_nosfx(code)
+        if ns in ts_list:
+            return ns
+        # 回退：用 name 匹配（只能在原 df 里找一次）
+        sub = df[(df["name"].astype(str) == name)]
+        if not sub.empty:
+            return str(sub.iloc[0]["ts_code"])
+        # 再回退：包含关系
+        cand = [c for c in ts_list if ns and ns in str(c)]
+        return cand[0] if cand else None
+
+    # 矢量化计算每个大类收益：R * w
     class_ret: Dict[str, pd.Series] = {}
     for c in classes:
-        # 选中资产：需要 weight>0，求归一化权重
-        valid = [e for e in c.etfs if e.weight is not None]
-        if not valid:
+        if not c.etfs:
             continue
-        w = np.array([max(0.0, float(e.weight)) for e in valid], dtype=float)
-        sw = w.sum()
-        if sw <= 0:
-            continue
-        w = w / sw
-
-        # 每个 ETF 的收益序列
-        series = []
-        for e in valid:
-            s = _pick_series(df, e.code, e.name)
-            if s is None:
+        cols = []
+        wgt = []
+        for e in c.etfs:
+            if e.weight is None:
                 continue
-            r = _returns_from_adj_nav(s)
-            series.append(r)
-        if not series:
+            col = map_to_ts(str(e.code), str(e.name))
+            if col is None or col not in ret_wide.columns:
+                continue
+            cols.append(col)
+            wgt.append(max(0.0, float(e.weight)))
+        if not cols:
             continue
-        # 从 start_date 起裁剪
-        series = [s[s.index >= start_date] for s in series]
-        # 对齐：内联并填充缺失为 0（也可选择丢弃缺失日，这里用 0 近似）
-        ret_df = pd.concat(series, axis=1).fillna(0.0)
-        ret_df.columns = [f"a{i}" for i in range(len(ret_df.columns))]
-        # 加权求大类收益率
-        w_aligned = w[: ret_df.shape[1]]
-        agg = (ret_df * w_aligned).sum(axis=1)
+        w = np.array(wgt, dtype=float)
+        s = w.sum()
+        if s <= 0:
+            continue
+        w = w / s  # 归一化到 1
+        sub = ret_wide[cols]
+        # matrix dot: 每列按权重相加
+        agg = pd.Series(sub.to_numpy() @ w, index=sub.index)
         class_ret[c.name] = agg
 
     if not class_ret:
         raise ValueError("没有可用的大类收益率：请检查权重或数据匹配。")
 
     # 对齐所有大类的收益率（内联），并据此计算 nav/corr/metrics
-    R = pd.DataFrame(class_ret).dropna(how="all")
+    R = pd.DataFrame(class_ret).sort_index()
+    if R.empty:
+        raise ValueError("没有可用的大类收益率：请检查权重或数据匹配。")
     R = R.fillna(0.0)
     # nav 从 1 开始
     NAV = (1 + R).cumprod()
     NAV.iloc[0] = 1.0
 
     # 相关系数
-    corr = R.corr()
+    corr = R.corr().fillna(0.0).clip(-1.0, 1.0)
 
     # 指标（年化）
     ann_factor = 252.0
     mean = R.mean() * ann_factor
     vol = R.std(ddof=1) * np.sqrt(ann_factor)
-    sharpe = mean / vol.replace(0, np.nan)
+    sharpe = mean.divide(vol.replace(0, np.nan))
     # 风险指标（基于日收益）
     q01 = R.quantile(0.01)
     var99 = -q01  # 损失为正值
-    es99_vals = []
+    es99_vals: List[float] = []
     for col in R.columns:
         q = q01[col]
         tail = R[col][R[col] <= q]
-        es = -tail.mean() if len(tail) > 0 else np.nan
+        es = -float(tail.mean()) if len(tail) > 0 else float("nan")
         es99_vals.append(es)
     es99 = pd.Series(es99_vals, index=R.columns)
     # 最大回撤与卡玛（基于 NAV）
     roll_max = NAV.cummax()
     drawdown = NAV / roll_max - 1.0
     max_dd = drawdown.min()  # 负值
-    calmar = mean / max_dd.abs().replace(0, np.nan)
+    calmar = mean.divide(max_dd.abs().replace(0, np.nan))
     metrics = pd.DataFrame({
         "年化收益率": mean,
         "年化波动率": vol,
@@ -150,4 +205,87 @@ def compute_classes_nav(
         "最大回撤": max_dd,
         "卡玛比率": calmar,
     })
+    # 清理潜在的 inf/NaN（前端/JSON 不接受 NaN/inf）
+    metrics = metrics.replace([np.inf, -np.inf], np.nan)
     return NAV, corr, metrics
+
+
+def compute_rolling_corr(
+    data_dir: Path,
+    etfs: List[ETFSpec],
+    start_date: pd.Timestamp,
+    window: int,
+    target_code: str,
+    target_name: str,
+) -> Tuple[pd.DatetimeIndex, Dict[str, np.ndarray], List[Dict[str, float]]]:
+    """
+    以研究对象（target）为主，计算其余各个 ETF 与它的滚动相关系数。
+    返回： (dates, series_map, metrics_list)
+      - dates: 对齐后的日期索引
+      - series_map: {other_label: rolling_corr_array}
+      - metrics_list: 每个 other 的统计 {name, sum, mean, median, std, skew, kurtosis}
+    """
+    if window <= 1:
+        raise ValueError("window 必须 > 1")
+    # 过滤有权重或至少存在的 etf 列表
+    codes = [e.code for e in etfs]
+    names = [e.name for e in etfs]
+    df = _load_adj_nav(data_dir, codes, names)
+    piv = df.pivot_table(index="date", columns="ts_code", values="adj_nav", aggfunc="last").sort_index()
+    ret = piv.pct_change().iloc[1:]
+    ret = ret.loc[ret.index >= start_date]
+    ret = ret.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    # 确定 target 列
+    ts_cols = list(ret.columns.astype(str))
+    tgt = None
+    if target_code in ts_cols:
+        tgt = target_code
+    elif _code_nosfx(target_code) in ts_cols:
+        tgt = _code_nosfx(target_code)
+    else:
+        sub = df[df["name"].astype(str) == target_name]
+        if not sub.empty:
+            tgt = str(sub.iloc[0]["ts_code"])
+    if (tgt is None) or (tgt not in ret.columns):
+        raise ValueError("未能找到研究对象的收益序列")
+
+    base = ret[tgt]
+    # 计算滚动相关：对每个其他列进行 rolling.corr(base)
+    series_map: Dict[str, np.ndarray] = {}
+    metrics_list: List[Dict[str, float]] = []
+    for col in ret.columns:
+        if col == tgt:
+            continue
+        rc = ret[col].rolling(window).corr(base)
+        rc = rc.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        series_map[col] = rc.to_numpy()
+        arr = rc.to_numpy()
+        finite = arr[np.isfinite(arr)]
+        if finite.size == 0:
+            metrics = {"name": col, "sum": 0.0, "mean": 0.0, "median": 0.0, "std": 0.0, "skew": 0.0, "kurtosis": 0.0}
+        else:
+            mean = float(np.mean(finite))
+            median = float(np.median(finite))
+            std = float(np.std(finite, ddof=1)) if finite.size > 1 else 0.0
+            # 偏度、峰度（过量峰度）
+            if finite.size > 2:
+                m3 = float(((finite - mean) ** 3).mean())
+                m2 = float(((finite - mean) ** 2).mean())
+                skew = m3 / (m2 ** 1.5 + 1e-12)
+                m4 = float(((finite - mean) ** 4).mean())
+                kurt = m4 / (m2 ** 2 + 1e-12) - 3.0
+            else:
+                skew = 0.0
+                kurt = 0.0
+            metrics = {
+                "name": col,
+                "sum": float(np.sum(finite)),
+                "mean": mean,
+                "median": median,
+                "std": std,
+                "skew": float(skew),
+                "kurtosis": float(kurt),
+            }
+        metrics_list.append(metrics)
+    return ret.index, series_map, metrics_list
