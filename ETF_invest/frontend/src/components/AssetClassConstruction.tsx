@@ -181,7 +181,7 @@ export default function AssetClassConstructionPage() {
         ...c,
         etfs: c.etfs.map((e, i) => ({ ...e, weight: round2(Math.max(0, data.weights[i])), solved: true })),
       }))
-      alert('反推资金权重已计算并写入')
+      // 成功后直接回显（不弹窗）
     } catch (err: any) {
       console.error(err)
       alert('计算失败：' + err.message + '\n请确认已启动 Python 后端 (POST /api/risk-parity/solve)。')
@@ -527,7 +527,7 @@ function AssetClassCard({
 
       <div className="grid grid-cols-12 items-center gap-2 px-3 py-2 text-xs text-gray-500">
         <div className="col-span-7">ETF</div>
-        <div className="col-span-3 text-right">{isRisk ? (showSolved ? '风险贡献（%） / 权重（%）' : '风险贡献（%）') : '权重（%）'}</div>
+        <div className="col-span-3 text-right">{isRisk ? (showSolved ? '风险贡献（%） / 资金权重（%）' : '风险贡献（%）') : '权重（%）'}</div>
         <div className="col-span-2 text-right">操作</div>
       </div>
 
@@ -575,7 +575,7 @@ function AssetClassCard({
                     className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-sm"
                   />
                   <span className="text-sm text-gray-500">%</span>
-                  {showSolved && <span className="text-xs text-gray-500">/ 权重 {(e.weight ?? 0).toFixed(2)}%</span>}
+                  {showSolved && <span className="text-xs text-gray-500">/ 资金权重 {(e.weight ?? 0).toFixed(2)}%</span>}
                 </div>
               )}
             </div>
@@ -619,6 +619,9 @@ function AssetClassCard({
               风险贡献合计： {sumRisk.toFixed(2)}%
             </span>
             {sumRisk !== 100 && <span className="ml-2 text-yellow-700">（需等于 100%）</span>}
+            {showSolved && (
+              <span className="ml-3 rounded-md bg-blue-50 px-2 py-0.5 text-blue-700">资金权重合计： {sumWeight.toFixed(2)}%</span>
+            )}
           </>
         )}
       </div>
