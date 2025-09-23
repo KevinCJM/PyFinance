@@ -126,10 +126,28 @@ def compute_classes_nav(
     mean = R.mean() * ann_factor
     vol = R.std(ddof=1) * np.sqrt(ann_factor)
     sharpe = mean / vol.replace(0, np.nan)
+    # 风险指标（基于日收益）
+    q01 = R.quantile(0.01)
+    var99 = -q01  # 损失为正值
+    es99_vals = []
+    for col in R.columns:
+        q = q01[col]
+        tail = R[col][R[col] <= q]
+        es = -tail.mean() if len(tail) > 0 else np.nan
+        es99_vals.append(es)
+    es99 = pd.Series(es99_vals, index=R.columns)
+    # 最大回撤与卡玛（基于 NAV）
+    roll_max = NAV.cummax()
+    drawdown = NAV / roll_max - 1.0
+    max_dd = drawdown.min()  # 负值
+    calmar = mean / max_dd.abs().replace(0, np.nan)
     metrics = pd.DataFrame({
         "年化收益率": mean,
         "年化波动率": vol,
         "夏普比率": sharpe,
+        "99%VaR(日)": var99,
+        "99%ES(日)": es99,
+        "最大回撤": max_dd,
+        "卡玛比率": calmar,
     })
     return NAV, corr, metrics
-

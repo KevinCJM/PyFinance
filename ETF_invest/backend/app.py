@@ -250,9 +250,13 @@ def fit_classes(req: FitRequest):
     for name, row in metrics.iterrows():
         metrics_out.append({
             "name": str(name),
-            "annual_return": float(row["年化收益率"]),
-            "annual_vol": float(row["年化波动率"]),
-            "sharpe": float(row["夏普比率"]),
+            "annual_return": float(row.get("年化收益率", float("nan"))),
+            "annual_vol": float(row.get("年化波动率", float("nan"))),
+            "sharpe": float(row.get("夏普比率", float("nan"))),
+            "var99": float(row.get("99%VaR(日)", float("nan"))),
+            "es99": float(row.get("99%ES(日)", float("nan"))),
+            "max_drawdown": float(row.get("最大回撤", float("nan"))),
+            "calmar": float(row.get("卡玛比率", float("nan"))),
         })
     return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out)
 

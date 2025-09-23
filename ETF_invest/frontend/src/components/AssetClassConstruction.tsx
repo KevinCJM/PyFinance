@@ -521,6 +521,10 @@ export default function AssetClassConstructionPage() {
                   { label: '年化收益率(%)', values: fitResult.metrics.map(m=> m.annual_return * 100) },
                   { label: '年化波动率(%)', values: fitResult.metrics.map(m=> m.annual_vol * 100) },
                   { label: '夏普比率', values: fitResult.metrics.map(m=> m.sharpe) },
+                  { label: '99%VaR(日)(%)', values: fitResult.metrics.map(m=> m.var99 * 100) },
+                  { label: '99%ES(日)(%)', values: fitResult.metrics.map(m=> m.es99 * 100) },
+                  { label: '最大回撤(%)', values: fitResult.metrics.map(m=> m.max_drawdown * 100) },
+                  { label: '卡玛比率', values: fitResult.metrics.map(m=> m.calmar) },
                 ]
                 const color = (val:number, min:number, max:number) => {
                   if (!isFinite(val)) return { background: '#f3f4f6', color: '#6b7280' }
@@ -536,11 +540,11 @@ export default function AssetClassConstructionPage() {
                 }
                 return (
                   <div className="overflow-auto">
-                    <table className="min-w-[480px] text-xs border">
+                    <table className="text-xs border" style={{ width: '100%', tableLayout: 'fixed' }}>
                       <thead>
                         <tr>
-                          <th className="border px-2 py-1">指标</th>
-                          {classes.map(c => <th key={'mh'+c} className="border px-2 py-1">{c}</th>)}
+                          <th className="border px-2 py-2">指标</th>
+                          {classes.map(c => <th key={'mh'+c} className="border px-2 py-2">{c}</th>)}
                         </tr>
                       </thead>
                       <tbody>
@@ -549,10 +553,10 @@ export default function AssetClassConstructionPage() {
                           const max = Math.max(...row.values.filter(v=>isFinite(v)))
                           return (
                             <tr key={'mr'+row.label}>
-                              <td className="border px-2 py-1 font-medium">{row.label}</td>
+                              <td className="border px-2 py-3 font-medium">{row.label}</td>
                               {row.values.map((v,i)=> {
                                 const st = color(v, min, max)
-                                return <td key={'mc'+row.label+'-'+i} className="border px-2 py-1 text-right" style={{ background: st.background, color: st.color }}>{isFinite(v)? v.toFixed(2): '-'}</td>
+                                return <td key={'mc'+row.label+'-'+i} className="border px-2 py-3 text-right" style={{ background: st.background, color: st.color }}>{isFinite(v)? v.toFixed(2): '-'}</td>
                               })}
                             </tr>
                           )
