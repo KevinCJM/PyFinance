@@ -1,4 +1,4 @@
-CREATE TABLE iis_wght_cfg_attc_mdl
+CREATE TABLE iis_wght_cnfg_attc_mdl
 (
     mdl_ver_id       varchar(64) NOT NULL COMMENT '模型编号',
     mdl_nm           varchar(100)  DEFAULT NULL COMMENT '模型名称',

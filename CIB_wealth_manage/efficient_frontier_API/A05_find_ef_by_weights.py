@@ -82,9 +82,9 @@ def main(json_input) -> str:
         # 提取资产列表和约束条件
         asset_list = input_data["asset_list"]
         weight_range = input_data["weight_range"]
-        # 读取本地400w个权重点的parquet文件
-        folder_path = os.path.dirname(os.path.abspath(__file__))
-        alloc_results = pd.read_parquet(os.path.join(folder_path, "alloc_results_400w.parquet"))
+        # 读取本地400w个权重点的 pickle 文件
+        folder_path = os.path.dirname(os.path.abspath("__file__"))
+        alloc_results = pd.read_pickle(os.path.join(folder_path, "alloc_results_400w.pkl"))
         log(f"\n{alloc_results.head()}")
     except Exception as e:
         return json.dumps({

@@ -616,7 +616,7 @@ def fetch_returns_from_db(mdl_ver_id: str,
 
 
 def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
-    """从 iis_wght_cfg_attc_mdl 表中获取第一条 mdl_ver_id、cal_strt_dt、cal_end_dt。
+    """从 iis_wght_cnfg_attc_mdl 表中获取第一条 mdl_ver_id、cal_strt_dt、cal_end_dt。
 
     该函数连接数据库，查询模型配置表中的第一条记录，返回模型版本ID和计算日期范围。
     如果表中没有数据，则抛出运行时异常。
@@ -639,14 +639,14 @@ def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
         db_name=db_name,
     )
     # 单次查询：取第一条记录（可按需调整排序口径）
-    sql = "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt FROM iis_wght_cfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
+    sql = "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt FROM iis_wght_cnfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
     conn = create_connection(db_url)
     try:
         df = pd.read_sql_query(sql, conn)
     finally:
         conn.close()
     if df.empty:
-        raise RuntimeError("数据库中未找到可用的模型版本（iis_wght_cfg_attc_mdl 为空）")
+        raise RuntimeError("数据库中未找到可用的模型版本（iis_wght_cnfg_attc_mdl 为空）")
     row = df.iloc[0]
     mdl = str(row["mdl_ver_id"]) if "mdl_ver_id" in df.columns else str(row[0])
 
@@ -685,7 +685,7 @@ def main():
     except Exception as e:
         return json.dumps({
             "code": 1,
-            "msg": f"从 iis_wght_cfg_attc_mdl 表获取模型信息失败: {e}"
+            "msg": f"从 iis_wght_cnfg_attc_mdl 表获取模型信息失败: {e}"
         }, ensure_ascii=False)
 
     # 从数据库获取资产收益率数据及相关映射信息
@@ -740,11 +740,11 @@ def main():
 
     ''' 4) 结果保存到本地文件 -------------------------------------------------------------------------- '''
     try:
-        folder_path = os.path.dirname(os.path.abspath(__file__))
+        folder_path = os.path.dirname(os.path.abspath("__file__"))
         asset_id_map = {v: k for k, v in asset_id_map.items()}
         res_df_cd = res_df.rename(columns=asset_id_map)
-        res_df_cd.to_parquet(os.path.join(folder_path, f'alloc_results_400w.parquet'), index=False)
-        log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.parquet')}")
+        res_df_cd.to_pickle(os.path.join(folder_path, f'alloc_results_400w.pkl'), index=False)
+        log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.pkl')}")
     except Exception as e:
         return json.dumps({
             "code": 1,
@@ -770,5 +770,5 @@ if __name__ == '__main__':
     res = main()
     print(res)
 
-    res = pd.read_parquet('alloc_results_400w.parquet')
+    res = pd.read_pickle('alloc_results_400w.pkl')
     print(res.head())

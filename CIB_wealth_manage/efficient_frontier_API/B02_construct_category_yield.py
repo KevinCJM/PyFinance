@@ -5,7 +5,7 @@ B02_construct_category_yield.py
 根据模型配置汇总指数来源，并从 wind_cmfindexeod 抽取成分指数的净值数据。
 
 步骤
-1) 从 iis_wght_cfg_attc_mdl 取第一条记录：mdl_ver_id, on_ln_dt, off_ln_dt
+1) 从 iis_wght_cnfg_attc_mdl 取第一条记录：mdl_ver_id, on_ln_dt, off_ln_dt
 2) 读取 iis_wght_cnfg_mdl 中该 mdl_ver_id 的配置：mdl_ver_id, aset_bclass_cd, indx_num, indx_nm, wght
 3) 在 iis_fnd_indx_info 中查询这些 indx_num 的来源表：indx_num, src_tab_enmm
 4) 如果存在 src_tab_enmm != 'wind_cmfindexeod' 的记录，抛出错误
@@ -64,14 +64,14 @@ def _build_in_clause(name_prefix: str, values: List[str]) -> Tuple[str, Dict[str
 
 
 def fetch_first_model(pool: DatabaseConnectionPool) -> pd.Series:
-    log("读取 iis_wght_cfg_attc_mdl 表的第一条记录")
+    log("读取 iis_wght_cnfg_attc_mdl 表的第一条记录")
     sql = (
         "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt "
-        "FROM iis_wght_cfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
+        "FROM iis_wght_cnfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
     )
     df = read_dataframe(pool, sql)
     if df.empty:
-        raise RuntimeError("iis_wght_cfg_attc_mdl 表无数据")
+        raise RuntimeError("iis_wght_cnfg_attc_mdl 表无数据")
     return df.iloc[0]
 
 
@@ -124,7 +124,7 @@ def run():
     except Exception as e:
         return json.dumps({
             "code": 1,
-            "msg": f"读取 iis_wght_cfg_attc_mdl 表数据失败: {e}"
+            "msg": f"读取 iis_wght_cnfg_attc_mdl 表数据失败: {e}"
         }, ensure_ascii=False)
 
     # 2) 模型成分与权重

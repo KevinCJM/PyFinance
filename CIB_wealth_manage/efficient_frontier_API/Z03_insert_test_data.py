@@ -4,7 +4,7 @@ Z03_insert_test_data.py
 
 用途
 - 通过 Python 模拟生成测试数据，并写入以下三张表（表结构见 Z02_crate_table_ddl.sql）：
-  1) iis_wght_cfg_attc_mdl（模型附件信息，插入 2 行）
+  1) iis_wght_cnfg_attc_mdl（模型附件信息，插入 2 行）
   2) iis_wght_cnfg_mdl（指数拟合权重配置，插入 2 组不同模型的多行记录）
   3) iis_mdl_aset_pct_d（大类每日收益输入，插入 1 组模型的 2 年日度数据）
 
@@ -60,7 +60,7 @@ def _mk_dates(start: date, end: date) -> List[date]:
 
 
 def build_cfg_attc_models() -> pd.DataFrame:
-    """构造 iis_wght_cfg_attc_mdl 的 2 行示例数据。
+    """构造 iis_wght_cnfg_attc_mdl 的 2 行示例数据。
 
     要求字段：mdl_ver_id, mdl_nm, mdl_st, cal_strt_dt, cal_end_dt
     一行 cal_end_dt 非空；一行 cal_end_dt 为空。
@@ -188,7 +188,7 @@ def main() -> None:
 
     # 清空相关表，避免主键重复/脏数据影响
     tables_to_truncate = [
-        "iis_wght_cfg_attc_mdl",
+        "iis_wght_cnfg_attc_mdl",
         "iis_wght_cnfg_mdl",
         "iis_fnd_indx_info",
         "wind_cmfindexeod",
@@ -208,13 +208,13 @@ def main() -> None:
         print(f"[ERROR] 预清理表失败: {e}")
         sys.exit(2)
 
-    # 1) iis_wght_cfg_attc_mdl: 2 行
+    # 1) iis_wght_cnfg_attc_mdl: 2 行
     try:
         df_attc = build_cfg_attc_models()
-        insert_dataframe(pool, df_attc, table="iis_wght_cfg_attc_mdl")
-        print(f"[OK] 写入 iis_wght_cfg_attc_mdl: {len(df_attc)} 行")
+        insert_dataframe(pool, df_attc, table="iis_wght_cnfg_attc_mdl")
+        print(f"[OK] 写入 iis_wght_cnfg_attc_mdl: {len(df_attc)} 行")
     except Exception as e:
-        print(f"[ERR] 插入 iis_wght_cfg_attc_mdl 失败: {e}")
+        print(f"[ERR] 插入 iis_wght_cnfg_attc_mdl 失败: {e}")
 
     # 2) iis_wght_cnfg_mdl: 两个不同模型（每个模型覆盖 5 大类，每类 1~4 指数）
     try:
