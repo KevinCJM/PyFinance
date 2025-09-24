@@ -104,6 +104,13 @@ export default function AssetClassConstructionPage() {
   const classOptions = useMemo(()=> classes.map(c=> c.name), [classes])
   const [rollTargetClass, setRollTargetClass] = useState<string>('')
 
+  // --- Save/Load States ---
+  const [saveModal, setSaveModal] = useState(false)
+  const [loadModal, setLoadModal] = useState(false)
+  const [allocName, setAllocName] = useState('')
+  const [allocList, setAllocList] = useState<string[]>([])
+  const [allocSearch, setAllocSearch] = useState('')
+
   function updateClass(id: string, updater: (c: AssetClass) => AssetClass) {
     setClasses((prev) => prev.map((c) => (c.id === id ? updater(c) : c)))
   }
@@ -371,6 +378,83 @@ export default function AssetClassConstructionPage() {
 
   const busy = loading || fitLoading || rollLoading
 
+  // --- Save/Load Handlers ---
+  async function handleSave() {
+    const name = allocName.trim()
+    if (!name) {
+      alert('配置名称不能为空')
+      return
+    }
+    if (allocList.includes(name)) {
+      if (!confirm(`配置名称 “${name}” 已存在，要覆盖吗？（此操作不可逆）`)) {
+        return
+      }
+    }
+    // 准备权重数据
+    const payloadClasses = classes.map((ac) => {
+      let weights: number[] = []
+      if (ac.mode === 'equal') weights = equalWeights(ac.etfs.length)
+      else weights = ac.etfs.map((e) => Number(e.weight || 0))
+      return {
+        id: ac.id,
+        name: ac.name,
+        etfs: ac.etfs.map((e, i) => ({ code: e.code, name: e.name, weight: weights[i] || 0 })),
+      }
+    })
+
+    try {
+      setLoading(true)
+      const resp = await fetch('/api/save-allocation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asset_alloc_name: name, classes: payloadClasses }),
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data.detail || `错误 ${resp.status}`)
+      alert(`配置 “${name}” 保存成功！`)
+      setSaveModal(false)
+      setAllocName('')
+      setAllocList(p => Array.from(new Set([...p, name])).sort())
+    } catch (e: any) {
+      alert('保存失败：' + (e.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleLoad(name: string) {
+    if (!name) return
+    try {
+      setLoading(true)
+      const resp = await fetch(`/api/load-allocation?name=${encodeURIComponent(name)}`)
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data.detail || `错误 ${resp.status}`)
+      setClasses(data)
+      setLoadModal(false)
+      setAllocSearch('')
+    } catch (e: any) {
+      alert('加载失败：' + (e.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const fetchAllocations = async () => {
+      try {
+        const resp = await fetch('/api/list-allocations')
+        if (resp.ok) {
+          const data = await resp.json()
+          if (Array.isArray(data)) setAllocList(data.sort())
+        }
+      } catch (e) {
+        console.error("Failed to fetch allocation list", e)
+      }
+    }
+    fetchAllocations()
+  }, [])
+
+
   return (
     <div className="mx-auto max-w-5xl p-6 relative">
       {busy && (
@@ -382,7 +466,14 @@ export default function AssetClassConstructionPage() {
       <p className="text-sm text-gray-500 mt-1">配置资产大类、ETF 选择与权重；风险平价支持手动风险贡献、最大杠杆与后端反推权重</p>
 
       <div className="mt-5 rounded-2xl border border-gray-200 bg-white p-4">
-        <SectionTitle title="构建资产大类" />
+        <div className="flex justify-between items-center">
+          <SectionTitle title="构建资产大类" />
+          <button 
+            className="rounded-md bg-gray-100 px-3 py-1 text-xs text-gray-700 hover:bg-gray-200"
+            onClick={() => setLoadModal(true)} >
+              导入大类配置
+          </button>
+        </div>
         <div className="space-y-6">
           {classes.map((ac) => (
             <AssetClassCard
@@ -407,6 +498,65 @@ export default function AssetClassConstructionPage() {
           </button>
         </div>
       </div>
+
+      <div className="mt-6 text-center">
+          <button 
+            className="rounded-lg bg-blue-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
+            onClick={() => setSaveModal(true)} >
+              保存当前大类配置
+          </button>
+      </div>
+
+      {/* Save Modal */}
+      {saveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
+            <h3 className="text-lg font-semibold">保存大类配置</h3>
+            <input
+              autoFocus
+              value={allocName}
+              onChange={(e) => setAllocName(e.target.value)}
+              placeholder="请输入配置名称..."
+              className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="mt-4 flex justify-end gap-3">
+              <button className="rounded-lg bg-gray-100 px-4 py-2 text-sm hover:bg-gray-200" onClick={() => setSaveModal(false)}>取消</button>
+              <button className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700" onClick={handleSave}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Load Modal */}
+      {loadModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-xl rounded-2xl bg-white p-5 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">导入大类配置</h3>
+              <button className="text-gray-500" onClick={() => setLoadModal(false)}>✕</button>
+            </div>
+            <input
+              autoFocus
+              value={allocSearch}
+              onChange={(e) => setAllocSearch(e.target.value)}
+              placeholder="按名称搜索..."
+              className="mt-3 w-full rounded-lg border border-gray-300 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="mt-3 max-h-80 overflow-auto rounded-lg border border-gray-100">
+              {allocList.filter(name => name.toLowerCase().includes(allocSearch.toLowerCase())).map(name => (
+                <button
+                  key={name}
+                  onClick={() => handleLoad(name)}
+                  className="flex w-full items-center justify-between border-b px-4 py-2 text-left hover:bg-gray-50"
+                >
+                  <span className="text-sm text-gray-800">{name}</span>
+                  <span className="text-xs text-gray-400">导入</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {searchOpen.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

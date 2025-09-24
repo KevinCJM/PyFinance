@@ -13,6 +13,12 @@ from starlette.responses import HTMLResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
 from fit import compute_rolling_corr_classes, compute_class_consistency
+from datetime import datetime
+
+
+class SaveRequest(BaseModel):
+    asset_alloc_name: str
+    classes: List[FitClassIn]
 
 
 class ETFIn(BaseModel):
@@ -364,6 +370,118 @@ def rolling_corr_classes(req: RollingClassesRequest):
             except Exception:
                 m[k] = 0.0
     return RollingResponse(dates=dates, series=safe_series, metrics=metrics)
+
+
+@app.post("/api/save-allocation")
+def save_allocation(req: SaveRequest):
+    alloc_name = (req.asset_alloc_name or "").strip()
+    if not alloc_name:
+        raise ValueError("配置名称不能为空")
+    if not req.classes:
+        raise ValueError("资产大类配置不能为空")
+
+    info_path = DATA_DIR / "asset_alloc_info.parquet"
+    nv_path = DATA_DIR / "asset_nv.parquet"
+    now = datetime.now()
+
+    # 1. 校验并保存配置信息
+    if info_path.exists():
+        info_df = pd.read_parquet(info_path)
+        if alloc_name in info_df["asset_alloc_name"].unique():
+            return JSONResponse(status_code=400, content={"detail": f"配置名称 '{alloc_name}' 已存在"})
+    else:
+        info_df = pd.DataFrame()
+
+    new_rows = []
+    for ac in req.classes:
+        for etf in ac.etfs:
+            new_rows.append({
+                "asset_alloc_name": alloc_name,
+                "asset_name": ac.name,
+                "etf_code": etf.code,
+                "etf_name": etf.name,
+                "etf_weight": etf.weight,
+                "creat_time": now,
+            })
+    
+    new_info_df = pd.DataFrame(new_rows)
+    updated_info_df = pd.concat([info_df, new_info_df], ignore_index=True)
+    updated_info_df.to_parquet(info_path, index=False)
+
+    # 2. 计算并保存虚拟净值
+    try:
+        start_date = pd.to_datetime("2010-01-01") # 从一个较早的日期开始计算以获取完整历史
+        classes_spec = [ClassSpec(id=c.id, name=c.name, etfs=[ETFSpec(code=e.code, name=e.name, weight=e.weight) for e in c.etfs]) for c in req.classes]
+        NAV, _, _ = compute_classes_nav(DATA_DIR, classes_spec, start_date)
+        
+        # 将宽表 NAV 转换为长表
+        nav_long = NAV.reset_index().melt(id_vars=["date"], var_name="asset_name", value_name="nv")
+        nav_long["asset_alloc_name"] = alloc_name
+        nav_long["creat_time"] = now
+        # 重新排序字段
+        nav_long = nav_long[["asset_alloc_name", "asset_name", "date", "nv", "creat_time"]]
+
+        if nv_path.exists():
+            nv_df = pd.read_parquet(nv_path)
+            updated_nv_df = pd.concat([nv_df, nav_long], ignore_index=True)
+        else:
+            updated_nv_df = nav_long
+        updated_nv_df.to_parquet(nv_path, index=False)
+
+    except Exception as e:
+        # 如果净值计算失败，为了数据一致性，回滚已保存的配置信息
+        if info_path.exists():
+            info_df_rollback = pd.read_parquet(info_path)
+            info_df_rollback = info_df_rollback[info_df_rollback["asset_alloc_name"] != alloc_name]
+            if info_df_rollback.empty:
+                info_path.unlink()
+            else:
+                info_df_rollback.to_parquet(info_path, index=False)
+        return JSONResponse(status_code=500, content={"detail": f"计算并保存净值时出错: {e}"})
+
+    return {"ok": True, "message": f"配置 '{alloc_name}' 已成功保存"}
+
+
+@app.get("/api/list-allocations")
+def list_allocations():
+    info_path = DATA_DIR / "asset_alloc_info.parquet"
+    if not info_path.exists():
+        return []
+    df = pd.read_parquet(info_path)
+    return sorted(df["asset_alloc_name"].unique().tolist())
+
+
+@app.get("/api/load-allocation")
+def load_allocation(name: str):
+    info_path = DATA_DIR / "asset_alloc_info.parquet"
+    if not info_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "配置文件不存在"})
+    
+    df = pd.read_parquet(info_path)
+    alloc_df = df[df["asset_alloc_name"] == name]
+    if alloc_df.empty:
+        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{name}' 的配置"})
+
+    # 从扁平表重建嵌套结构
+    classes_map = {}
+    for _, row in alloc_df.iterrows():
+        class_name = row["asset_name"]
+        if class_name not in classes_map:
+            classes_map[class_name] = {
+                "id": f"loaded-{class_name}-{datetime.now().timestamp()}",
+                "name": class_name,
+                "mode": "custom", # 默认导入为自定义权重模式
+                "etfs": [],
+                "riskMetric": "vol",
+                "maxLeverage": 0,
+            }
+        classes_map[class_name]["etfs"].append({
+            "code": row["etf_code"],
+            "name": row["etf_name"],
+            "weight": row["etf_weight"],
+        })
+    
+    return list(classes_map.values())
 
 
 # -------------------- ETF Universe from data/ --------------------
