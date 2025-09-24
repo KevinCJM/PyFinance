@@ -298,8 +298,9 @@ def fit_classes(req: FitRequest):
     for row in consistency_rows:
         cons_out.append({
             "name": str(row.get("name")),
-            "mean_corr": None if row.get("mean_corr") is None or not isinstance(row.get("mean_corr"), (int,float)) or not (row.get("mean_corr") == row.get("mean_corr")) else float(row.get("mean_corr")),
-            "pca_evr1": None if row.get("pca_evr1") is None or not isinstance(row.get("pca_evr1"), (int,float)) or not (row.get("pca_evr1") == row.get("pca_evr1")) else float(row.get("pca_evr1")),
+            "mean_corr": None if not isinstance(row.get("mean_corr"), (int,float)) or not (row.get("mean_corr") == row.get("mean_corr")) else float(row.get("mean_corr")),
+            "pca_evr1": None if not isinstance(row.get("pca_evr1"), (int,float)) or not (row.get("pca_evr1") == row.get("pca_evr1")) else float(row.get("pca_evr1")),
+            "max_te": None if not isinstance(row.get("max_te"), (int,float)) or not (row.get("max_te") == row.get("max_te")) else float(row.get("max_te")),
         })
     return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out, consistency=cons_out)
 
@@ -504,6 +505,7 @@ if DIST_DIR.exists():
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
+    print(f"[DEBUG] SPA Fallback triggered for path: {full_path}")
     if full_path.startswith("api"):
         return {"detail": "Not Found"}
     index_file = DIST_DIR / "index.html"

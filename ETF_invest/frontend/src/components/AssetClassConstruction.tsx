@@ -97,7 +97,7 @@ export default function AssetClassConstructionPage() {
   const [total, setTotal] = useState(0)
   const [fitLoading, setFitLoading] = useState(false)
   const [startDate, setStartDate] = useState<string>('2020-01-01')
-  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: number[][]; corr_labels: string[]; metrics: { name: string; annual_return?: number; annual_vol?: number; sharpe?: number; var99?: number; es99?: number; max_drawdown?: number; calmar?: number }[]; consistency: { name: string; mean_corr?: number; pca_evr1?: number }[] }>(null)
+  const [fitResult, setFitResult] = useState<null | { dates: string[]; navs: Record<string, number[]>; corr: number[][]; corr_labels: string[]; metrics: { name: string; annual_return?: number; annual_vol?: number; sharpe?: number; var99?: number; es99?: number; max_drawdown?: number; calmar?: number }[]; consistency: { name: string; mean_corr?: number; pca_evr1?: number; max_te?: number }[] }>(null)
   const [rollLoading, setRollLoading] = useState(false)
   const [rollResult, setRollResult] = useState<null | { dates: string[]; series: Record<string, number[]>; metrics: { name: string; overall:number; mean:number; median:number; std:number; skew:number; kurtosis:number }[] }>(null)
   const [rollWindow, setRollWindow] = useState<number>(60)
@@ -613,7 +613,7 @@ export default function AssetClassConstructionPage() {
       </div>
 
       {/* 同类资产一致性 */}
-      {fitResult && (
+      {fitResult && Array.isArray(fitResult.consistency) && fitResult.consistency.length > 0 && (
         <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4">
           <SectionTitle title="同类资产一致性" />
           <div className="overflow-auto">
@@ -623,17 +623,27 @@ export default function AssetClassConstructionPage() {
                   <th className="border px-2 py-2">大类</th>
                   <th className="border px-2 py-2">相关性均值</th>
                   <th className="border px-2 py-2">主成分解释度(%)</th>
+                  <th className="border px-2 py-2">最大跟踪误差(%)</th>
                 </tr>
               </thead>
               <tbody>
-                {fitResult.consistency.map((r)=> (
-                  <tr key={r.name}>
-                    <td className="border px-2 py-2">{r.name}</td>
-                    <td className="border px-2 py-2 text-right">{Number.isFinite(r.mean_corr as number) ? (r.mean_corr as number).toFixed(2) : '-'}</td>
-                    <td className="border px-2 py-2 text-right">{Number.isFinite(r.pca_evr1 as number) ? (((r.pca_evr1 as number)*100).toFixed(2)) : '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
+                {fitResult.consistency.map((r)=> {
+                  const meanCorr = r.mean_corr as number
+                  const pcaEvr1 = r.pca_evr1 as number
+                  const maxTe = r.max_te as number
+                  const meanCorrStyle = Number.isFinite(meanCorr) && meanCorr < 0.6 ? { backgroundColor: '#fee2e2' } : {}
+                  const pcaEvr1Style = Number.isFinite(pcaEvr1) && pcaEvr1 < 0.8 ? { backgroundColor: '#fee2e2' } : {}
+                  const maxTeStyle = Number.isFinite(maxTe) && maxTe * 100 > 5 ? { backgroundColor: '#fee2e2' } : {}
+
+                  return (
+                    <tr key={r.name}>
+                      <td className="border px-2 py-2">{r.name}</td>
+                      <td className="border px-2 py-2 text-right" style={meanCorrStyle}>{Number.isFinite(meanCorr) ? meanCorr.toFixed(3) : '-'}</td>
+                      <td className="border px-2 py-2 text-right" style={pcaEvr1Style}>{Number.isFinite(pcaEvr1) ? (pcaEvr1 * 100).toFixed(2) : '-'}</td>
+                      <td className="border px-2 py-2 text-right" style={maxTeStyle}>{Number.isFinite(maxTe) ? (maxTe * 100).toFixed(2) : '-'}</td>
+                    </tr>
+                  )
+                })}</tbody>
             </table>
           </div>
         </div>

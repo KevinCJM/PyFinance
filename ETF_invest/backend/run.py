@@ -34,9 +34,8 @@ def main():
     t = threading.Thread(target=open_browser_when_ready, args=(url,), daemon=True)
     t.start()
 
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)
 
 
 if __name__ == "__main__":
     sys.exit(main())
-

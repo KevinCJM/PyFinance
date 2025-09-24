@@ -453,4 +453,75 @@ def compute_class_consistency(
         except Exception:
             evr1 = float("nan")
         out.append({"name": c.name, "mean_corr": mean_corr, "pca_evr1": evr1})
+def compute_class_consistency(
+    data_dir: Path,
+    classes: List[ClassSpec],
+    start_date: pd.Timestamp,
+) -> List[Dict[str, float]]:
+    """计算每个大类内部 ETF 的一致性：成对相关系数均值、第一主成分解释度、最大跟踪误差。
+    返回列表：[ {name, mean_corr, pca_evr1, max_te} ]
+    """
+    # 准备一次性读取所有需要的 ETF 数据
+    codes: List[str] = []
+    names: List[str] = []
+    for c in classes:
+        for e in c.etfs:
+            codes.append(e.code)
+            names.append(e.name)
+    df = _load_adj_nav(data_dir, codes, names)
+    piv = df.pivot_table(index="date", columns="ts_code", values="adj_nav", aggfunc="last").sort_index()
+    ret_wide = piv.pct_change().iloc[1:]
+    ret_wide = ret_wide.loc[ret_wide.index >= start_date]
+    ret_wide = ret_wide.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    ts_cols = list(ret_wide.columns.astype(str))
+
+    def map_to_ts(code: str, name: str) -> Optional[str]:
+        if code in ts_cols:
+            return code
+        ns = _code_nosfx(code)
+        if ns in ts_cols:
+            return ns
+        sub = df[df["name"].astype(str) == name]
+        if not sub.empty:
+            return str(sub.iloc[0]["ts_code"])
+        cand = [c for c in ts_cols if ns and ns in str(c)]
+        return cand[0] if cand else None
+
+    out: List[Dict[str, float]] = []
+    for c in classes:
+        cols: List[str] = []
+        for e in c.etfs:
+            col = map_to_ts(str(e.code), str(e.name))
+            if col is not None and col in ret_wide.columns:
+                cols.append(col)
+        if len(cols) < 2:
+            out.append({"name": c.name, "mean_corr": float("nan"), "pca_evr1": float("nan"), "max_te": float("nan")})
+            continue
+        sub = ret_wide[cols]
+        # 1) 成对相关系数均值
+        C = sub.corr().to_numpy()
+        n = C.shape[0]
+        iu = np.triu_indices(n, 1)
+        vals = C[iu]
+        mean_corr = float(np.nanmean(vals)) if vals.size > 0 and np.isfinite(vals).any() else float("nan")
+        
+        # 2) 第一主成分解释度（基于协方差矩阵）
+        S = np.cov(sub.to_numpy(), rowvar=False, ddof=1)
+        try:
+            eigvals = np.linalg.eigvalsh(S)
+            total = float(np.sum(eigvals))
+            p1 = float(np.max(eigvals)) if eigvals.size else 0.0
+            evr1 = (p1 / total) if total > 1e-12 else float("nan")
+        except Exception:
+            evr1 = float("nan")
+
+        # 3) 最大跟踪误差（年化）
+        r_avg = sub.mean(axis=1)
+        diffs = sub.sub(r_avg, axis=0)
+        # 年化跟踪误差 TE = std(r_i - r_benchmark) * sqrt(252)
+        tracking_errors = diffs.std(ddof=1) * np.sqrt(252)
+        max_te = float(tracking_errors.max())
+
+        out.append({"name": c.name, "mean_corr": mean_corr, "pca_evr1": evr1, "max_te": max_te})
     return out
