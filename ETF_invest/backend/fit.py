@@ -386,3 +386,71 @@ def compute_rolling_corr_classes(
             metrics = {"name": name, "overall": overall, "mean": mean, "median": median, "std": std, "skew": float(skew), "kurtosis": float(kurt)}
         metrics_list.append(metrics)
     return R.index, series_map, metrics_list
+
+
+def compute_class_consistency(
+    data_dir: Path,
+    classes: List[ClassSpec],
+    start_date: pd.Timestamp,
+) -> List[Dict[str, float]]:
+    """计算每个大类内部 ETF 的一致性：成对相关系数均值、第一主成分解释度。
+    返回列表：[ {name, mean_corr, pca_evr1} ]
+    """
+    # 准备一次性读取所有需要的 ETF 数据
+    codes: List[str] = []
+    names: List[str] = []
+    for c in classes:
+        for e in c.etfs:
+            codes.append(e.code)
+            names.append(e.name)
+    df = _load_adj_nav(data_dir, codes, names)
+    piv = df.pivot_table(index="date", columns="ts_code", values="adj_nav", aggfunc="last").sort_index()
+    ret_wide = piv.pct_change().iloc[1:]
+    ret_wide = ret_wide.loc[ret_wide.index >= start_date]
+    ret_wide = ret_wide.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    ts_cols = list(ret_wide.columns.astype(str))
+
+    def map_to_ts(code: str, name: str) -> Optional[str]:
+        if code in ts_cols:
+            return code
+        ns = _code_nosfx(code)
+        if ns in ts_cols:
+            return ns
+        sub = df[df["name"].astype(str) == name]
+        if not sub.empty:
+            return str(sub.iloc[0]["ts_code"])
+        cand = [c for c in ts_cols if ns and ns in str(c)]
+        return cand[0] if cand else None
+
+    out: List[Dict[str, float]] = []
+    for c in classes:
+        cols: List[str] = []
+        for e in c.etfs:
+            col = map_to_ts(str(e.code), str(e.name))
+            if col is not None and col in ret_wide.columns:
+                cols.append(col)
+        if len(cols) < 2:
+            out.append({"name": c.name, "mean_corr": float("nan"), "pca_evr1": float("nan")})
+            continue
+        sub = ret_wide[cols]
+        # 成对相关系数均值
+        C = sub.corr().to_numpy()
+        n = C.shape[0]
+        iu = np.triu_indices(n, 1)
+        vals = C[iu]
+        if vals.size == 0 or not np.isfinite(vals).any():
+            mean_corr = float("nan")
+        else:
+            mean_corr = float(np.nanmean(vals))
+        # 第一主成分解释度（基于协方差矩阵）
+        S = np.cov(sub.to_numpy(), rowvar=False, ddof=1)
+        try:
+            eigvals = np.linalg.eigvalsh(S)
+            total = float(np.sum(eigvals))
+            p1 = float(np.max(eigvals)) if eigvals.size else 0.0
+            evr1 = (p1 / total) if total > 1e-12 else float("nan")
+        except Exception:
+            evr1 = float("nan")
+        out.append({"name": c.name, "mean_corr": mean_corr, "pca_evr1": evr1})
+    return out

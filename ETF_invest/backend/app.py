@@ -12,7 +12,7 @@ import json
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
-from fit import compute_rolling_corr_classes
+from fit import compute_rolling_corr_classes, compute_class_consistency
 
 
 class ETFIn(BaseModel):
@@ -55,6 +55,7 @@ class FitResponse(BaseModel):
     corr: List[List[float]]
     corr_labels: List[str]
     metrics: List[dict]
+    consistency: List[dict]
 
 
 class RollingRequest(BaseModel):
@@ -257,6 +258,7 @@ def fit_classes(req: FitRequest):
         for c in req.classes
     ]
     NAV, corr, metrics = compute_classes_nav(DATA_DIR, classes, start)
+    consistency_rows = compute_class_consistency(DATA_DIR, classes, start)
 
     def finite_or_none(x: float):
         try:
@@ -291,7 +293,15 @@ def fit_classes(req: FitRequest):
             "max_drawdown": finite_or_none(row.get("最大回撤", None)),
             "calmar": finite_or_none(row.get("卡玛比率", None)),
         })
-    return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out)
+    # consistency sanitize
+    cons_out = []
+    for row in consistency_rows:
+        cons_out.append({
+            "name": str(row.get("name")),
+            "mean_corr": None if row.get("mean_corr") is None or not isinstance(row.get("mean_corr"), (int,float)) or not (row.get("mean_corr") == row.get("mean_corr")) else float(row.get("mean_corr")),
+            "pca_evr1": None if row.get("pca_evr1") is None or not isinstance(row.get("pca_evr1"), (int,float)) or not (row.get("pca_evr1") == row.get("pca_evr1")) else float(row.get("pca_evr1")),
+        })
+    return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out, consistency=cons_out)
 
 
 @app.post("/api/rolling-corr", response_model=RollingResponse)
