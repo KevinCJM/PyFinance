@@ -15,11 +15,15 @@ from typing import Optional
 try:
     from countus.efficient_frontier_API.T02_other_tools import log
     from countus.efficient_frontier_API.T04_show_plt import plot_efficient_frontier
-    from countus.efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, compute_var_parametric_arrays
+    from countus.efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, \
+        compute_perf_arrays, compute_var_parametric_arrays
+    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict, rsk_level_code_dict
 except ImportError:
     from efficient_frontier_API.T02_other_tools import log
     from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
-    from efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, compute_var_parametric_arrays
+    from efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, \
+        compute_var_parametric_arrays
+    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict, rsk_level_code_dict
 
 # --- Constants ---
 RANDOM_SEED = 12345
@@ -102,60 +106,6 @@ def calculate_single_port_metrics(weights_array, daily_returns, annual_trading_d
 
     return annual_ret, annual_vol, annual_var, sharpe_ratio
 
-
-def format_hover_text(row, title, a_list):
-    text = f"<b>{title}</b><br>年化收益率: {row['ret_annual']:.2%}<br>年化波动率: {row.get('vol_annual', float('nan')):.2%}<br>年化VaR: {row['risk_arr']:.2%}"
-    if 'sharpe_ratio' in row:
-        text += f"<br>夏普比率: {row['sharpe_ratio']:.2f}"
-    text += "<br><br><b>--权重--</b><br>"
-    for asset in a_list:
-        if asset in row and pd.notna(row[asset]):
-            text += f"{asset}: {row[asset]:.2%}<br>"
-    return text.strip('<br>')
-
-
-def create_plot_data(asset_list, market_ef_data, standard_points):
-    """准备绘图所需的数据结构"""
-    scatter_points_data = []
-
-    W_unc = np.array(market_ef_data['weights'])
-    df_unc = pd.DataFrame(W_unc, columns=asset_list)
-    df_unc['ret_annual'] = market_ef_data['ret_annual']
-    df_unc['risk_arr'] = market_ef_data['risk_arr']
-    df_unc['hover_text'] = df_unc.apply(
-        lambda r: format_hover_text(r, "无约束组合", asset_list), axis=1)
-
-    ef_mask_unc = np.array(market_ef_data['ef_mask'])
-
-    scatter_points_data.append({
-        "data": df_unc,
-        "name": "无约束-随机点", "color": "black", "size": 2, "opacity": 0.2,
-    })
-    scatter_points_data.append({
-        "data": df_unc[ef_mask_unc],
-        "name": "无约束-有效前沿", "color": "blue", "size": 3, "opacity": 0.8,
-    })
-
-    if standard_points:
-        df_standard_points = pd.DataFrame(standard_points)
-        df_standard_points = df_standard_points.rename(columns={'var_value': 'risk_arr'})
-
-        weights_df = pd.DataFrame(df_standard_points['weights'].tolist(), columns=asset_list,
-                                  index=df_standard_points.index)
-        df_standard_points = pd.concat([df_standard_points, weights_df], axis=1)
-
-        df_standard_points['hover_text'] = df_standard_points.apply(
-            lambda r: format_hover_text(r, f"标准-{r['name']}", asset_list), axis=1)
-
-        scatter_points_data.append({
-            "data": df_standard_points,
-            "name": "标准组合点", "color": "gold", "size": 12, "opacity": 1.0, "symbol": "star",
-            "marker_line": dict(width=1, color='black')
-        })
-
-    return scatter_points_data
-
-
 def main(json_input: str) -> str:
     """
     主函数，用于计算全市场有效前沿及C1-C6标准组合点位, 并选择性绘图。
@@ -172,8 +122,6 @@ def main(json_input: str) -> str:
         asset_list = input_data["asset_list"]
         nv_data = input_data["nv"]
         standard_proportion = input_data["StandardProportion"]
-        draw_plt = input_data.get("draw_plt", False)
-        draw_plt_filename = input_data.get("draw_plt_filename", None)
 
         log("步骤 2: 从净值数据计算日收益率...")
         returns = _load_returns_from_nv(nv_data, asset_list)
@@ -212,45 +160,75 @@ def main(json_input: str) -> str:
             standard_points.append(point_data)
             log(f"计算完成: {name} - 收益率: {ret:.4f}, 波动率: {vol:.4f}, VaR: {var:.4f}, 夏普比率: {sharpe:.4f}")
 
-        if draw_plt:
-            log("步骤 5: 准备绘图数据并生成图表...")
-            all_market_data_for_plot = {
-                'weights': W_unc.tolist(),
-                'ret_annual': ret_annual_unc.tolist(),
-                'risk_arr': risk_arr_unc.tolist(),
-                'ef_mask': ef_mask_unc.tolist(),
+        log("步骤 5: 格式化返回结果...")
+
+        # a) 处理有效前沿数据
+        ef_mask = ef_mask_unc
+        ef_weights = W_unc[ef_mask]
+        ef_ret = ret_annual_unc[ef_mask]
+        ef_risk = risk_arr_unc[ef_mask]
+
+        _, ef_vol = compute_perf_arrays(returns, ef_weights, TRADING_DAYS, return_type="log")
+        ef_sharpe = np.divide(ef_ret, ef_vol, out=np.zeros_like(ef_ret), where=ef_vol != 0)
+
+        ef_df = pd.DataFrame(ef_weights, columns=asset_list)
+        ef_df['rate'] = ef_ret
+        ef_df['shrp_prprtn'] = ef_sharpe
+        ef_df['var95_b'] = ef_risk
+        ef_df['var95'] = np.clip(ef_risk, 0, None)
+        
+        ef_df = ef_df.sort_values(by='rate', ascending=True).reset_index(drop=True)
+        ef_df['rsk_lvl'] = np.arange(11, 11 + len(ef_df))
+
+        # b) 处理标准组合数据
+        std_df_list = []
+        for point in standard_points:
+            rsk_name = point['name']
+            rsk_lvl = rsk_level_code_dict.get(rsk_name)
+            if rsk_lvl is None: continue
+            
+            row = {
+                'rsk_lvl': rsk_lvl,
+                'rate': point['ret_annual'],
+                'shrp_prprtn': point['sharpe_ratio'],
+                'var95_b': point['var_value'],
+                'var95': max(0, point['var_value']),
             }
-            plot_data = create_plot_data(asset_list, all_market_data_for_plot, standard_points)
-            plot_efficient_frontier(
-                plot_data,
-                title="全市场有效前沿与标准组合点位",
-                x_axis_title=f"年化风险 ({RISK_METRIC.upper()})",
-                y_axis_title="年化收益率",
-                x_col="risk_arr",
-                y_col="ret_annual",
-                hover_text_col="hover_text",
-                output_filename=draw_plt_filename
-            )
+            for i, asset_code in enumerate(asset_list):
+                row[asset_code] = point['weights'][i]
+            std_df_list.append(row)
+        std_df = pd.DataFrame(std_df_list)
 
-        log("步骤 6: 封装并返回结果...")
+        # c) 合并并重命名列
+        final_df = pd.concat([std_df, ef_df], ignore_index=True)
 
-        W_ef = W_unc[ef_mask_unc]
-        ret_ef = ret_annual_unc[ef_mask_unc]
-        risk_ef = risk_arr_unc[ef_mask_unc]
+        rename_map = {}
+        for code, name in aset_cd_nm_dict.items():
+            if code in final_df.columns:
+                target_col = asset_to_weight_column_map.get(name)
+                if target_col:
+                    rename_map[code] = target_col
+        final_df.rename(columns=rename_map, inplace=True)
 
-        market_ef_data_filtered = {
-            'weights': W_ef.tolist(),
-            'ret_annual': ret_ef.tolist(),
-            'risk_arr': risk_ef.tolist(),
-        }
+        # d) 选择并排序最终列
+        output_cols = [
+            'rsk_lvl', 'rate', 'csh_mgt_typ_pos', 'fx_yld_pos', 
+            'mix_strg_typ_pos', 'eqty_invst_typ_pos', 'altnt_invst_pos', 
+            'shrp_prprtn', 'var95', 'var95_b'
+        ]
+        for col in output_cols:
+            if col not in final_df.columns:
+                final_df[col] = 0.0
+        
+        final_df = final_df[output_cols]
+
+        # e) 转换为JSON
+        result_data = final_df.to_dict(orient='records')
 
         success_response = {
             "code": 0,
             "msg": "",
-            "data": {
-                "market_efficient_frontier": market_ef_data_filtered,
-                "standard_portfolios": standard_points
-            }
+            "data": result_data
         }
         return json.dumps(success_response, ensure_ascii=False, indent=2)
 
@@ -273,22 +251,22 @@ if __name__ == '__main__':
     in_dict = {
         "in_data": {
             "asset_list": [
-                "货币现金类", "固定收益类", "混合策略类", "权益投资类", "另类投资类"
+                "01", "02", "03", "04", "05"
             ],
             "nv": {
-                "货币现金类": df['货基指数'].to_dict(),
-                "固定收益类": df['固收类'].to_dict(),
-                "混合策略类": df['混合类'].to_dict(),
-                "权益投资类": df['权益类'].to_dict(),
-                "另类投资类": df['另类'].to_dict()
+                "01": df['货基指数'].to_dict(),
+                "02": df['固收类'].to_dict(),
+                "03": df['混合类'].to_dict(),
+                "04": df['权益类'].to_dict(),
+                "05": df['另类'].to_dict()
             },
             "StandardProportion": {
-                "C1": {"货币现金类": 1.0, "固定收益类": 0.0, "混合策略类": 0.0, "权益投资类": 0.0, "另类投资类": 0.0},
-                "C2": {"货币现金类": 0.2, "固定收益类": 0.8, "混合策略类": 0.0, "权益投资类": 0.0, "另类投资类": 0.0},
-                "C3": {"货币现金类": 0.1, "固定收益类": 0.55, "混合策略类": 0.35, "权益投资类": 0.0, "另类投资类": 0.0},
-                "C4": {"货币现金类": 0.05, "固定收益类": 0.4, "混合策略类": 0.3, "权益投资类": 0.2, "另类投资类": 0.05},
-                "C5": {"货币现金类": 0.05, "固定收益类": 0.2, "混合策略类": 0.25, "权益投资类": 0.4, "另类投资类": 0.1},
-                "C6": {"货币现金类": 0.05, "固定收益类": 0.1, "混合策略类": 0.15, "权益投资类": 0.6, "另类投资类": 0.1}
+                "C1": {"01": 1.00, "02": 0.00, "03": 0.00, "04": 0.00, "05": 0.00},
+                "C2": {"01": 0.20, "02": 0.80, "03": 0.00, "04": 0.00, "05": 0.00},
+                "C3": {"01": 0.10, "02": 0.55, "03": 0.35, "04": 0.00, "05": 0.00},
+                "C4": {"01": 0.05, "02": 0.40, "03": 0.30, "04": 0.20, "05": 0.05},
+                "C5": {"01": 0.05, "02": 0.20, "03": 0.25, "04": 0.40, "05": 0.10},
+                "C6": {"01": 0.05, "02": 0.10, "03": 0.15, "04": 0.60, "05": 0.10}
             }
         }}
     json_str_input = json.dumps(in_dict, ensure_ascii=False)
