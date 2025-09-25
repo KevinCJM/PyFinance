@@ -114,6 +114,8 @@ def fetch_wind_index_eod(pool: DatabaseConnectionPool, codes: List[str]) -> pd.D
 def run():
     s_t = time.time()
     pool = _db_pool()
+    df_annual_stats = pd.DataFrame()  # 新增：初始化年度统计DF
+
     ''' 1. 数据获取 ----------------------------------------------------------------------------- '''
     # 1) 模型头信息
     try:
@@ -200,8 +202,10 @@ def run():
             }, ensure_ascii=False)
 
         # 3) 按资产大类加权拟合收益
-        log("按资产大类加权拟合收益")
+        log("按资产大类加权拟合收益与年度指标")
         out_frames: List[pd.DataFrame] = []
+        annual_stats_list: List[Dict] = []  # 新增：年度统计列表
+
         for aset_cd, grp in cfg_df.groupby("aset_bclass_cd"):
             g = grp.copy()
             g["indx_num"] = g["indx_num"].astype(str)
@@ -218,6 +222,24 @@ def run():
             w = w / s
             # 计算加权收益
             cat_ret = (index_return_df[cols] * w.values).sum(axis=1)
+
+            # 新增：计算年化收益与波动
+            if not cat_ret.empty:
+                trading_days = 252.0
+                mu = cat_ret.mean()
+                sigma = cat_ret.std(ddof=1)
+                annual_return = ((1 + mu) ** trading_days) - 1
+                annual_vol = sigma * np.sqrt(trading_days)
+                annual_stats_list.append({
+                    "mdl_ver_id": mdl_ver_id,
+                    "aset_bclass_cd": str(aset_cd),
+                    "aset_bclass_nm": str(aset_cd),  # 与日收益表保持一致
+                    "pct_yld": annual_return,
+                    "pct_std": annual_vol,
+                    "data_dt": cat_ret.index[-1].date(),
+                    "crt_tm": pd.to_datetime("now"),
+                })
+
             tmp = pd.DataFrame({
                 "mdl_ver_id": mdl_ver_id,
                 "aset_bclass_cd": str(aset_cd),
@@ -234,6 +256,11 @@ def run():
             }, ensure_ascii=False)
 
         result_df = pd.concat(out_frames, ignore_index=True)
+        if annual_stats_list:
+            df_annual_stats = pd.DataFrame(annual_stats_list)
+        else:
+            log("未能为任何大类生成年度统计数据")
+
     except Exception as e:
         return json.dumps({
             "code": 1,
@@ -243,16 +270,17 @@ def run():
     ''' 3. 结果入库 ----------------------------------------------------------------------------- '''
     try:
         # 1) 清空目标表
-        log("清空目标表 iis_mdl_aset_pct_d ...")
+        log("清空目标表 iis_mdl_aset_pct_d, iis_aset_allc_indx_rtrn ...")
         # 使用单连接执行 TRUNCATE，无需连接池上下文
         single_conn = create_connection(pool.engine.url)
         try:
             single_conn.execute(text("TRUNCATE TABLE iis_mdl_aset_pct_d"))
+            single_conn.execute(text("TRUNCATE TABLE iis_aset_allc_indx_rtrn"))
         finally:
             single_conn.close()
 
-        # 2) 分批并发插入 iis_mdl_aset_pct_d
-        log("将大类收益率数据分批并发插入 iis_mdl_aset_pct_d ...")
+        # 2) 分批并发插入
+        log("将大类收益率和年度统计数据分批并发插入 ...")
         datasets = []
         for aset_cd, sub in result_df.groupby("aset_bclass_cd"):
             datasets.append({
@@ -261,6 +289,15 @@ def run():
                 "batch_size": 2000,
                 "method": "multi",
             })
+
+        if not df_annual_stats.empty:
+            datasets.append({
+                "dataframe": df_annual_stats,
+                "table": "iis_aset_allc_indx_rtrn",
+                "batch_size": 200,
+                "method": "multi",
+            })
+
         threaded_insert_dataframe(pool, datasets, max_workers=4)
         log(f"大类收益率数据拟合插入完成，耗时 {time.time() - s_t:.2f} 秒")
     except Exception as e:
