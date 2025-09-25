@@ -60,14 +60,14 @@ CREATE TABLE iis_aset_allc_indx_pub
     altnt_invst_pos     decimal(11, 7) DEFAULT NULL COMMENT '另类投资持仓',
     shrp_prprtn         decimal(11, 7) DEFAULT NULL COMMENT '夏普比例',
     gamma_val           decimal(11, 7) DEFAULT NULL COMMENT 'GAMMA值',
-    VaR99               decimal(11, 7) DEFAULT NULL COMMENT 'VaR(99%)',
-    VaR95               decimal(11, 7) DEFAULT NULL COMMENT 'VaR(95%)',
-    VaR975              decimal(11, 7) DEFAULT NULL COMMENT 'VaR(97.5%)',
-    VaR99_              decimal(11, 7) DEFAULT NULL COMMENT 'VaR(99%)',
+    var99               decimal(11, 7) DEFAULT NULL COMMENT 'VaR(99%)',
+    var95               decimal(11, 7) DEFAULT NULL COMMENT 'VaR(95%)',
+    var975              decimal(11, 7) DEFAULT NULL COMMENT 'VaR(97.5%)',
+    var99_              decimal(11, 7) DEFAULT NULL COMMENT 'VaR(99%)',
     rsvn_fld1           decimal(11, 7) DEFAULT NULL COMMENT '预留字段1',
     rsvn_fld2           decimal(11, 7) DEFAULT NULL COMMENT '预留字段2',
     crt_tm              datetime       DEFAULT NULL COMMENT '创建时间',
-    VaR95_b             decimal(11, 7) DEFAULT NULL COMMENT 'var95备份',
+    var95_b             decimal(11, 7) DEFAULT NULL COMMENT 'var95备份',
     PRIMARY KEY (mdl_ver_id, rsk_lvl)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4 COMMENT ='资产指数公共参数表';
