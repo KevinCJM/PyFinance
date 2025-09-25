@@ -14,3 +14,13 @@ asset_to_weight_column_map = {
     '权益': 'eqty_invst_pos',  # 权益混合持仓
     '另类': 'altrnt_invst_pos',  # 另类投资持仓
 }
+
+# C1 ~ C6 的 rsk_level 代码
+rsk_level_code_dict = {
+    'C1': 1,
+    'C2': 2,
+    'C3': 3,
+    'C4': 4,
+    'C5': 5,
+    'C6': 6,
+}
