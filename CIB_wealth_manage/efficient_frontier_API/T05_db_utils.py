@@ -437,13 +437,16 @@ def upsert_dataframe_mysql(
 
             stmt = mysql_insert(tbl).values(batch)
             
-            update_cols = {
-                c.name: c for c in stmt.inserted if not c.primary_key
-            }
+            # 只更新DataFrame中存在的非主键列
+            update_cols = {}
+            for col in dataframe.columns:
+                if col not in {c.name for c in tbl.primary_key.columns}:
+                    update_cols[col] = stmt.inserted[col]
             
             if update_cols:
                 final_stmt = stmt.on_duplicate_key_update(update_cols)
             else:
+                # 如果所有提供的列都是主键，则退化为 INSERT IGNORE
                 final_stmt = stmt.prefix_with("IGNORE")
             
             conn.execute(final_stmt)

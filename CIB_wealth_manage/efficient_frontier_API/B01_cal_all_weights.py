@@ -8,6 +8,8 @@
 import os
 import time
 import json
+import traceback
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
@@ -20,12 +22,14 @@ try:
     from countus.efficient_frontier_API.T02_other_tools import log
     from countus.efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
     from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map
+    from countus.efficient_frontier_API.T05_db_utils import threaded_upsert_dataframe_mysql
     from countus.efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
                                                              create_connection)
 except ImportError:
     from efficient_frontier_API.T02_other_tools import log
     from efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
     from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map
+    from efficient_frontier_API.T05_db_utils import threaded_upsert_dataframe_mysql
     from efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
                                                      create_connection)
 
@@ -457,7 +461,7 @@ def fetch_standard_portfolios(pool: DatabaseConnectionPool, mdl_ver_id: str, cod
 
 def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame, return_df: pd.DataFrame,
                          code_to_name_map: Dict[str, str]) -> None:
-    """将计算结果批量写入 iis_ef_grid_srch_wght 表。"""
+    """将计算结果批量写入 iis_ef_grid_srch_wght 表, 并将有效前沿写入 iis_aset_allc_indx_pub 表。"""
     log(f"正在将计算结果写入数据库...")
     s_t = time.time()
     db_url = get_active_db_url(
@@ -518,9 +522,8 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
         combined.loc[is_nan, 'rsk_lvl'] = seq
     combined['rsk_lvl'] = combined['rsk_lvl'].astype(int)
 
-    # 准备插入 iis_ef_grid_srch_wght 的数据
+    # --- 1. 准备并插入 iis_ef_grid_srch_wght (全量数据) ---
     log(f"构建 iis_ef_grid_srch_wght 表的数据...")
-
     wght_df = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
         'rsk_lvl': combined['rsk_lvl'],
@@ -533,37 +536,44 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
         'crt_tm': pd.to_datetime('now'),
         'liquid': None,
     })
-
     for k, v in _build_weight_cols(combined, a_list).items():
         wght_df[k] = v
 
-    # 分块并发写入
-    log("正在准备分批写入的数据块...")
-
-    def _chunker(df: pd.DataFrame, size: int):
-        n = len(df)
-        for i in range(0, n, size):
-            yield df.iloc[i:i + size].copy()
-
-    datasets = []
-    chunk_size = 5000
-    for chunk in _chunker(wght_df, chunk_size):
-        datasets.append({'dataframe': chunk, 'table': 'iis_ef_grid_srch_wght', 'batch_size': 1000,
-                         'method': 'multi'})
-
-    # 清空后再插入（TRUNCATE）
-    log("清空目标表 iis_ef_grid_srch_wght...")
+    log("清空并写入 iis_ef_grid_srch_wght...")
     with pool.begin() as conn:
         try:
             conn.execute(text("TRUNCATE TABLE iis_ef_grid_srch_wght"))
         except Exception as e:
             log(f"TRUNCATE 失败: {e}")
             raise
+    threaded_insert_dataframe(pool, [{'dataframe': wght_df, 'table': 'iis_ef_grid_srch_wght', 'batch_size': 5000}], max_workers=1)
+    log("iis_ef_grid_srch_wght 表写入完成。")
 
-    log("正在写入数据库...")
-    threaded_insert_dataframe(pool, datasets, max_workers=4)
-    log("结果已写入：iis_ef_grid_srch_wght")
-    log(f"写入完成，耗时 {time.time() - s_t:.1f} 秒")
+    # --- 2. 准备并更新/插入 iis_aset_allc_indx_pub (有效前沿 + C1-C6) ---
+    log(f"构建 iis_aset_allc_indx_pub 表的数据...")
+    pub_df_source = combined[(combined['on_ef'] == True) | (combined['rsk_lvl'].isin([1, 2, 3, 4, 5, 6]))].copy()
+    
+    # 确保 rsk_lvl 是唯一的整数
+    pub_df_source['rsk_lvl'] = pub_df_source['rsk_lvl'].astype(int)
+    pub_df_source = pub_df_source.sort_values(by='rsk_lvl').reset_index(drop=True)
+
+    pub_df = pd.DataFrame({
+        'mdl_ver_id': mdl_ver_id,
+        'rsk_lvl': pub_df_source['rsk_lvl'],
+        'rate': pub_df_source['ret_annual'],
+        'shrp_prprtn': pub_df_source['sharpe_ratio'],
+        'var95_b': pub_df_source['var_annual'],
+        'var95': pub_df_source['var_annual'].clip(lower=0.0),
+        'crt_tm': pd.to_datetime('now'),
+    })
+    for k, v in _build_weight_cols(pub_df_source, a_list).items():
+        pub_df[k] = v
+
+    log("Upserting 到 iis_aset_allc_indx_pub...")
+    threaded_upsert_dataframe_mysql(pool, [{'dataframe': pub_df, 'table': 'iis_aset_allc_indx_pub'}], max_workers=1)
+    log("iis_aset_allc_indx_pub 表更新/插入完成。")
+
+    log(f"数据库操作总耗时 {time.time() - s_t:.1f} 秒")
 
 
 # 从指定的 Excel 文件中读取并处理大类资产的数据
@@ -773,6 +783,7 @@ def main():
     try:
         insert_results_to_db(mdl_ver_id, a_list, res_df, re_df, asset_id_map)
     except Exception as e:
+        print(traceback.format_exc())
         return json.dumps({
             "code": 1,
             "msg": f"结果写入数据库失败: {e}"
