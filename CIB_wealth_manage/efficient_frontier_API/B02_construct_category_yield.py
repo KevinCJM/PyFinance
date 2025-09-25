@@ -25,14 +25,17 @@ from typing import Dict, List, Tuple
 
 try:
     from countus.efficient_frontier_API.T02_other_tools import log
-    from countus.efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url, threaded_upsert_dataframe_mysql
+    from countus.efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url, \
+        threaded_upsert_dataframe_mysql
 except ImportError:
     from efficient_frontier_API.T02_other_tools import log
-    from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url, threaded_upsert_dataframe_mysql
+    from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url, \
+        threaded_upsert_dataframe_mysql
 
 try:
     try:
-        from countus.efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+        from countus.efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, \
+            db_password
     except ImportError:
         from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
@@ -234,7 +237,6 @@ def run():
                 annual_stats_list.append({
                     "mdl_ver_id": mdl_ver_id,
                     "aset_bclass_cd": str(aset_cd),
-                    "aset_bclass_nm": str(aset_cd),  # 与日收益表保持一致
                     "pct_yld": annual_return,
                     "pct_std": annual_vol,
                     "data_dt": cat_ret.index[-1].date(),
@@ -244,7 +246,6 @@ def run():
             tmp = pd.DataFrame({
                 "mdl_ver_id": mdl_ver_id,
                 "aset_bclass_cd": str(aset_cd),
-                "aset_bclass_nm": str(aset_cd),
                 "pct_yld_date": cat_ret.index.date,
                 "pct_yld": cat_ret.values.astype(float),
             })
@@ -273,7 +274,6 @@ def run():
         log("Upserting 大类收益率和年度统计数据 ...")
         datasets = []
 
-        # For iis_mdl_aset_pct_d, split for parallelism
         for aset_cd, sub in result_df.groupby("aset_bclass_cd"):
             datasets.append({
                 "dataframe": sub,
@@ -290,7 +290,8 @@ def run():
 
         if datasets:
             threaded_upsert_dataframe_mysql(pool, datasets, max_workers=4)
-            log(f"大类收益率数据拟合与 Upsert 完成，耗时 {time.time() - s_t:.2f} 秒")
+            log(f"大类收益率数据拟合与 Upsert 入 iis_aset_allc_indx_rtrn 和 iis_mdl_aset_pct_d 表完成，"
+                f"耗时 {time.time() - s_t:.2f} 秒")
         else:
             log("没有数据需要入库。")
 
