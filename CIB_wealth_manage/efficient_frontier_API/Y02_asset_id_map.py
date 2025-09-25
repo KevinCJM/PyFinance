@@ -11,8 +11,8 @@ asset_to_weight_column_map = {
     '货币': 'csh_mgt_typ_pos',  # 现金管理类持仓
     '固收': 'fx_yld_pos',  # 固定持仓
     '混合': 'mix_strg_typ_pos',  # 混合持仓
-    '权益': 'eqty_invst_pos',  # 权益混合持仓
-    '另类': 'altrnt_invst_pos',  # 另类投资持仓
+    '权益': 'eqty_invst_typ_pos',  # 权益投资类持仓
+    '另类': 'altnt_invst_pos',  # 另类投资持仓
 }
 
 # C1 ~ C6 的 rsk_level 代码

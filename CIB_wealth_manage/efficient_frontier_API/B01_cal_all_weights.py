@@ -39,6 +39,10 @@ try:
 except Exception:
     raise RuntimeError("请先配置 Y01_db_config.py 中的数据库连接参数")
 
+# df展示所有列
+pd.set_option('display.max_columns', None)
+# df不换行
+pd.set_option('expand_frame_repr', False)
 # 网格搜索精度
 R_RATIO = 10
 
@@ -453,21 +457,7 @@ def fetch_standard_portfolios(pool: DatabaseConnectionPool, mdl_ver_id: str, cod
 
 def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame, return_df: pd.DataFrame,
                          code_to_name_map: Dict[str, str]) -> None:
-    """将计算结果批量写入两张表，使用线程池并发分块插入。
-
-    本函数会将完整的投资组合数据写入全量表 `iis_aset_allc_indx_wght` 和精简的有效前沿表 `iis_aset_allc_indx_pub`。
-    插入前会先清空目标表，然后通过线程池并发分块插入提升性能。
-
-    参数:
-        mdl_ver_id (str): 模型版本标识符，用于标记数据来源。
-        a_list (List[str]): 资产名称列表，用于构建权重列。
-        res_df (pd.DataFrame): 包含原始计算结果的数据框，包含各资产权重及绩效指标。
-        return_df (pd.DataFrame): 原始收益率数据框，用于重新计算缺失标准组合的绩效。
-        code_to_name_map (Dict[str, str]): 资产代码到名称的映射。
-
-    返回:
-        None
-    """
+    """将计算结果批量写入 iis_ef_grid_srch_wght 表。"""
     log(f"正在将计算结果写入数据库...")
     s_t = time.time()
     db_url = get_active_db_url(
@@ -521,44 +511,31 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
                          ignore_index=True) if not std_missing_df.empty else res_df_all.copy()
     combined['on_ef'] = efficient_frontier_mask(combined['ret_annual'].values, combined['vol_annual'].values)
 
-    # 全量表：为非标准组合分配 rsk_lvl（11 起自增）
-    base_df_all = pd.DataFrame({
-        'mdl_ver_id': mdl_ver_id,
-        'rsk_lvl': combined['rsk_lvl'],
-        'shrp_prprtn': combined['sharpe_ratio'].astype(float),
-        'VaR95_b': combined['var_annual'].astype(float),
-        'VaR95': combined['var_annual'].astype(float).clip(lower=0.0),
-    }, index=combined.index)
-    for k, v in _build_weight_cols(combined, a_list).items():
-        base_df_all[k] = v
-
-    log(f"构建全量表 iis_aset_allc_indx_wght 数据...")
-    wght_df = base_df_all.copy()
-    is_nan = wght_df['rsk_lvl'].isna()
+    # 为非标准组合分配 rsk_lvl（11 起自增）
+    is_nan = combined['rsk_lvl'].isna()
     if is_nan.any():
         seq = np.arange(11, 11 + int(is_nan.sum()), dtype=np.int64)
-        wght_df.loc[is_nan, 'rsk_lvl'] = seq
-    wght_df['rsk_lvl'] = wght_df['rsk_lvl'].astype(int)
-    wght_df['isefct_fond'] = combined['on_ef'].astype(bool).astype(int).values
+        combined.loc[is_nan, 'rsk_lvl'] = seq
+    combined['rsk_lvl'] = combined['rsk_lvl'].astype(int)
 
-    log(f"构建有效前沿表 iis_aset_allc_indx_pub 数据...")
-    pub_df = combined[(combined['on_ef'] == True) | (combined['rsk_lvl'].isin([1, 2, 3, 4, 5, 6]))].copy()
-    pub_df = pub_df.sort_values(by='ret_annual', ascending=True)
-    is_nan_pub = pub_df['rsk_lvl'].isna()
-    if is_nan_pub.any():
-        seq_pub = np.arange(11, 11 + int(is_nan_pub.sum()), dtype=np.int64)
-        pub_df.loc[is_nan_pub, 'rsk_lvl'] = seq_pub
-    pub_df['rsk_lvl'] = pub_df['rsk_lvl'].astype(int)
-    pub_base = pd.DataFrame({
+    # 准备插入 iis_ef_grid_srch_wght 的数据
+    log(f"构建 iis_ef_grid_srch_wght 表的数据...")
+
+    wght_df = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
-        'rsk_lvl': pub_df['rsk_lvl'].astype(int),
-        'shrp_prprtn': pub_df['sharpe_ratio'].astype(float),
-        'VaR95_b': pub_df['var_annual'].astype(float),
-        'VaR95': pub_df['var_annual'].astype(float).clip(lower=0.0),
-    }, index=pub_df.index)
-    for k, v in _build_weight_cols(pub_df, a_list).items():
-        pub_base[k] = v
-    pub_df = pub_base
+        'rsk_lvl': combined['rsk_lvl'],
+        'rate': combined['ret_annual'].astype(float),
+        'shrp_prprtn': combined['sharpe_ratio'].astype(float),
+        'var95_b': combined['var_annual'].astype(float),
+        'var95': combined['var_annual'].astype(float).clip(lower=0.0),
+        'is_efct_font': combined['on_ef'].astype(int).astype(str),
+        'dt_dt': return_df.index.max().date(),
+        'crt_tm': pd.to_datetime('now'),
+        'liquid': None,
+    })
+
+    for k, v in _build_weight_cols(combined, a_list).items():
+        wght_df[k] = v
 
     # 分块并发写入
     log("正在准备分批写入的数据块...")
@@ -571,25 +548,21 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     datasets = []
     chunk_size = 5000
     for chunk in _chunker(wght_df, chunk_size):
-        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_wght', 'batch_size': 1000,
-                         'method': 'multi'})
-    for chunk in _chunker(pub_df, chunk_size):
-        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_pub', 'batch_size': 1000,
+        datasets.append({'dataframe': chunk, 'table': 'iis_ef_grid_srch_wght', 'batch_size': 1000,
                          'method': 'multi'})
 
     # 清空后再插入（TRUNCATE）
-    log("清空目标表...")
+    log("清空目标表 iis_ef_grid_srch_wght...")
     with pool.begin() as conn:
         try:
-            conn.execute(text("TRUNCATE TABLE iis_aset_allc_indx_wght"))
-            conn.execute(text("TRUNCATE TABLE iis_aset_allc_indx_pub"))
+            conn.execute(text("TRUNCATE TABLE iis_ef_grid_srch_wght"))
         except Exception as e:
             log(f"TRUNCATE 失败: {e}")
             raise
 
     log("正在写入数据库...")
     threaded_insert_dataframe(pool, datasets, max_workers=4)
-    log("结果已分别写入：iis_aset_allc_indx_wght（全量）、iis_aset_allc_indx_pub（有效前沿）")
+    log("结果已写入：iis_ef_grid_srch_wght")
     log(f"写入完成，耗时 {time.time() - s_t:.1f} 秒")
 
 
@@ -766,7 +739,7 @@ def main():
         s_t_1 = time.time()
         # 基于资产收益率和权重组合，计算各组合的绩效指标
         res_df = generate_alloc_perf_numba(a_list, re_df, weight_list)
-        log(f"{res_df.head()}")
+        log(f"\n{res_df.head()}")
         log(f"计算指标耗时: {time.time() - s_t_1:.2f} 秒")
     except Exception as e:
         return json.dumps({
@@ -787,10 +760,9 @@ def main():
     ''' 4) 结果保存到本地文件 -------------------------------------------------------------------------- '''
     try:
         folder_path = os.path.dirname(os.path.abspath("__file__"))
-        asset_id_map = {v: k for k, v in asset_id_map.items()}
-        res_df_cd = res_df.rename(columns=asset_id_map)
+        res_df_cd = res_df.rename(columns={v: k for k, v in asset_id_map.items()})
         res_df_cd.to_pickle(os.path.join(folder_path, f'alloc_results_400w.pkl'))
-        log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.pkl')}")
+        log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.pkl')}, 数据样式如下\n{res_df_cd.head()}")
     except Exception as e:
         return json.dumps({
             "code": 1,
