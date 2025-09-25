@@ -18,6 +18,9 @@ B02_construct_category_yield.py
 """
 import time
 import json
+import traceback
+from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
@@ -25,19 +28,21 @@ from typing import Dict, List, Tuple
 
 try:
     from countus.efficient_frontier_API.T02_other_tools import log
-    from countus.efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url, \
-        threaded_upsert_dataframe_mysql
+    from countus.efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, read_dataframe, get_active_db_url,
+                                                             threaded_upsert_dataframe_mysql)
+    from countus.efficient_frontier_API.Y02_asset_id_map import aset_cd_nm_dict
 except ImportError:
     from efficient_frontier_API.T02_other_tools import log
-    from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url, \
-        threaded_upsert_dataframe_mysql
+    from efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, read_dataframe, get_active_db_url,
+                                                     threaded_upsert_dataframe_mysql)
+    from efficient_frontier_API.Y02_asset_id_map import aset_cd_nm_dict
 
 try:
     try:
-        from countus.efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, \
-            db_password
+        from countus.efficient_frontier_API.Y01_db_config import (db_type, db_host, db_port, db_name, db_user,
+                                                                  db_password)
     except ImportError:
-        from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+        from efficient_frontier_API.Y01_db_config import (db_type, db_host, db_port, db_name, db_user, db_password)
 except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 
@@ -227,29 +232,51 @@ def run():
             # 计算加权收益
             cat_ret = (index_return_df[cols] * w.values).sum(axis=1)
 
-            # 新增：计算年化收益与波动
-            if not cat_ret.empty:
-                trading_days = 252.0
-                mu = cat_ret.mean()
-                sigma = cat_ret.std(ddof=1)
-                annual_return = ((1 + mu) ** trading_days) - 1
-                annual_vol = sigma * np.sqrt(trading_days)
-                annual_stats_list.append({
-                    "mdl_ver_id": mdl_ver_id,
-                    "aset_bclass_cd": str(aset_cd),
-                    "pct_yld": annual_return,
-                    "pct_std": annual_vol,
-                    "data_dt": cat_ret.index[-1].date(),
-                    "crt_tm": pd.to_datetime("now"),
-                })
+            if cat_ret.empty:
+                continue
 
+            asset_name = aset_cd_nm_dict.get(str(aset_cd), str(aset_cd))
+
+            # 计算年化收益与波动
+            trading_days = 252.0
+            mu = cat_ret.mean()
+            sigma = cat_ret.std(ddof=1)
+            annual_return = ((1 + mu) ** trading_days) - 1
+            annual_vol = sigma * np.sqrt(trading_days)
+            annual_stats_list.append({
+                "mdl_ver_id": mdl_ver_id,
+                "aset_bclass_cd": str(aset_cd),
+                "aset_bclass_nm": asset_name,
+                "pct_yld": annual_return,
+                "pct_std": annual_vol,
+                "data_dt": cat_ret.index[-1].date(),
+                "crt_tm": pd.to_datetime("now"),
+            })
+
+            # 计算累计净值
+            acc_nav = (1 + cat_ret).cumprod()
             tmp = pd.DataFrame({
                 "mdl_ver_id": mdl_ver_id,
                 "aset_bclass_cd": str(aset_cd),
-                "pct_yld_date": cat_ret.index.date,
-                "pct_yld": cat_ret.values.astype(float),
+                "aset_bclass_nm": asset_name,
+                "pct_yld_date": cat_ret.index,
+                "pct_yld": cat_ret.values,
+                "acc_value": acc_nav.values
             })
-            out_frames.append(tmp)
+
+            # 构造并合并初始净值记录
+            start_date = cat_ret.index[0] - timedelta(days=1)
+            initial_nav_record = pd.DataFrame([{
+                "mdl_ver_id": mdl_ver_id,
+                "aset_bclass_cd": str(aset_cd),
+                "aset_bclass_nm": asset_name,
+                "pct_yld_date": start_date,
+                "pct_yld": np.nan,
+                "acc_value": 1.0
+            }])
+
+            tmp_with_initial_nav = pd.concat([initial_nav_record, tmp], ignore_index=True)
+            out_frames.append(tmp_with_initial_nav)
 
         if not out_frames:
             return json.dumps({
@@ -274,16 +301,21 @@ def run():
         log("Upserting 大类收益率和年度统计数据 ...")
         datasets = []
 
+        # 清理 iis_mdl_aset_pct_d 的数据
         for aset_cd, sub in result_df.groupby("aset_bclass_cd"):
+            # 将 NaN 替换为 None 以便数据库驱动正确处理
+            sub_cleaned = sub.replace({np.nan: None})
             datasets.append({
-                "dataframe": sub,
+                "dataframe": sub_cleaned,
                 "table": "iis_mdl_aset_pct_d",
                 "batch_size": 2000,
             })
 
+        # 清理 iis_aset_allc_indx_rtrn 的数据
         if not df_annual_stats.empty:
+            df_annual_stats_cleaned = df_annual_stats.replace({np.nan: None})
             datasets.append({
-                "dataframe": df_annual_stats,
+                "dataframe": df_annual_stats_cleaned,
                 "table": "iis_aset_allc_indx_rtrn",
                 "batch_size": 200,
             })
@@ -296,6 +328,7 @@ def run():
             log("没有数据需要入库。")
 
     except Exception as e:
+        print(traceback.format_exc())
         return json.dumps({
             "code": 1,
             "msg": f"结果入库失败: {e}"
