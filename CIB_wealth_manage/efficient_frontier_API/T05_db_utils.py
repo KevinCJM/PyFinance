@@ -403,11 +403,11 @@ def threaded_update_dataframe(
 
 
 def upsert_dataframe_mysql(
-    pool: DatabaseConnectionPool,
-    dataframe: pd.DataFrame,
-    table: str,
-    schema: Optional[str] = None,
-    batch_size: int = 1000,
+        pool: DatabaseConnectionPool,
+        dataframe: pd.DataFrame,
+        table: str,
+        schema: Optional[str] = None,
+        batch_size: int = 1000,
 ) -> None:
     """
     批量执行 MySQL 的 UPSERT 操作 (INSERT ... ON DUPLICATE KEY UPDATE)。
@@ -426,7 +426,7 @@ def upsert_dataframe_mysql(
 
     meta = MetaData()
     tbl = Table(table, meta, autoload_with=pool.engine, schema=schema)
-    
+
     records = dataframe.to_dict(orient='records')
 
     with pool.begin() as conn:
@@ -436,19 +436,19 @@ def upsert_dataframe_mysql(
                 continue
 
             stmt = mysql_insert(tbl).values(batch)
-            
+
             # 只更新DataFrame中存在的非主键列
             update_cols = {}
             for col in dataframe.columns:
                 if col not in {c.name for c in tbl.primary_key.columns}:
                     update_cols[col] = stmt.inserted[col]
-            
+
             if update_cols:
                 final_stmt = stmt.on_duplicate_key_update(update_cols)
             else:
                 # 如果所有提供的列都是主键，则退化为 INSERT IGNORE
                 final_stmt = stmt.prefix_with("IGNORE")
-            
+
             conn.execute(final_stmt)
 
 

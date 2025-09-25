@@ -546,13 +546,14 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
         except Exception as e:
             log(f"TRUNCATE 失败: {e}")
             raise
-    threaded_insert_dataframe(pool, [{'dataframe': wght_df, 'table': 'iis_ef_grid_srch_wght', 'batch_size': 5000}], max_workers=1)
+    threaded_insert_dataframe(pool, [{'dataframe': wght_df, 'table': 'iis_ef_grid_srch_wght', 'batch_size': 5000}],
+                              max_workers=1)
     log("iis_ef_grid_srch_wght 表写入完成。")
 
     # --- 2. 准备并更新/插入 iis_aset_allc_indx_pub (有效前沿 + C1-C6) ---
     log(f"构建 iis_aset_allc_indx_pub 表的数据...")
     pub_df_source = combined[(combined['on_ef'] == True) | (combined['rsk_lvl'].isin([1, 2, 3, 4, 5, 6]))].copy()
-    
+
     # 确保 rsk_lvl 是唯一的整数
     pub_df_source['rsk_lvl'] = pub_df_source['rsk_lvl'].astype(int)
     pub_df_source = pub_df_source.sort_values(by='rsk_lvl').reset_index(drop=True)
