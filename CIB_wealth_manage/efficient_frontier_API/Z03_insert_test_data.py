@@ -45,6 +45,14 @@ ASSET_CLASSES = [
     ("ALT", "另类"),
 ]
 
+# 基准组合权重配置, 用于在400w个点以及有效前沿表上 iis_aset_allc_indx_pub 和 iis_aset_allc_indx_wght
+C1 = {'货币': 1.00, '固收': 0.00, '混合': 0.00, '权益': 0.00, '另类': 0.00}
+C2 = {'货币': 0.20, '固收': 0.80, '混合': 0.00, '权益': 0.00, '另类': 0.00}
+C3 = {'货币': 0.10, '固收': 0.55, '混合': 0.35, '权益': 0.00, '另类': 0.00}
+C4 = {'货币': 0.05, '固收': 0.40, '混合': 0.30, '权益': 0.20, '另类': 0.05}
+C5 = {'货币': 0.05, '固收': 0.20, '混合': 0.25, '权益': 0.40, '另类': 0.10}
+C6 = {'货币': 0.05, '固收': 0.10, '混合': 0.15, '权益': 0.60, '另类': 0.10}
+
 
 def _today() -> date:
     return datetime.now().date()
@@ -167,6 +175,29 @@ def build_pct_d_rows(mdl_ver_id: str, start: date, end: date, seed: int = 0) -> 
     return df
 
 
+def build_rsk_rel_rows(mdl_ver_id: str) -> pd.DataFrame:
+    """构造 iis_wght_cnfg_mdl_ast_rsk_rel 的 C1-C6 风险等级权重数据。"""
+    name_to_code_map = {name: code for code, name in ASSET_CLASSES}
+    risk_portfolios = [
+        (1, C1), (2, C2), (3, C3), (4, C4), (5, C5), (6, C6)
+    ]
+    rows = []
+    for rsk_lvl, portfolio_weights in risk_portfolios:
+        for asset_name, weight in portfolio_weights.items():
+            if asset_name not in name_to_code_map:
+                continue
+
+            aset_bclass_cd = name_to_code_map[asset_name]
+            rows.append({
+                "mdl_ver_id": mdl_ver_id,
+                "aset_bclass_cd": aset_bclass_cd,
+                "rsk_lvl": rsk_lvl,
+                "wght": float(weight),
+            })
+
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     # 连接串优先级：环境变量 DB_URL > 基于配置自动构造
     db_url = os.environ.get("DB_URL") or get_active_db_url(
@@ -193,6 +224,7 @@ def main() -> None:
         "iis_fnd_indx_info",
         "wind_cmfindexeod",
         "iis_mdl_aset_pct_d",
+        "iis_wght_cnfg_mdl_ast_rsk_rel",
     ]
     try:
         with pool.begin() as conn:
@@ -293,6 +325,14 @@ def main() -> None:
         print(f"[OK] 写入 iis_mdl_aset_pct_d: {len(df_pct_d)} 行")
     except Exception as e:
         print(f"[ERR] 插入 iis_mdl_aset_pct_d 失败: {e}")
+
+    try:
+        df_rsk_rel = build_rsk_rel_rows("MDL_SIM_001")
+        if not df_rsk_rel.empty:
+            insert_dataframe(pool, df_rsk_rel, table="iis_wght_cnfg_mdl_ast_rsk_rel")
+            print(f"[OK] 写入 iis_wght_cnfg_mdl_ast_rsk_rel: {len(df_rsk_rel)} 行")
+    except Exception as e:
+        print(f"[ERR] 插入 iis_wght_cnfg_mdl_ast_rsk_rel 失败: {e}")
 
     print("[DONE] 测试数据插入完成。")
 
