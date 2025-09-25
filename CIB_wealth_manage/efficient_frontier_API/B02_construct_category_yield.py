@@ -7,9 +7,9 @@ B02_construct_category_yield.py
 步骤
 1) 从 iis_wght_cnfg_attc_mdl 取第一条记录：mdl_ver_id, on_ln_dt, off_ln_dt
 2) 读取 iis_wght_cnfg_mdl 中该 mdl_ver_id 的配置：mdl_ver_id, aset_bclass_cd, indx_num, indx_nm, wght
-3) 在 iis_fnd_indx_info 中查询这些 indx_num 的来源表：indx_num, src_tab_enmm
-4) 如果存在 src_tab_enmm != 'wind_cmfindexeod' 的记录，抛出错误
-5) 合并所有 src_tab_enmm 为 'wind_cmfindexeod' 的 indx_num，
+3) 在 iis_fnd_indx_info 中查询这些 indx_num 的来源表：indx_num, src_tab_ennm
+4) 如果存在 src_tab_ennm != 'wind_cmfindexeod' 的记录，抛出错误
+5) 合并所有 src_tab_ennm 为 'wind_cmfindexeod' 的 indx_num，
    到 wind_cmfindexeod 中查询 s_info_windcode in (indx_num) 的数据（s_info_windcode, s_info_name, trade_dt, s_dq_close）
 
 依赖
@@ -90,10 +90,10 @@ def fetch_model_config(pool: DatabaseConnectionPool, mdl_ver_id: str) -> pd.Data
 def fetch_index_sources(pool: DatabaseConnectionPool, codes: List[str]) -> pd.DataFrame:
     log("读取 iis_fnd_indx_info 中的指数来源表")
     if not codes:
-        return pd.DataFrame(columns=["indx_num", "src_tab_enmm"])  # 空
+        return pd.DataFrame(columns=["indx_num", "src_tab_ennm"])  # 空
     in_clause, params = _build_in_clause("p", list(codes))
     sql = (
-        "SELECT indx_num, src_tab_enmm FROM iis_fnd_indx_info "
+        "SELECT indx_num, src_tab_ennm FROM iis_fnd_indx_info "
         f"WHERE indx_num IN {in_clause}"
     )
     return read_dataframe(pool, sql, params=params)
@@ -142,7 +142,7 @@ def run():
         src_df = fetch_index_sources(pool, codes)
         if src_df.empty:
             raise RuntimeError("iis_fnd_indx_info 未返回任何指数来源信息")
-        invalid_src = src_df["src_tab_enmm"].astype(str).unique().tolist()
+        invalid_src = src_df["src_tab_ennm"].astype(str).unique().tolist()
         invalid = [s for s in invalid_src if s != 'wind_cmfindexeod']
         if invalid:
             return json.dumps({

@@ -123,8 +123,8 @@ CREATE TABLE iis_fnd_indx_info
     indx_typ_cd          varchar(9)    DEFAULT NULL COMMENT '指数类别代码',
     indx_typ_nm          varchar(40)   DEFAULT NULL COMMENT '指数类别名称',
     indx_rmk             text COMMENT '指数备注',
-    src_tab_enmm         varchar(100)  DEFAULT NULL COMMENT '来源表英文名',
-    src_tab_cnmm         varchar(100)  DEFAULT NULL COMMENT '来源表中文名',
+    src_tab_ennm         varchar(100)  DEFAULT NULL COMMENT '来源表英文名',
+    src_tab_cnnm         varchar(100)  DEFAULT NULL COMMENT '来源表中文名',
     PRIMARY KEY (indx_num)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='基金指数信息表';
 

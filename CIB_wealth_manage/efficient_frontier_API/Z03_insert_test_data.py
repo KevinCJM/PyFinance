@@ -231,7 +231,7 @@ def main() -> None:
         df_cfg_all = pd.concat([df_cfg_1, df_cfg_2], ignore_index=True)
         uniq = df_cfg_all[["indx_num", "indx_nm"]].drop_duplicates().copy()
         df_indx_info = uniq.assign(
-            indx_rmk='测试数据', src_tab_enmm='wind_cmfindexeod', src_tab_cnmm='中国共同基金指数行情'
+            indx_rmk='测试数据', src_tab_ennm='wind_cmfindexeod', src_tab_cnnm='中国共同基金指数行情'
         )
         insert_dataframe(pool, df_indx_info, table="iis_fnd_indx_info", batch_size=1000)
         print(f"[OK] 写入 iis_fnd_indx_info: {len(df_indx_info)} 行")
