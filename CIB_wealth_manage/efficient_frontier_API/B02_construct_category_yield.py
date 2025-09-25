@@ -66,7 +66,7 @@ def fetch_first_model(pool: DatabaseConnectionPool) -> pd.Series:
     log("读取 iis_wght_cnfg_attc_mdl 表的第一条记录")
     sql = (
         "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt "
-        "FROM iis_wght_cnfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
+        "FROM iis_wght_cnfg_attc_mdl WHERE mdl_st = '2' ORDER BY mdl_ver_id ASC LIMIT 1"
     )
     df = read_dataframe(pool, sql)
     if df.empty:

@@ -639,7 +639,7 @@ def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
         db_name=db_name,
     )
     # 单次查询：取第一条记录（可按需调整排序口径）
-    sql = "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt FROM iis_wght_cnfg_attc_mdl ORDER BY mdl_ver_id ASC LIMIT 1"
+    sql = "SELECT mdl_ver_id, cal_strt_dt, cal_end_dt FROM iis_wght_cnfg_attc_mdl WHERE mdl_st = '2' ORDER BY mdl_ver_id ASC LIMIT 1"
     conn = create_connection(db_url)
     try:
         df = pd.read_sql_query(sql, conn)
