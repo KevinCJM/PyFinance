@@ -28,8 +28,7 @@ from efficient_frontier_API.T05_db_utils import (
     DatabaseConnectionPool,
     read_dataframe,
     get_active_db_url,
-    threaded_insert_dataframe,
-    create_connection,
+    threaded_upsert_dataframe_mysql,
 )
 
 try:
@@ -269,25 +268,15 @@ def run():
 
     ''' 3. 结果入库 ----------------------------------------------------------------------------- '''
     try:
-        # 1) 清空目标表
-        log("清空目标表 iis_mdl_aset_pct_d, iis_aset_allc_indx_rtrn ...")
-        # 使用单连接执行 TRUNCATE，无需连接池上下文
-        single_conn = create_connection(pool.engine.url)
-        try:
-            single_conn.execute(text("TRUNCATE TABLE iis_mdl_aset_pct_d"))
-            single_conn.execute(text("TRUNCATE TABLE iis_aset_allc_indx_rtrn"))
-        finally:
-            single_conn.close()
-
-        # 2) 分批并发插入
-        log("将大类收益率和年度统计数据分批并发插入 ...")
+        log("Upserting 大类收益率和年度统计数据 ...")
         datasets = []
+
+        # For iis_mdl_aset_pct_d, split for parallelism
         for aset_cd, sub in result_df.groupby("aset_bclass_cd"):
             datasets.append({
                 "dataframe": sub,
                 "table": "iis_mdl_aset_pct_d",
                 "batch_size": 2000,
-                "method": "multi",
             })
 
         if not df_annual_stats.empty:
@@ -295,11 +284,14 @@ def run():
                 "dataframe": df_annual_stats,
                 "table": "iis_aset_allc_indx_rtrn",
                 "batch_size": 200,
-                "method": "multi",
             })
 
-        threaded_insert_dataframe(pool, datasets, max_workers=4)
-        log(f"大类收益率数据拟合插入完成，耗时 {time.time() - s_t:.2f} 秒")
+        if datasets:
+            threaded_upsert_dataframe_mysql(pool, datasets, max_workers=4)
+            log(f"大类收益率数据拟合与 Upsert 完成，耗时 {time.time() - s_t:.2f} 秒")
+        else:
+            log("没有数据需要入库。")
+
     except Exception as e:
         return json.dumps({
             "code": 1,

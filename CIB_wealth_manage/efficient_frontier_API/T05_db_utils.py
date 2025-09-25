@@ -29,7 +29,7 @@
 
     df = read_dataframe(pool, "SELECT * FROM sample_table WHERE biz_date = :biz_date", params={"biz_date": "2024-01-01"})
 
-    insert_dataframe(pool, df, "sample_table_backup", replace=False)
+    insert_dataframe(pool, df, "sample_table_backup")
 
     update_dataframe(pool, df, "sample_table", key_columns=["id"])
 
@@ -45,8 +45,9 @@ import logging
 import pandas as pd
 from contextlib import contextmanager
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, Table, MetaData, inspect
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
 
@@ -167,42 +168,44 @@ def insert_dataframe(
         dataframe: pd.DataFrame,
         table: str,
         schema: Optional[str] = None,
-        replace: bool = False,
         batch_size: int = 1000,
         dtype: Optional[Dict[str, Any]] = None,
         method: Optional[str] = "multi",
 ) -> None:
-    """将 :class:`pandas.DataFrame` 批量写入数据库表。
+    """将 :class:`pandas.DataFrame` 批量追加写入数据库表。
+
+    该函数只允许向已存在的表追加数据。如果表不存在，会引发 ValueError。
+    这可以防止意外创建新表。
 
     :param pool: 连接池实例。
     :param dataframe: 待写入的数据。
     :param table: 目标表名。
     :param schema: 可选的 schema 名称。
-    :param replace: ``True`` 时使用 ``if_exists='replace'``，否则 ``append``。
     :param batch_size: 每批写入的行数，对 ``to_sql`` 的 ``chunksize`` 参数。
     :param dtype: ``pandas.DataFrame.to_sql`` 的 ``dtype`` 映射，可用于指定列类型。
     :param method: ``to_sql`` 的 ``method`` 参数，默认 ``"multi"`` 以提升批量写入效率。
     """
-
     if dataframe.empty:
         LOGGER.info("DataFrame 为空，跳过写入: table=%s", table)
         return
 
-    if_exists = "replace" if replace else "append"
+    inspector = inspect(pool.engine)
+    if not inspector.has_table(table, schema=schema):
+        full_table_name = f"{schema}.{table}" if schema else table
+        raise ValueError(f"Table '{full_table_name}' does not exist. Table creation is not allowed.")
 
     LOGGER.debug(
-        "写入 DataFrame: table=%s, schema=%s, rows=%s, if_exists=%s",
+        "Appending to table: table=%s, schema=%s, rows=%s",
         table,
         schema,
         len(dataframe),
-        if_exists,
     )
 
     dataframe.to_sql(
         name=table,
         con=pool.engine,
         schema=schema,
-        if_exists=if_exists,
+        if_exists='append',
         index=False,
         chunksize=batch_size,
         dtype=dtype,
@@ -345,11 +348,11 @@ def threaded_insert_dataframe(
         datasets: Sequence[Mapping[str, Any]],
         max_workers: Optional[int] = None,
 ) -> None:
-    """使用线程池并发插入多个 :class:`pandas.DataFrame`。
+    """使用线程池并发追加写入多个 :class:`pandas.DataFrame`。
 
     :param pool: 连接池实例。
     :param datasets: 每个元素需至少包含 ``dataframe``、``table`` 键，可额外提供
-        :func:`insert_dataframe` 支持的其他关键字参数（如 ``schema``、``replace`` 等）。
+        :func:`insert_dataframe` 支持的其他关键字参数（如 ``schema``、``batch_size`` 等）。
     :param max_workers: 线程池最大线程数。
     """
 
@@ -399,6 +402,76 @@ def threaded_update_dataframe(
     )
 
 
+def upsert_dataframe_mysql(
+    pool: DatabaseConnectionPool,
+    dataframe: pd.DataFrame,
+    table: str,
+    schema: Optional[str] = None,
+    batch_size: int = 1000,
+) -> None:
+    """
+    批量执行 MySQL 的 UPSERT 操作 (INSERT ... ON DUPLICATE KEY UPDATE)。
+    DataFrame 必须包含目标表的所有列，包括主键。
+    """
+    if dataframe.empty:
+        LOGGER.info("DataFrame 为空，跳过对表 %s 的 upsert 操作", table)
+        return
+
+    LOGGER.debug(
+        "Upserting DataFrame: table=%s, schema=%s, rows=%s",
+        table,
+        schema,
+        len(dataframe),
+    )
+
+    meta = MetaData()
+    tbl = Table(table, meta, autoload_with=pool.engine, schema=schema)
+    
+    records = dataframe.to_dict(orient='records')
+
+    with pool.begin() as conn:
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i + batch_size]
+            if not batch:
+                continue
+
+            stmt = mysql_insert(tbl).values(batch)
+            
+            update_cols = {
+                c.name: c for c in stmt.inserted if not c.primary_key
+            }
+            
+            if update_cols:
+                final_stmt = stmt.on_duplicate_key_update(update_cols)
+            else:
+                final_stmt = stmt.prefix_with("IGNORE")
+            
+            conn.execute(final_stmt)
+
+
+def threaded_upsert_dataframe_mysql(
+        pool: DatabaseConnectionPool,
+        datasets: Sequence[Mapping[str, Any]],
+        max_workers: Optional[int] = None,
+) -> None:
+    """使用线程池并发地对多个 DataFrame 执行 MySQL UPSERT 操作。"""
+
+    def _worker(pool_obj: DatabaseConnectionPool, kwargs: Mapping[str, Any]) -> None:
+        params = dict(kwargs)
+        dataframe = params.pop("dataframe")
+        table = params.pop("table")
+        upsert_dataframe_mysql(pool_obj, dataframe, table, **params)
+
+    tasks = []
+    for index, item in enumerate(datasets):
+        tasks.append((index, (pool, item), {}))
+    _run_with_thread_pool(
+        lambda pool_obj, params: _worker(pool_obj, params),
+        tasks,
+        max_workers=max_workers,
+    )
+
+
 __all__ = [
     "create_connection",
     "DatabaseConnectionPool",
@@ -408,6 +481,8 @@ __all__ = [
     "threaded_read_dataframe",
     "threaded_insert_dataframe",
     "threaded_update_dataframe",
+    "upsert_dataframe_mysql",
+    "threaded_upsert_dataframe_mysql",
 ]
 
 
