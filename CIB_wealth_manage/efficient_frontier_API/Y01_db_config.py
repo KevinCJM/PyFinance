@@ -12,7 +12,7 @@ db_host = None  # None -> 自动：容器内使用 host.docker.internal/网关�
 db_port = '3306'
 db_name = 'mysql'
 db_user = 'root'
-db_password = '112358'
+db_password = '*******************'
 
 if __name__ == '__main__':
     from T05_db_utils import get_active_db_url, try_connect, is_in_docker
