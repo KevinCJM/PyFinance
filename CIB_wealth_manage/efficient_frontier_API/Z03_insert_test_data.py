@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, insert_dataframe, get_active_db_url
+from efficient_frontier_API.Y02_asset_id_map import rsk_level_code_dict
 
 try:
     from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
@@ -178,9 +179,16 @@ def build_pct_d_rows(mdl_ver_id: str, start: date, end: date, seed: int = 0) -> 
 def build_rsk_rel_rows(mdl_ver_id: str) -> pd.DataFrame:
     """构造 iis_wght_cnfg_mdl_ast_rsk_rel 的 C1-C6 风险等级权重数据。"""
     name_to_code_map = {name: code for code, name in ASSET_CLASSES}
-    risk_portfolios = [
-        (1, C1), (2, C2), (3, C3), (4, C4), (5, C5), (6, C6)
-    ]
+    
+    portfolio_map = {
+        'C1': C1, 'C2': C2, 'C3': C3, 'C4': C4, 'C5': C5, 'C6': C6
+    }
+
+    risk_portfolios = []
+    for rsk_name, rsk_lvl in rsk_level_code_dict.items():
+        if rsk_name in portfolio_map:
+            risk_portfolios.append((rsk_lvl, portfolio_map[rsk_name]))
+
     rows = []
     for rsk_lvl, portfolio_weights in risk_portfolios:
         for asset_name, weight in portfolio_weights.items():
