@@ -72,6 +72,44 @@ CREATE TABLE iis_aset_allc_indx_pub
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4 COMMENT ='资产指数公共参数表';
 
+CREATE TABLE iis_ef_grid_srch_wght (
+  mdl_ver_id varchar(64) NOT NULL COMMENT '模型版本id',
+  rsk_lvl varchar(10) NOT NULL COMMENT '风险等级',
+  rate decimal(11,7) DEFAULT NULL COMMENT '预期收益率',
+  liquid decimal(11,7) DEFAULT NULL COMMENT '预期流动性',
+  csh_mgt_typ_pos decimal(11,7) DEFAULT NULL COMMENT '现金管理类持仓',
+  fx_yld_pos decimal(11,7) DEFAULT NULL COMMENT '固定收益率持仓',
+  mix_strg_typ_pos decimal(11,7) DEFAULT NULL COMMENT '混合策略类持仓',
+  eqty_invst_typ_pos decimal(11,7) DEFAULT NULL COMMENT '权益投资类持仓',
+  altnt_invst_pos decimal(11,7) DEFAULT NULL COMMENT '另类投资持仓',
+  shrp_prprtn decimal(11,7) DEFAULT NULL COMMENT '夏普比例',
+  var95 decimal(11,7) DEFAULT NULL COMMENT 'var(95%)',
+  var95_b decimal(11,7) DEFAULT NULL COMMENT 'var95备份',
+  is_efct_font varchar(1) DEFAULT NULL COMMENT '是否有效前沿',
+  dt_dt date DEFAULT NULL COMMENT '数据日期',
+  crt_tm datetime DEFAULT NULL COMMENT '创建时间',
+  PRIMARY KEY (mdl_ver_id, rsk_lvl)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有效前沿网格搜索权重点';
+
+CREATE TABLE iis_ef_rndm_srch_wght (
+  mdl_ver_id varchar(64) NOT NULL COMMENT '模型版本id',
+  rsk_lvl varchar(10) NOT NULL COMMENT '风险等级',
+  rate decimal(11,7) DEFAULT NULL COMMENT '预期收益率',
+  liquid decimal(11,7) DEFAULT NULL COMMENT '预期流动性',
+  csh_mgt_typ_pos decimal(11,7) DEFAULT NULL COMMENT '现金管理类持仓',
+  fx_yld_pos decimal(11,7) DEFAULT NULL COMMENT '固定收益率持仓',
+  mix_strg_typ_pos decimal(11,7) DEFAULT NULL COMMENT '混合策略类持仓',
+  eqty_invst_typ_pos decimal(11,7) DEFAULT NULL COMMENT '权益投资类持仓',
+  altnt_invst_pos decimal(11,7) DEFAULT NULL COMMENT '另类投资持仓',
+  shrp_prprtn decimal(11,7) DEFAULT NULL COMMENT '夏普比例',
+  var95 decimal(11,7) DEFAULT NULL COMMENT 'var(95%)',
+  var95_b decimal(11,7) DEFAULT NULL COMMENT 'var95备份',
+  is_efct_font varchar(1) DEFAULT '1' COMMENT '是否有效前沿',
+  dt_dt date DEFAULT NULL COMMENT '数据日期',
+  crt_tm datetime DEFAULT NULL COMMENT '创建时间',
+  PRIMARY KEY (mdl_ver_id, rsk_lvl)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有效前沿随机搜索权重点';
+
 CREATE TABLE iis_wght_cnfg_mdl
 (
     pk_id          int(10) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
@@ -93,6 +131,7 @@ CREATE TABLE iis_mdl_aset_pct_d
     aset_bclass_nm varchar(50) DEFAULT NULL COMMENT '资产大类名称',
     pct_yld_date   date        NOT NULL COMMENT '收益率日期',
     pct_yld        decimal(25, 20) DEFAULT NULL COMMENT '资产大类每日收益（百分比）',
+    acc_value      decimal(25, 20) DEFAULT NULL COMMENT '累计净值',
     PRIMARY KEY (mdl_ver_id, aset_bclass_cd, pct_yld_date)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4 COMMENT ='模型资产收益率表';
