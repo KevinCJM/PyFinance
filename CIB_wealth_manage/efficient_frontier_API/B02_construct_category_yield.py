@@ -5,7 +5,7 @@ B02_construct_category_yield.py
 根据模型配置汇总指数来源，并从 wind_cmfindexeod 抽取成分指数的净值数据。
 
 步骤
-1) 从 iis_wght_cnfg_attc_mdl 取第一条记录：mdl_ver_id, on_ln_dt, off_ln_dt
+1) 从 iis_wght_cfg_attc_mdl 取第一条记录：mdl_ver_id, cal_strt_dt, cal_end_dt
 2) 读取 iis_wght_cnfg_mdl 中该 mdl_ver_id 的配置：mdl_ver_id, aset_bclass_cd, indx_num, indx_nm, wght
 3) 在 iis_fnd_indx_info 中查询这些 indx_num 的来源表：indx_num, src_tab_ennm
 4) 如果存在 src_tab_ennm != 'wind_cmfindexeod' 的记录，抛出错误
@@ -275,8 +275,5 @@ def run():
 
 
 if __name__ == '__main__':
-    df = run()
-    # log(f"\n{df.head()}")
-    # log(f"共插入 {len(df)} 行 | 大类数: {df['aset_bclass_cd'].nunique()} | "
-    #     f"日期范围: {df['pct_yld_date'].min()} ~ {df['pct_yld_date'].max()}")
-    print(df)
+    result_json = run()
+    print(result_json)

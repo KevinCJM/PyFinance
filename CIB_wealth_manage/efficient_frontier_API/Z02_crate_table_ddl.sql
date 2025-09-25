@@ -42,6 +42,18 @@ CREATE TABLE iis_mdl_aset_pct_d
     PRIMARY KEY (mdl_ver_id, aset_bclass_cd, pct_yld_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='模型资产收益率表';
 
+CREATE TABLE iis_aset_allc_indx_rtrn
+(
+    mdl_ver_id     varchar(64) NOT NULL COMMENT '模型版本id',
+    aset_bclass_cd varchar(10) NOT NULL COMMENT '资产大类编号',
+    aset_bclass_nm varchar(50)     DEFAULT NULL COMMENT '资产大类名称',
+    pct_yld        decimal(25, 20) DEFAULT NULL COMMENT '资产大类收益率（百分比）',
+    pct_std        decimal(25, 20) DEFAULT NULL COMMENT '资产大类波动率（百分比）',
+    data_dt        date            DEFAULT NULL COMMENT '数据日期',
+    crt_tm         datetime        DEFAULT NULL COMMENT '创建时间',
+    PRIMARY KEY (mdl_ver_id, aset_bclass_cd)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资产指数收益信息表';
+
 CREATE TABLE iis_aset_allc_indx_wght
 (
     mdl_ver_id       varchar(64) NOT NULL COMMENT '模型版本id',
@@ -90,18 +102,6 @@ CREATE TABLE iis_aset_allc_indx_pub
     VaR95_b          decimal(11, 7) DEFAULT NULL COMMENT 'var95备份',
     PRIMARY KEY (mdl_ver_id, rsk_lvl)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资产指数公共参数表';
-
-CREATE TABLE iis_aset_allc_indx_rtrn
-(
-    mdl_ver_id     varchar(64) NOT NULL COMMENT '模型版本id',
-    aset_bclass_cd varchar(10) NOT NULL COMMENT '资产大类编号',
-    aset_bclass_nm varchar(50)     DEFAULT NULL COMMENT '资产大类名称',
-    pct_yld        decimal(25, 20) DEFAULT NULL COMMENT '资产大类收益率（百分比）',
-    pct_std        decimal(25, 20) DEFAULT NULL COMMENT '资产大类波动率（百分比）',
-    data_dt        date            DEFAULT NULL COMMENT '数据日期',
-    crt_tm         datetime        DEFAULT NULL COMMENT '创建时间',
-    PRIMARY KEY (mdl_ver_id, aset_bclass_cd)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='资产指数收益信息表';
 
 CREATE TABLE iis_fnd_indx_info
 (
