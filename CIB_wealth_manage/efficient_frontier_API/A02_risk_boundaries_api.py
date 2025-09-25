@@ -9,13 +9,21 @@ import json
 import time
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from scipy.optimize import minimize
 
-from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
-from efficient_frontier_API.T02_other_tools import load_returns_from_excel, log
-from efficient_frontier_API.T03_weight_limit_cal import level_weight_limit_cal
-from efficient_frontier_API.T01_generate_random_weights import generate_weights_random_walk
-from efficient_frontier_API.T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
+try:
+    from countus.efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from countus.efficient_frontier_API.T02_other_tools import load_returns_from_excel, log
+    from countus.efficient_frontier_API.T03_weight_limit_cal import level_weight_limit_cal
+    from countus.efficient_frontier_API.T01_generate_random_weights import generate_weights_random_walk
+    from countus.efficient_frontier_API.T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
+except ImportError:
+    from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from efficient_frontier_API.T02_other_tools import load_returns_from_excel, log
+    from efficient_frontier_API.T03_weight_limit_cal import level_weight_limit_cal
+    from efficient_frontier_API.T01_generate_random_weights import generate_weights_random_walk
+    from efficient_frontier_API.T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
 
 ''' 预设计算参数 ---------------------------------------------------------------------------------------- '''
 RANDOM_SEED = 12345
@@ -152,7 +160,6 @@ def _risk_func_optimizer(w, returns, risk_metric, var_params, trading_days) -> f
         horizon_days = float(vp.get("horizon_days", 1.0))
         return_type = str(vp.get("return_type", "log"))
         try:
-            from scipy.stats import norm
             z_score = float(norm.ppf(1.0 - confidence))
         except Exception:
             # 退化为常用近似值（95% 左尾约 -1.645）

@@ -14,13 +14,20 @@ import time
 import json
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from scipy.optimize import minimize
 from typing import Any, Dict, List, Tuple, Optional
 
-from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
-from efficient_frontier_API.T03_weight_limit_cal import hold_weight_limit_cal
-from efficient_frontier_API.T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
-from efficient_frontier_API.T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
+try:
+    from countus.efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from countus.efficient_frontier_API.T03_weight_limit_cal import hold_weight_limit_cal
+    from countus.efficient_frontier_API.T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
+    from countus.efficient_frontier_API.T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
+except ImportError:
+    from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from efficient_frontier_API.T03_weight_limit_cal import hold_weight_limit_cal
+    from efficient_frontier_API.T02_other_tools import load_returns_from_excel, log, ann_log_return, ann_log_vol
+    from efficient_frontier_API.T01_generate_random_weights import compute_perf_arrays, compute_var_parametric_arrays
 
 # 全局参数（与其他模块保持一致）
 TRADING_DAYS = 252.0
@@ -125,7 +132,6 @@ def _risk_func(
     # 参数法VaR
     vp = var_params or {}
     try:
-        from scipy.stats import norm
         z_score = float(norm.ppf(1.0 - float(vp.get("confidence", 0.95))))
     except Exception:
         # 退化为常用近似值（95% 左尾约 -1.645）

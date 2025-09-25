@@ -16,21 +16,23 @@ from datetime import date as _date
 from typing import List, Tuple, Optional, Dict
 from numba import njit, prange, float64, int64, types
 
-from efficient_frontier_API.T02_other_tools import log
-from efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
-from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
-
-# 数据库/线程池工具
-from efficient_frontier_API.T05_db_utils import (
-    DatabaseConnectionPool,
-    get_active_db_url,
-    read_dataframe,
-    create_connection,
-)
+try:
+    from countus.efficient_frontier_API.T02_other_tools import log
+    from countus.efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
+    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
+    from countus.efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, get_active_db_url, read_dataframe, create_connection
+except ImportError:
+    from efficient_frontier_API.T02_other_tools import log
+    from efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
+    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
+    from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, get_active_db_url, read_dataframe, create_connection
 
 try:
     # 数据库配置仅包含参数
-    from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+    try:
+        from countus.efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+    except ImportError:
+        from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先配置 Y01_db_config.py 中的数据库连接参数")
 

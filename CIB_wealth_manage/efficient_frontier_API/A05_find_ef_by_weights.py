@@ -11,10 +11,14 @@ import traceback
 import numpy as np
 import pandas as pd
 
-# 复用现有工具函数，避免冗余
-from efficient_frontier_API.T02_other_tools import log
-from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
-from efficient_frontier_API.T01_generate_random_weights import cal_ef_mask
+try:
+    from countus.efficient_frontier_API.T02_other_tools import log
+    from countus.efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from countus.efficient_frontier_API.T01_generate_random_weights import cal_ef_mask
+except ImportError:
+    from efficient_frontier_API.T02_other_tools import log
+    from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from efficient_frontier_API.T01_generate_random_weights import cal_ef_mask
 
 # df展示1000列
 pd.set_option('display.max_columns', 1000)

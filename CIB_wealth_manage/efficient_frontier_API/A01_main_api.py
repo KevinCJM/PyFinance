@@ -12,11 +12,18 @@ import numpy as np
 import pandas as pd
 from typing import Optional
 
-from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
-from efficient_frontier_API.T02_other_tools import load_returns_from_excel, log
-from efficient_frontier_API.T01_generate_random_weights import compute_var_parametric_arrays
-from efficient_frontier_API.T03_weight_limit_cal import level_weight_limit_cal, hold_weight_limit_cal
-from efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays
+try:
+    from countus.efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from countus.efficient_frontier_API.T02_other_tools import load_returns_from_excel, log
+    from countus.efficient_frontier_API.T01_generate_random_weights import compute_var_parametric_arrays
+    from countus.efficient_frontier_API.T03_weight_limit_cal import level_weight_limit_cal, hold_weight_limit_cal
+    from countus.efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays
+except ImportError:
+    from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from efficient_frontier_API.T02_other_tools import load_returns_from_excel, log
+    from efficient_frontier_API.T01_generate_random_weights import compute_var_parametric_arrays
+    from efficient_frontier_API.T03_weight_limit_cal import level_weight_limit_cal, hold_weight_limit_cal
+    from efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays
 
 ''' 0) 准备工作: 配置一些预定义的参数 ----------------------------------------------------------------------------- '''
 # 随机游走与指标参数（仅字典方式）

@@ -10,18 +10,16 @@ import json
 import traceback
 import numpy as np
 import pandas as pd
-from typing import Optional, Dict, Any, List
+from typing import Optional
 
 try:
-    from .T02_other_tools import log
-    from .T04_show_plt import plot_efficient_frontier
-    from .T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, \
-        compute_var_parametric_arrays
+    from countus.efficient_frontier_API.T02_other_tools import log
+    from countus.efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from countus.efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, compute_var_parametric_arrays
 except ImportError:
-    from T02_other_tools import log
-    from T04_show_plt import plot_efficient_frontier
-    from T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, \
-        compute_var_parametric_arrays
+    from efficient_frontier_API.T02_other_tools import log
+    from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
+    from efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, compute_var_parametric_arrays
 
 # --- Constants ---
 RANDOM_SEED = 12345

@@ -11,8 +11,10 @@ import os
 import time
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
+from scipy.stats import norm
+from statistics import NormalDist
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, Iterable, List, Tuple, Optional, Set
 
 try:
     from numba import njit, prange
@@ -23,7 +25,10 @@ except Exception:
     HAS_NUMBA = False
     print("Numba 不可用，使用纯 Python 版本。")
 
-from efficient_frontier_API.T02_other_tools import log, ann_log_return, ann_log_vol
+try:
+    from countus.efficient_frontier_API.T02_other_tools import log, ann_log_return, ann_log_vol
+except ImportError:
+    from efficient_frontier_API.T02_other_tools import log, ann_log_return, ann_log_vol
 
 
 def _make_rng(seed: int):
@@ -74,7 +79,6 @@ def refine_frontier_with_slsqp(
         horizon_days = float(vp.get("horizon_days", 1.0))
         return_type = str(vp.get("return_type", "simple"))
         try:
-            from scipy.stats import norm
             z_score = float(norm.ppf(1.0 - confidence))
         except Exception:
             z_score = -1.645
@@ -609,11 +613,9 @@ def compute_var_parametric_arrays(
 
     # 正态分布左尾分位数 z_{1 - confidence}
     try:
-        from scipy.stats import norm
         z = float(norm.ppf(1.0 - confidence))
     except Exception:
         try:
-            from statistics import NormalDist
             z = NormalDist().inv_cdf(1.0 - confidence)
         except Exception:
             # 兜底：95% 左尾近似 -1.64485
@@ -664,7 +666,6 @@ def _build_frontier_by_risk_grid_slsqp(
         horizon_days = float(vp.get("horizon_days", 1.0))
         return_type = str(vp.get("return_type", "simple"))
         try:
-            from scipy.stats import norm
             z_score = float(norm.ppf(1.0 - confidence))
         except Exception:
             z_score = -1.645
@@ -862,7 +863,6 @@ def build_frontier_by_risk_grid(
         # VaR 参数
         vp = var_params or {}
         try:
-            from scipy.stats import norm
             alpha = abs(float(norm.ppf(1.0 - float(vp.get("confidence", 0.95)))))
         except Exception:
             alpha = 1.645
@@ -889,7 +889,6 @@ def build_frontier_by_risk_grid(
     else:
         vp = var_params or {}
         try:
-            from scipy.stats import norm
             alpha = abs(float(norm.ppf(1.0 - float(vp.get("confidence", 0.95)))))
         except Exception:
             alpha = 1.645
@@ -921,7 +920,6 @@ def build_frontier_by_risk_grid(
         else:
             vp = var_params or {}
             try:
-                from scipy.stats import norm
                 alpha = abs(float(norm.ppf(1.0 - float(vp.get("confidence", 0.95)))))
             except Exception:
                 alpha = 1.645
@@ -1152,8 +1150,6 @@ def _quantize_weights_batch_if_needed(
         # 小批量串行更快，批量大时并行
         parallel_workers = 0 if M < 64 else min(8, max(2, cpu // 2))
     if parallel_workers and M > 1:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         with ThreadPoolExecutor(max_workers=parallel_workers) as ex:
             futures = [ex.submit(_one, w) for w in W]
             for fu in as_completed(futures):

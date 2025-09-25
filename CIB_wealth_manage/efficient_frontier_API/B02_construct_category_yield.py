@@ -23,16 +23,18 @@ import pandas as pd
 from sqlalchemy import text
 from typing import Dict, List, Tuple
 
-from efficient_frontier_API.T02_other_tools import log
-from efficient_frontier_API.T05_db_utils import (
-    DatabaseConnectionPool,
-    read_dataframe,
-    get_active_db_url,
-    threaded_upsert_dataframe_mysql,
-)
+try:
+    from countus.efficient_frontier_API.T02_other_tools import log
+    from countus.efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url, threaded_upsert_dataframe_mysql
+except ImportError:
+    from efficient_frontier_API.T02_other_tools import log
+    from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, read_dataframe, get_active_db_url, threaded_upsert_dataframe_mysql
 
 try:
-    from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+    try:
+        from countus.efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+    except ImportError:
+        from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 
