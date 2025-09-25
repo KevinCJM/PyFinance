@@ -31,28 +31,20 @@ import numpy as np
 import pandas as pd
 
 from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, insert_dataframe, get_active_db_url
-from efficient_frontier_API.Y02_asset_id_map import rsk_level_code_dict
+from efficient_frontier_API.Y02_asset_id_map import rsk_level_code_dict, aset_cd_nm_dict
 
 try:
     from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
 
-ASSET_CLASSES = [
-    ("EQ", "权益"),
-    ("FI", "固收"),
-    ("MM", "货币"),
-    ("MIX", "混合"),
-    ("ALT", "另类"),
-]
-
 # 基准组合权重配置, 用于在400w个点以及有效前沿表上 iis_aset_allc_indx_pub 和 iis_aset_allc_indx_wght
-C1 = {'货币': 1.00, '固收': 0.00, '混合': 0.00, '权益': 0.00, '另类': 0.00}
-C2 = {'货币': 0.20, '固收': 0.80, '混合': 0.00, '权益': 0.00, '另类': 0.00}
-C3 = {'货币': 0.10, '固收': 0.55, '混合': 0.35, '权益': 0.00, '另类': 0.00}
-C4 = {'货币': 0.05, '固收': 0.40, '混合': 0.30, '权益': 0.20, '另类': 0.05}
-C5 = {'货币': 0.05, '固收': 0.20, '混合': 0.25, '权益': 0.40, '另类': 0.10}
-C6 = {'货币': 0.05, '固收': 0.10, '混合': 0.15, '权益': 0.60, '另类': 0.10}
+C1 = {'现金管理类': 1.00, '固定收益类': 0.00, '混合策略类': 0.00, '权益投资类': 0.00, '另类投资类': 0.00}
+C2 = {'现金管理类': 0.20, '固定收益类': 0.80, '混合策略类': 0.00, '权益投资类': 0.00, '另类投资类': 0.00}
+C3 = {'现金管理类': 0.10, '固定收益类': 0.55, '混合策略类': 0.35, '权益投资类': 0.00, '另类投资类': 0.00}
+C4 = {'现金管理类': 0.05, '固定收益类': 0.40, '混合策略类': 0.30, '权益投资类': 0.20, '另类投资类': 0.05}
+C5 = {'现金管理类': 0.05, '固定收益类': 0.20, '混合策略类': 0.25, '权益投资类': 0.40, '另类投资类': 0.10}
+C6 = {'现金管理类': 0.05, '固定收益类': 0.10, '混合策略类': 0.15, '权益投资类': 0.60, '另类投资类': 0.10}
 
 
 def _today() -> date:
@@ -128,7 +120,7 @@ def build_cnfg_mdl_rows(mdl_ver_id: str, seed: int = 0) -> pd.DataFrame:
     rows = []
     ts_now = datetime.now()
     rng = random.Random(seed)
-    for (code, name) in ASSET_CLASSES:
+    for code, name in aset_cd_nm_dict.items():
         n_idx = rng.randint(1, 4)
         weights = _random_partition(n_idx, seed=seed + hash(code) % 10000)
         for i in range(n_idx):
@@ -149,14 +141,14 @@ def build_pct_d_rows(mdl_ver_id: str, start: date, end: date, seed: int = 0) -> 
     dates = _mk_dates(start, end)
     # 为每个大类设置一个不同的均值/波动
     profile: Dict[str, Tuple[float, float]] = {
-        "权益": (0.0003, 0.01),
-        "固收": (0.0001, 0.002),
-        "货币": (0.00005, 0.0005),
-        "混合": (0.0002, 0.006),
-        "另类": (0.00015, 0.004),
+        "权益投资类": (0.0003, 0.01),
+        "固定收益类": (0.0001, 0.002),
+        "现金管理类": (0.00005, 0.0005),
+        "混合策略类": (0.0002, 0.006),
+        "另类投资类": (0.00015, 0.004),
     }
     rows = []
-    for code, name in ASSET_CLASSES:
+    for code, name in aset_cd_nm_dict.items():
         mu, sigma = profile.get(name, (0.0001, 0.003))
         # 生成日收益，控制在小数点后 6-8 位范围
         rets = rng.normal(loc=mu, scale=sigma, size=len(dates))
@@ -178,7 +170,7 @@ def build_pct_d_rows(mdl_ver_id: str, start: date, end: date, seed: int = 0) -> 
 
 def build_rsk_rel_rows(mdl_ver_id: str) -> pd.DataFrame:
     """构造 iis_wght_cnfg_mdl_ast_rsk_rel 的 C1-C6 风险等级权重数据。"""
-    name_to_code_map = {name: code for code, name in ASSET_CLASSES}
+    name_to_code_map = {v: k for k, v in aset_cd_nm_dict.items()}
     
     portfolio_map = {
         'C1': C1, 'C2': C2, 'C3': C3, 'C4': C4, 'C5': C5, 'C6': C6

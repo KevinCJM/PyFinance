@@ -21,14 +21,14 @@ from numba import njit, prange, float64, int64, types
 try:
     from countus.efficient_frontier_API.T02_other_tools import log
     from countus.efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
-    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map
+    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict
     from countus.efficient_frontier_API.T05_db_utils import threaded_upsert_dataframe_mysql
     from countus.efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
                                                              create_connection)
 except ImportError:
     from efficient_frontier_API.T02_other_tools import log
     from efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
-    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map
+    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict
     from efficient_frontier_API.T05_db_utils import threaded_upsert_dataframe_mysql
     from efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
                                                      create_connection)
@@ -625,6 +625,13 @@ def fetch_returns_from_db(mdl_ver_id: str,
     df = read_dataframe(pool, sql_series, params=params)
     if df.empty:
         raise RuntimeError("数据库中未查询到模型 {} 的收益数据".format(mdl_ver_id))
+
+    # 如果 'nm' 列 (aset_bclass_nm) 为空, 使用 'cd' (aset_bclass_cd) 和映射字典来填充
+    df['nm'] = df['nm'].replace('', np.nan)  # Treat empty strings as NaN
+    missing_nm_mask = df['nm'].isna()
+    if missing_nm_mask.any():
+        log(f"发现 {missing_nm_mask.sum()} 行的资产名称为空，将使用代码进行映射。")
+        df.loc[missing_nm_mask, 'nm'] = df.loc[missing_nm_mask, 'cd'].map(aset_cd_nm_dict)
 
     # 处理资产名称与代码映射关系，并生成排序后的资产名称列表
     df["nm"] = df["nm"].astype(str)
