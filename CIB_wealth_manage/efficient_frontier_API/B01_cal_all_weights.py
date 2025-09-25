@@ -19,17 +19,17 @@ from typing import List, Tuple, Optional, Dict
 from numba import njit, prange, float64, int64, types
 
 try:
-    from countus.efficient_frontier_API.T02_other_tools import log
     from countus.efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
-    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict
     from countus.efficient_frontier_API.T05_db_utils import threaded_upsert_dataframe_mysql
+    from countus.efficient_frontier_API.T02_other_tools import log, compute_performance_numba
+    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict
     from countus.efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
                                                              create_connection)
 except ImportError:
-    from efficient_frontier_API.T02_other_tools import log
     from efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
-    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict
     from efficient_frontier_API.T05_db_utils import threaded_upsert_dataframe_mysql
+    from efficient_frontier_API.T02_other_tools import log, compute_performance_numba
+    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict
     from efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
                                                      create_connection)
 
@@ -200,84 +200,6 @@ def generate_simplex_grid_numba(assets_num: int, resolution_ratio: int):
     return _generate(assets_num, resolution_ratio)
 
 
-@njit(
-    types.UniTuple(float64[:], 4)(float64[:, :], float64[:, :], float64, int64, float64),
-    parallel=True, nogil=True, fastmath=True
-)
-def _compute_perf_numba(r, w, trading_days, dof, p95):
-    """
-    在不创建 (T,M) 大矩阵的前提下，逐组合并行计算：
-      - 按天累积 log(1 + w·r_t) 的均值与方差
-      - 年化收益与年化波动
-
-    参数:
-        r: (T, N) 资产日收益矩阵（float64，C 连续）
-        w: (M, N) 权重矩阵（float64，C 连续）
-        trading_days: 年化交易日数
-        dof: 样本方差自由度
-        p95: VaR 系数
-
-    返回:
-        (ret_annual, vol_annual, var_annual): 三个 shape=(M,) 的数组
-    """
-    big_t = r.shape[0]
-    big_n = r.shape[1]
-    big_m = w.shape[0]
-
-    out_ret = np.empty(big_m, dtype=np.float64)
-    out_vol = np.empty(big_m, dtype=np.float64)
-    out_sharpe = np.empty(big_m, dtype=np.float64)
-
-    sqrt_td = np.sqrt(trading_days)
-
-    # 并行遍历所有组合，计算每个组合的年化收益、波动率和VaR
-    for j in prange(big_m):
-        mean = 0.0
-        m2 = 0.0
-        n = 0
-        invalid = False
-
-        # 遍历时间维度，按天增量更新均值与方差
-        for t in range(big_t):
-            s = 0.0
-            # 点乘：w_j 与 r_t
-            for k in range(big_n):
-                s += r[t, k] * w[j, k]
-            # 若出现 1+s <= 0（如 r=-100%），该组合无效
-            if s <= -0.999999999:
-                invalid = True
-                break
-            x = np.log1p(s)
-            n += 1
-            delta = x - mean
-            mean += delta / n
-            m2 += delta * (x - mean)
-
-        # 若组合无效或样本不足，则输出 NaN
-        if invalid or n <= 1 or (n - dof) <= 0:
-            out_ret[j] = np.nan
-            out_vol[j] = np.nan
-            out_sharpe[j] = np.nan
-            continue
-
-        # 计算年化收益与年化波动率
-        var = m2 / (n - dof)
-        if var < 0.0:
-            var = 0.0
-        annual_ret = mean * trading_days
-        annual_vol = np.sqrt(var) * sqrt_td
-        out_ret[j] = annual_ret
-        out_vol[j] = annual_vol
-        if annual_vol > 0.0:
-            out_sharpe[j] = annual_ret / annual_vol
-        else:
-            out_sharpe[j] = np.nan
-
-    # 计算 VaR：年化收益 - 年化波动 * VaR 系数
-    out_var = out_ret - out_vol * p95
-    return out_ret, out_vol, out_var, out_sharpe
-
-
 # 公共：计算有效前沿掩码
 def efficient_frontier_mask(ret_v: np.ndarray, vol_v: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     valid = np.isfinite(ret_v) & np.isfinite(vol_v)
@@ -295,7 +217,7 @@ def efficient_frontier_mask(ret_v: np.ndarray, vol_v: np.ndarray, tol: float = 1
 
 
 # 计算资产组合的年度化收益,波动率,和在险价值
-def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p95=1.96,
+def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p95=1.645,
                               trading_days: float = 252.0, dof: int = 1):
     """
     基于 numba 的零拷贝并行实现，用于计算资产组合的年度化收益、波动率和风险价值（VaR）等指标。
@@ -329,7 +251,7 @@ def generate_alloc_perf_numba(asset_list, return_df, weight_array: np.ndarray, p
         w = np.ascontiguousarray(w)
 
     # 调用核心计算函数，获取年度化收益、波动率、VaR 与夏普比率
-    ret, vol, var, sharpe = _compute_perf_numba(r, w, float(trading_days), int(dof), float(p95))
+    ret, vol, var, sharpe = compute_performance_numba(r, w, float(trading_days), int(dof), float(p95))
 
     # 构造结果 DataFrame，注意当 M 很大时，拼接 DataFrame 可能导致高内存占用
     weight_df = pd.DataFrame(w, columns=asset_cols)

@@ -12,6 +12,13 @@ import pandas as pd
 from datetime import datetime
 from typing import List, Tuple
 
+try:
+    from numba import njit, prange, float64, int64, types
+
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
+
 
 # 返回当前时间戳字符串
 def _ts() -> str:
@@ -129,3 +136,72 @@ def read_excel_compat(excel_path: str, sheet_name: str) -> pd.DataFrame:
             return pd.read_excel(excel_path, sheet_name=sheet_name)
         except Exception as e2:
             raise
+
+
+if HAS_NUMBA:
+    @njit(
+        types.UniTuple(float64[:], 4)(float64[:, :], float64[:, :], float64, int64, float64),
+        parallel=True, nogil=True, fastmath=True
+    )
+    def compute_performance_numba(r, w, trading_days, dof, z_score):
+        """
+        Numba-accelerated function to compute performance metrics for multiple portfolios.
+        """
+        big_t, big_n = r.shape
+        big_m = w.shape[0]
+
+        out_ret = np.empty(big_m, dtype=np.float64)
+        out_vol = np.empty(big_m, dtype=np.float64)
+        out_sharpe = np.empty(big_m, dtype=np.float64)
+        out_var = np.empty(big_m, dtype=np.float64)
+
+        sqrt_td = np.sqrt(trading_days)
+
+        for j in prange(big_m):
+            mean = 0.0
+            m2 = 0.0
+            n = 0
+            invalid = False
+
+            for t in range(big_t):
+                s = 0.0
+                for k in range(big_n):
+                    s += r[t, k] * w[j, k]
+                if s <= -0.999999999:
+                    invalid = True
+                    break
+                x = np.log1p(s)
+                n += 1
+                delta = x - mean
+                mean += delta / n
+                m2 += delta * (x - mean)
+
+            if invalid or n <= 1 or (n - dof) <= 0:
+                out_ret[j] = np.nan
+                out_vol[j] = np.nan
+                out_sharpe[j] = np.nan
+                out_var[j] = np.nan
+                continue
+
+            var_daily = m2 / (n - dof)
+            if var_daily < 0.0:
+                var_daily = 0.0
+
+            annual_ret = mean * trading_days
+            annual_vol = np.sqrt(var_daily) * sqrt_td
+
+            out_ret[j] = annual_ret
+            out_vol[j] = annual_vol
+
+            if annual_vol > 1e-9:
+                out_sharpe[j] = annual_ret / annual_vol
+            else:
+                out_sharpe[j] = np.nan
+
+            var_val = z_score * annual_vol - annual_ret
+            out_var[j] = max(0.0, var_val)
+
+        return out_ret, out_vol, out_var, out_sharpe
+else:
+    def compute_performance_numba(r, w, trading_days, dof, z_score):
+        raise NotImplementedError("Numba is required for performance calculations.")

@@ -13,17 +13,18 @@ import pandas as pd
 from typing import Optional
 
 try:
-    from countus.efficient_frontier_API.T02_other_tools import log
     from countus.efficient_frontier_API.T04_show_plt import plot_efficient_frontier
-    from countus.efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, \
-        compute_perf_arrays, compute_var_parametric_arrays
-    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict, rsk_level_code_dict
+    from countus.efficient_frontier_API.T02_other_tools import log, compute_performance_numba
+    from countus.efficient_frontier_API.T01_generate_random_weights import (multi_level_random_walk_config,
+                                                                            compute_perf_arrays)
+    from countus.efficient_frontier_API.Y02_asset_id_map import (asset_to_weight_column_map, aset_cd_nm_dict,
+                                                                 rsk_level_code_dict)
 except ImportError:
-    from efficient_frontier_API.T02_other_tools import log
     from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
-    from efficient_frontier_API.T01_generate_random_weights import multi_level_random_walk_config, compute_perf_arrays, \
-        compute_var_parametric_arrays
-    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, aset_cd_nm_dict, rsk_level_code_dict
+    from efficient_frontier_API.T02_other_tools import log, compute_performance_numba
+    from efficient_frontier_API.T01_generate_random_weights import (multi_level_random_walk_config, compute_perf_arrays)
+    from efficient_frontier_API.Y02_asset_id_map import (asset_to_weight_column_map, aset_cd_nm_dict,
+                                                         rsk_level_code_dict)
 
 # --- Constants ---
 RANDOM_SEED = 12345
@@ -74,37 +75,8 @@ def _load_returns_from_nv(nv_dict, asset_list):
     if df_nv.empty or len(df_nv) < 2:
         raise ValueError("无法从净值数据计算收益率，可能是日期无重叠或数据点不足")
     df_ret = df_nv.pct_change().replace([np.inf, -np.inf], np.nan).dropna(how='any')
-    return df_ret.values.astype(np.float32, copy=False)
+    return df_ret.values.astype(np.float64, copy=False)
 
-
-def calculate_single_port_metrics(weights_array, daily_returns, annual_trading_days, var_params):
-    """计算单个组合的收益、波动率、VaR和夏普比率"""
-    w_2d = np.asarray(weights_array).reshape(1, -1)
-
-    ret_annual_arr, vol_annual_arr = compute_perf_arrays(
-        port_daily=daily_returns,
-        portfolio_allocs=w_2d,
-        trading_days=annual_trading_days,
-        return_type="log"
-    )
-    annual_ret = ret_annual_arr[0]
-    annual_vol = vol_annual_arr[0]
-
-    sharpe_ratio = annual_ret / annual_vol if annual_vol > 1e-9 else 0.0
-
-    vp = var_params or {}
-    var_arr = compute_var_parametric_arrays(
-        port_daily=daily_returns,
-        portfolio_allocs=w_2d,
-        confidence=float(vp.get("confidence", 0.95)),
-        horizon_days=float(vp.get("horizon_days", 1.0)),
-        return_type=str(vp.get("return_type", "log")),
-        ddof=int(vp.get("ddof", 1)),
-        clip_non_negative=bool(vp.get("clip_non_negative", True)),
-    )
-    annual_var = var_arr[0]
-
-    return annual_ret, annual_vol, annual_var, sharpe_ratio
 
 def main(json_input: str) -> str:
     """
@@ -148,17 +120,18 @@ def main(json_input: str) -> str:
         standard_points = []
         for name, w_dict in standard_proportion.items():
             weights = np.array([w_dict.get(asset, 0.0) for asset in asset_list])
-            ret, vol, var, sharpe = calculate_single_port_metrics(weights, returns, TRADING_DAYS, VAR_PARAMS)
+            w_2d = np.asarray(weights, dtype=np.float64).reshape(1, -1)
+            ret, vol, var, sharpe = compute_performance_numba(returns, w_2d, TRADING_DAYS, 1, 1.645)
             point_data = {
                 'name': name,
                 'weights': weights.tolist(),
-                'ret_annual': float(ret),
-                'vol_annual': float(vol),
-                'var_value': float(var),
-                'sharpe_ratio': float(sharpe)
+                'ret_annual': float(ret[0]),
+                'vol_annual': float(vol[0]),
+                'var_value': float(var[0]),
+                'sharpe_ratio': float(sharpe[0])
             }
             standard_points.append(point_data)
-            log(f"计算完成: {name} - 收益率: {ret:.4f}, 波动率: {vol:.4f}, VaR: {var:.4f}, 夏普比率: {sharpe:.4f}")
+            log(f"计算完成: {name} - 收益率: {ret[0]:.4f}, 波动率: {vol[0]:.4f}, VaR: {var[0]:.4f}, 夏普比率: {sharpe[0]:.4f}")
 
         log("步骤 5: 格式化返回结果...")
 
@@ -176,7 +149,7 @@ def main(json_input: str) -> str:
         ef_df['shrp_prprtn'] = ef_sharpe
         ef_df['var95_b'] = ef_risk
         ef_df['var95'] = np.clip(ef_risk, 0, None)
-        
+
         ef_df = ef_df.sort_values(by='rate', ascending=True).reset_index(drop=True)
         ef_df['rsk_lvl'] = np.arange(11, 11 + len(ef_df))
 
@@ -186,7 +159,7 @@ def main(json_input: str) -> str:
             rsk_name = point['name']
             rsk_lvl = rsk_level_code_dict.get(rsk_name)
             if rsk_lvl is None: continue
-            
+
             row = {
                 'rsk_lvl': rsk_lvl,
                 'rate': point['ret_annual'],
@@ -212,14 +185,14 @@ def main(json_input: str) -> str:
 
         # d) 选择并排序最终列
         output_cols = [
-            'rsk_lvl', 'rate', 'csh_mgt_typ_pos', 'fx_yld_pos', 
-            'mix_strg_typ_pos', 'eqty_invst_typ_pos', 'altnt_invst_pos', 
+            'rsk_lvl', 'rate', 'csh_mgt_typ_pos', 'fx_yld_pos',
+            'mix_strg_typ_pos', 'eqty_invst_typ_pos', 'altnt_invst_pos',
             'shrp_prprtn', 'var95', 'var95_b'
         ]
         for col in output_cols:
             if col not in final_df.columns:
                 final_df[col] = 0.0
-        
+
         final_df = final_df[output_cols]
 
         # e) 转换为JSON
