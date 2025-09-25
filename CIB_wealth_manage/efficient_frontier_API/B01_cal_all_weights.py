@@ -19,22 +19,28 @@ from numba import njit, prange, float64, int64, types
 try:
     from countus.efficient_frontier_API.T02_other_tools import log
     from countus.efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
-    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
-    from countus.efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, get_active_db_url, read_dataframe, create_connection
+    from countus.efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map
+    from countus.efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
+                                                             create_connection)
 except ImportError:
     from efficient_frontier_API.T02_other_tools import log
     from efficient_frontier_API.T05_db_utils import threaded_insert_dataframe
-    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map, C1, C2, C3, C4, C5, C6
-    from efficient_frontier_API.T05_db_utils import DatabaseConnectionPool, get_active_db_url, read_dataframe, create_connection
+    from efficient_frontier_API.Y02_asset_id_map import asset_to_weight_column_map
+    from efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
+                                                     create_connection)
 
 try:
     # 数据库配置仅包含参数
     try:
-        from countus.efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+        from countus.efficient_frontier_API.Y01_db_config import (db_type, db_host, db_port, db_name, db_user,
+                                                                  db_password)
     except ImportError:
-        from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
+        from efficient_frontier_API.Y01_db_config import (db_type, db_host, db_port, db_name, db_user, db_password)
 except Exception:
     raise RuntimeError("请先配置 Y01_db_config.py 中的数据库连接参数")
+
+# 网格搜索精度
+R_RATIO = 10
 
 
 # 使用 Numba 加速网格生成，用于构建资产配置的离散化组合空间
@@ -411,7 +417,42 @@ def _build_weight_cols(df_weights: pd.DataFrame, asset_cols: List[str]) -> Dict[
     return out
 
 
-def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame, return_df: pd.DataFrame) -> None:
+def fetch_standard_portfolios(pool: DatabaseConnectionPool, mdl_ver_id: str, code_to_name_map: Dict[str, str]):
+    """从数据库读取C1-C6标准组合的权重。"""
+    log(f"从数据库为模型 {mdl_ver_id} 获取标准组合权重...")
+    sql = "SELECT aset_bclass_cd, rsk_lvl, wght FROM iis_wght_cnfg_mdl_ast_rsk_rel WHERE mdl_ver_id = :mdl"
+    df = read_dataframe(pool, sql, params={"mdl": mdl_ver_id})
+
+    if df.empty:
+        log(f"警告: 在 iis_wght_cnfg_mdl_ast_rsk_rel 中未找到模型 {mdl_ver_id} 的标准组合权重。")
+        return []
+
+    portfolios = {}
+    for _, row in df.iterrows():
+        try:
+            rsk_lvl = int(row['rsk_lvl'])
+            asset_code = row['aset_bclass_cd']
+            weight = float(row['wght'])
+        except (ValueError, TypeError) as e:
+            log(f"警告: 解析标准组合权重行时出错，已跳过: {row}, 错误: {e}")
+            continue
+
+        if rsk_lvl not in portfolios:
+            portfolios[rsk_lvl] = {}
+
+        asset_name = code_to_name_map.get(asset_code)
+        if asset_name:
+            portfolios[rsk_lvl][asset_name] = weight
+        else:
+            log(f"警告: 无法为资产代码 '{asset_code}' 找到对应的资产名称。")
+
+    std_portfolios = sorted(portfolios.items())
+    log(f"成功从数据库加载 {len(std_portfolios)} 个标准组合。")
+    return std_portfolios
+
+
+def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFrame, return_df: pd.DataFrame,
+                         code_to_name_map: Dict[str, str]) -> None:
     """将计算结果批量写入两张表，使用线程池并发分块插入。
 
     本函数会将完整的投资组合数据写入全量表 `iis_aset_allc_indx_wght` 和精简的有效前沿表 `iis_aset_allc_indx_pub`。
@@ -422,6 +463,7 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
         a_list (List[str]): 资产名称列表，用于构建权重列。
         res_df (pd.DataFrame): 包含原始计算结果的数据框，包含各资产权重及绩效指标。
         return_df (pd.DataFrame): 原始收益率数据框，用于重新计算缺失标准组合的绩效。
+        code_to_name_map (Dict[str, str]): 资产代码到名称的映射。
 
     返回:
         None
@@ -437,7 +479,9 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
         db_name=db_name,
     )
     pool = DatabaseConnectionPool(url=db_url, pool_size=4)
-    std_portfolios = [(1, C1), (2, C2), (3, C3), (4, C4), (5, C5), (6, C6)]
+    std_portfolios = fetch_standard_portfolios(pool, mdl_ver_id, code_to_name_map)
+    if not std_portfolios:
+        log("警告: 未能从数据库加载标准组合，将无法在结果中标记它们。")
 
     # 构造标准组合向量
     std_weights, std_lvls = [], []
@@ -527,10 +571,10 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
     datasets = []
     chunk_size = 5000
     for chunk in _chunker(wght_df, chunk_size):
-        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_wght', 'replace': False, 'batch_size': 1000,
+        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_wght', 'batch_size': 1000,
                          'method': 'multi'})
     for chunk in _chunker(pub_df, chunk_size):
-        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_pub', 'replace': False, 'batch_size': 1000,
+        datasets.append({'dataframe': chunk, 'table': 'iis_aset_allc_indx_pub', 'batch_size': 1000,
                          'method': 'multi'})
 
     # 清空后再插入（TRUNCATE）
@@ -709,7 +753,7 @@ def main():
     ''' 1) 网格生成 --------------------------------------------------------------------------------- '''
     try:
         s_t_0 = time.time()
-        weight_list = generate_simplex_grid_numba(len(a_list), 100)  # 生成 simplex 网格点
+        weight_list = generate_simplex_grid_numba(len(a_list), R_RATIO)  # 生成 simplex 网格点
         log(f"计算网格点数量: {weight_list.shape}, 耗时: {time.time() - s_t_0:.2f} 秒")
     except Exception as e:
         return json.dumps({
@@ -745,17 +789,17 @@ def main():
         folder_path = os.path.dirname(os.path.abspath("__file__"))
         asset_id_map = {v: k for k, v in asset_id_map.items()}
         res_df_cd = res_df.rename(columns=asset_id_map)
-        res_df_cd.to_pickle(os.path.join(folder_path, f'alloc_results_400w.pkl'), index=False)
+        res_df_cd.to_pickle(os.path.join(folder_path, f'alloc_results_400w.pkl'))
         log(f"结果保存到: {os.path.join(folder_path, f'alloc_results_400w.pkl')}")
     except Exception as e:
         return json.dumps({
             "code": 1,
-            "msg": f"结果保存到本地parquet文件失败: {e}"
+            "msg": f"结果保存到本地 pickle 文件失败: {e}"
         }, ensure_ascii=False)
 
     ''' 5) 结果写入数据库 ----------------------------------------------------------------------------- '''
     try:
-        insert_results_to_db(mdl_ver_id, a_list, res_df, re_df)
+        insert_results_to_db(mdl_ver_id, a_list, res_df, re_df, asset_id_map)
     except Exception as e:
         return json.dumps({
             "code": 1,
@@ -771,6 +815,3 @@ def main():
 if __name__ == '__main__':
     res = main()
     print(res)
-
-    res = pd.read_pickle('alloc_results_400w.pkl')
-    print(res.head())
