@@ -15,7 +15,10 @@ db_user = 'root'
 db_password = '****'
 
 if __name__ == '__main__':
-    from T05_db_utils import get_active_db_url, try_connect, is_in_docker
+    try:
+        from countus.efficient_frontier_API.T05_db_utils import get_active_db_url, try_connect, is_in_docker
+    except ImportError:
+        from efficient_frontier_API.T05_db_utils import get_active_db_url, try_connect, is_in_docker
     import os as _os
 
     url = get_active_db_url(

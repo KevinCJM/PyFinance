@@ -444,7 +444,7 @@ def upsert_dataframe_mysql(
                     update_cols[col] = stmt.inserted[col]
 
             if update_cols:
-                final_stmt = stmt.on_duplicate_key_update(update_cols)
+                final_stmt = stmt.on_duplicate_key_update(**update_cols)
             else:
                 # 如果所有提供的列都是主键，则退化为 INSERT IGNORE
                 final_stmt = stmt.prefix_with("IGNORE")
