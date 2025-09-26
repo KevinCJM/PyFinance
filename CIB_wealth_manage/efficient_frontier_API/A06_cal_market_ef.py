@@ -10,7 +10,9 @@ import json
 import traceback
 import numpy as np
 import pandas as pd
-from typing import Optional
+from sqlalchemy import text
+from datetime import date as _date
+from typing import Optional, List, Tuple, Dict
 
 try:
     from countus.efficient_frontier_API.T04_show_plt import plot_efficient_frontier
@@ -19,12 +21,19 @@ try:
                                                                             compute_perf_arrays)
     from countus.efficient_frontier_API.Y02_asset_id_map import (asset_to_weight_column_map, aset_cd_nm_dict,
                                                                  rsk_level_code_dict)
+    from countus.efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
+                                                             create_connection, threaded_upsert_dataframe_mysql)
+    from countus.efficient_frontier_API.Y01_db_config import (db_type, db_host, db_port, db_name, db_user,
+                                                              db_password)
 except ImportError:
     from efficient_frontier_API.T04_show_plt import plot_efficient_frontier
     from efficient_frontier_API.T02_other_tools import log, compute_performance_numba
     from efficient_frontier_API.T01_generate_random_weights import (multi_level_random_walk_config, compute_perf_arrays)
     from efficient_frontier_API.Y02_asset_id_map import (asset_to_weight_column_map, aset_cd_nm_dict,
                                                          rsk_level_code_dict)
+    from efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
+                                                     create_connection, threaded_upsert_dataframe_mysql)
+    from efficient_frontier_API.Y01_db_config import (db_type, db_host, db_port, db_name, db_user, db_password)
 
 # --- Constants ---
 RANDOM_SEED = 12345
@@ -74,13 +83,111 @@ def _load_returns_from_nv(nv_dict, asset_list):
     df_nv = pd.concat(ser_list, axis=1, join='inner')
     if df_nv.empty or len(df_nv) < 2:
         raise ValueError("无法从净值数据计算收益率，可能是日期无重叠或数据点不足")
+
+    last_nav_date = df_nv.index.max().date()
     df_ret = df_nv.pct_change().replace([np.inf, -np.inf], np.nan).dropna(how='any')
-    return df_ret.values.astype(np.float64, copy=False)
+    return df_ret, last_nav_date
+
+
+def fetch_default_mdl_ver_id() -> Tuple[str, Optional[_date], Optional[_date]]:
+    """从 iis_wght_cnfg_attc_mdl 表中获取第一个 mdl_ver_id、cal_strt_dt、cal_end_dt。"""
+    db_url = get_active_db_url(
+        db_type=db_type, db_user=db_user, db_password=db_password,
+        db_host=db_host, db_port=db_port, db_name=db_name,
+    )
+    sql = text("SELECT mdl_ver_id, cal_strt_dt, cal_end_dt FROM iis_wght_cnfg_attc_mdl "
+               "WHERE mdl_st = '2' ORDER BY mdl_ver_id ASC LIMIT 1")
+    conn = create_connection(db_url)
+    try:
+        df = pd.read_sql_query(sql, conn)
+    finally:
+        conn.close()
+    if df.empty:
+        raise RuntimeError("数据库中未找到可用的模型版本（iis_wght_cnfg_attc_mdl 为空）")
+    row = df.iloc[0]
+    mdl = str(row["mdl_ver_id"]) if "mdl_ver_id" in df.columns else str(row[0])
+
+    def _to_date(v):
+        if pd.isna(v):
+            return None
+        return v.date() if hasattr(v, 'date') else v
+
+    s_dt = _to_date(row.get("cal_strt_dt"))
+    e_dt = _to_date(row.get("cal_end_dt"))
+    return mdl, s_dt, e_dt
+
+
+def fetch_returns_from_db(mdl_ver_id: str, start_dt: Optional[_date] = None, end_dt: Optional[_date] = None) -> Tuple[
+    List[str], pd.DataFrame, Dict[str, str]]:
+    """从数据库 iis_mdl_aset_pct_d 表读取指定模型的五大类日收益数据。"""
+    db_url = get_active_db_url(
+        db_type=db_type, db_user=db_user, db_password=db_password,
+        db_host=db_host, db_port=db_port, db_name=db_name,
+    )
+    pool = DatabaseConnectionPool(url=db_url, pool_size=4)
+    where_parts = ["mdl_ver_id = :mdl_ver_id"]
+    params = {"mdl_ver_id": mdl_ver_id}
+    if start_dt:
+        where_parts.append("pct_yld_date >= :start_dt")
+        params["start_dt"] = start_dt
+    if end_dt:
+        where_parts.append("pct_yld_date <= :end_dt")
+        params["end_dt"] = end_dt
+    where_sql = " WHERE " + " AND ".join(where_parts)
+    sql_series = text(
+        "SELECT aset_bclass_cd AS cd, aset_bclass_nm AS nm, pct_yld_date AS dt, pct_yld AS yld FROM iis_mdl_aset_pct_d" + where_sql)
+    df = read_dataframe(pool, sql_series, params=params)
+    if df.empty:
+        raise RuntimeError(f"数据库中未查询到模型 {mdl_ver_id} 的收益数据")
+
+    df['nm'] = df['nm'].replace('', np.nan)
+    missing_nm_mask = df['nm'].isna()
+    if missing_nm_mask.any():
+        log(f"发现 {missing_nm_mask.sum()} 行的资产名称为空，将使用代码进行映射。")
+        df.loc[missing_nm_mask, 'nm'] = df.loc[missing_nm_mask, 'cd'].map(aset_cd_nm_dict)
+
+    df["nm"] = df["nm"].astype(str)
+    df["cd"] = df["cd"].astype(str)
+    code_to_name_map = df[["cd", "nm"]].dropna().drop_duplicates().set_index("cd")["nm"].to_dict()
+    asset_list = sorted(df["nm"].unique().tolist())
+    df["dt"] = pd.to_datetime(df["dt"])
+    return_df = df.pivot_table(index="dt", columns="nm", values="yld", aggfunc="first").sort_index().dropna(how='any')
+    return_df = return_df.reindex(columns=asset_list)
+    return asset_list, return_df, code_to_name_map
+
+
+def fetch_standard_portfolios(pool: DatabaseConnectionPool, mdl_ver_id: str, code_to_name_map: Dict[str, str]) -> List[
+    Tuple[int, Dict[str, float]]]:
+    """从数据库读取C1-C6标准组合的权重。"""
+    log(f"从数据库为模型 {mdl_ver_id} 获取标准组合权重...")
+    sql = "SELECT aset_bclass_cd, rsk_lvl, wght FROM iis_wght_cnfg_mdl_ast_rsk_rel WHERE mdl_ver_id = :mdl"
+    df = read_dataframe(pool, sql, params={"mdl": mdl_ver_id})
+    if df.empty:
+        log(f"警告: 在 iis_wght_cnfg_mdl_ast_rsk_rel 中未找到模型 {mdl_ver_id} 的标准组合权重。")
+        return []
+
+    portfolios = {}
+    for _, row in df.iterrows():
+        try:
+            rsk_lvl, asset_code, weight = int(row['rsk_lvl']), row['aset_bclass_cd'], float(row['wght'])
+        except (ValueError, TypeError) as e:
+            log(f"警告: 解析标准组合权重行时出错，已跳过: {row}, 错误: {e}")
+            continue
+        if rsk_lvl not in portfolios:
+            portfolios[rsk_lvl] = {}
+        asset_name = code_to_name_map.get(asset_code)
+        if asset_name:
+            portfolios[rsk_lvl][asset_name] = weight
+        else:
+            log(f"警告: 无法为资产代码 '{asset_code}' 找到对应的资产名称。")
+    std_portfolios = sorted(portfolios.items())
+    log(f"成功从数据库加载 {len(std_portfolios)} 个标准组合。")
+    return std_portfolios
 
 
 def main(json_input: str) -> str:
     """
-    主函数，用于计算全市场有效前沿及C1-C6标准组合点位, 并选择性绘图。
+    主函数，用于计算全市场有效前沿及C1-C6标准组合点位, 并选择性绘图和入库。
     :param json_input: str, 包含资产配置和分析参数的JSON字符串
     :return: str, 包含计算结果或错误信息的JSON字符串
     """
@@ -91,12 +198,45 @@ def main(json_input: str) -> str:
         else:
             input_data = json.loads(json_input).get('in_data', json.loads(json_input))
 
-        asset_list = input_data["asset_list"]
-        nv_data = input_data["nv"]
-        standard_proportion = input_data["StandardProportion"]
+        insert_table = input_data.get("insert_table", False)
+        mdl_ver_id = None
 
-        log("步骤 2: 从净值数据计算日收益率...")
-        returns = _load_returns_from_nv(nv_data, asset_list)
+        if insert_table:
+            log("落表模式: 从数据库加载数据...")
+            mdl_ver_id, cal_sta_dt, cal_end_dt = fetch_default_mdl_ver_id()
+            log(f"使用默认在线模型: {mdl_ver_id}")
+
+            asset_list, return_df, code_to_name_map = fetch_returns_from_db(mdl_ver_id, start_dt=cal_sta_dt,
+                                                                            end_dt=cal_end_dt)
+            returns = return_df.values
+            last_nav_date = return_df.index.max().date()
+
+            db_url = get_active_db_url(db_type=db_type, db_user=db_user, db_password=db_password, db_host=db_host,
+                                       db_port=db_port, db_name=db_name)
+            pool = DatabaseConnectionPool(url=db_url)
+            std_portfolios_from_db = fetch_standard_portfolios(pool, mdl_ver_id, code_to_name_map)
+
+            standard_proportion = {}
+            lvl_to_name_map = {v: k for k, v in rsk_level_code_dict.items()}
+            for lvl, wdict in std_portfolios_from_db:
+                rsk_name = lvl_to_name_map.get(lvl)
+                if rsk_name:
+                    standard_proportion[rsk_name] = wdict
+        else:
+            log("API模式: 从JSON输入加载数据...")
+            asset_list_codes = input_data["asset_list"]
+            nv_data = input_data["nv"]
+            standard_proportion_codes = input_data["StandardProportion"]
+
+            asset_list = [aset_cd_nm_dict.get(code, code) for code in asset_list_codes]
+            nv_data_named = {aset_cd_nm_dict.get(code, code): v for code, v in nv_data.items()}
+
+            standard_proportion = {}
+            for rsk_name, w_dict_codes in standard_proportion_codes.items():
+                standard_proportion[rsk_name] = {aset_cd_nm_dict.get(code, code): w for code, w in w_dict_codes.items()}
+
+            return_df, last_nav_date = _load_returns_from_nv(nv_data_named, asset_list)
+            returns = return_df.values
 
         log("步骤 3: 计算无约束的市场组合有效前沿...")
         single_limit = [(0.0, 1.0)] * len(asset_list)
@@ -133,9 +273,7 @@ def main(json_input: str) -> str:
             standard_points.append(point_data)
             log(f"计算完成: {name} - 收益率: {ret[0]:.4f}, 波动率: {vol[0]:.4f}, VaR: {var[0]:.4f}, 夏普比率: {sharpe[0]:.4f}")
 
-        log("步骤 5: 格式化返回结果...")
-
-        # a) 处理有效前沿数据
+        log("步骤 5: 格式化数据...")
         ef_mask = ef_mask_unc
         ef_weights = W_unc[ef_mask]
         ef_ret = ret_annual_unc[ef_mask]
@@ -153,13 +291,11 @@ def main(json_input: str) -> str:
         ef_df = ef_df.sort_values(by='rate', ascending=True).reset_index(drop=True)
         ef_df['rsk_lvl'] = np.arange(11, 11 + len(ef_df))
 
-        # b) 处理标准组合数据
         std_df_list = []
         for point in standard_points:
             rsk_name = point['name']
             rsk_lvl = rsk_level_code_dict.get(rsk_name)
             if rsk_lvl is None: continue
-
             row = {
                 'rsk_lvl': rsk_lvl,
                 'rate': point['ret_annual'],
@@ -167,23 +303,20 @@ def main(json_input: str) -> str:
                 'var95_b': point['var_value'],
                 'var95': max(0, point['var_value']),
             }
-            for i, asset_code in enumerate(asset_list):
-                row[asset_code] = point['weights'][i]
+            for i, asset_name in enumerate(asset_list):
+                row[asset_name] = point['weights'][i]
             std_df_list.append(row)
         std_df = pd.DataFrame(std_df_list)
 
-        # c) 合并并重命名列
         final_df = pd.concat([std_df, ef_df], ignore_index=True)
 
         rename_map = {}
         for code, name in aset_cd_nm_dict.items():
-            if code in final_df.columns:
-                target_col = asset_to_weight_column_map.get(name)
-                if target_col:
-                    rename_map[code] = target_col
+            target_col = asset_to_weight_column_map.get(name)
+            if target_col:
+                rename_map[name] = target_col
         final_df.rename(columns=rename_map, inplace=True)
 
-        # d) 选择并排序最终列
         output_cols = [
             'rsk_lvl', 'rate', 'csh_mgt_typ_pos', 'fx_yld_pos',
             'mix_strg_typ_pos', 'eqty_invst_typ_pos', 'altnt_invst_pos',
@@ -192,12 +325,27 @@ def main(json_input: str) -> str:
         for col in output_cols:
             if col not in final_df.columns:
                 final_df[col] = 0.0
+        result_df = final_df[output_cols]
 
-        final_df = final_df[output_cols]
+        if insert_table:
+            log("步骤 6: 执行数据落表操作...")
+            db_df = final_df.copy()
+            db_df['mdl_ver_id'] = mdl_ver_id
+            db_df['is_efct_font'] = '1'
+            db_df['dt_dt'] = last_nav_date
+            db_df['crt_tm'] = pd.to_datetime('now')
 
-        # e) 转换为JSON
-        result_data = final_df.to_dict(orient='records')
+            db_url = get_active_db_url(db_type=db_type, db_user=db_user, db_password=db_password,
+                                       db_host=db_host, db_port=db_port, db_name=db_name)
+            pool = DatabaseConnectionPool(url=db_url)
 
+            log(f"Upserting {len(db_df)} rows to iis_ef_rndm_srch_wght...")
+            threaded_upsert_dataframe_mysql(pool, [{'dataframe': db_df, 'table': 'iis_ef_rndm_srch_wght'}])
+            log("数据已更新/插入到 iis_ef_rndm_srch_wght 表。")
+
+            return json.dumps({"code": 0, "msg": ""}, ensure_ascii=False)
+
+        result_data = result_df.to_dict(orient='records')
         success_response = {
             "code": 0,
             "msg": "",
@@ -223,6 +371,7 @@ if __name__ == '__main__':
 
     in_dict = {
         "in_data": {
+            "insert_table": True,
             "asset_list": [
                 "01", "02", "03", "04", "05"
             ],
