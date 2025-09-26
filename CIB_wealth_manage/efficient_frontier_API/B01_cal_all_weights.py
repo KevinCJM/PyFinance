@@ -48,7 +48,7 @@ pd.set_option('display.max_columns', None)
 # df不换行
 pd.set_option('expand_frame_repr', False)
 # 网格搜索精度
-R_RATIO = 10
+R_RATIO = 100
 
 
 # 使用 Numba 加速网格生成，用于构建资产配置的离散化组合空间
@@ -437,28 +437,29 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
                          ignore_index=True) if not std_missing_df.empty else res_df_all.copy()
     combined['on_ef'] = efficient_frontier_mask(combined['ret_annual'].values, combined['vol_annual'].values)
 
-    # 为非标准组合分配 rsk_lvl（11 起自增）
-    is_nan = combined['rsk_lvl'].isna()
-    if is_nan.any():
-        seq = np.arange(11, 11 + int(is_nan.sum()), dtype=np.int64)
-        combined.loc[is_nan, 'rsk_lvl'] = seq
-    combined['rsk_lvl'] = combined['rsk_lvl'].astype(int)
-
     # --- 1. 准备并插入 iis_ef_grid_srch_wght (全量数据) ---
+    # 为全量数据分配 rsk_lvl
+    combined_for_grid = combined.copy()
+    is_nan_grid = combined_for_grid['rsk_lvl'].isna()
+    if is_nan_grid.any():
+        seq = np.arange(11, 11 + int(is_nan_grid.sum()), dtype=np.int64)
+        combined_for_grid.loc[is_nan_grid, 'rsk_lvl'] = seq
+    combined_for_grid['rsk_lvl'] = combined_for_grid['rsk_lvl'].astype(int)
+
     log(f"构建 iis_ef_grid_srch_wght 表的数据...")
     wght_df = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
-        'rsk_lvl': combined['rsk_lvl'],
-        'rate': combined['ret_annual'].astype(float),
-        'shrp_prprtn': combined['sharpe_ratio'].astype(float),
-        'var95_b': combined['var_annual'].astype(float),
-        'var95': combined['var_annual'].astype(float).clip(lower=0.0),
-        'is_efct_font': combined['on_ef'].astype(int).astype(str),
+        'rsk_lvl': combined_for_grid['rsk_lvl'],
+        'rate': combined_for_grid['ret_annual'].astype(float),
+        'shrp_prprtn': combined_for_grid['sharpe_ratio'].astype(float),
+        'var95_b': combined_for_grid['var_annual'].astype(float),
+        'var95': combined_for_grid['var_annual'].astype(float).clip(lower=0.0),
+        'is_efct_font': combined_for_grid['on_ef'].astype(int).astype(str),
         'dt_dt': return_df.index.max().date(),
         'crt_tm': pd.to_datetime('now'),
-        'liquid': None,
+        'liquid': combined_for_grid['vol_annual'].astype(float),
     })
-    for k, v in _build_weight_cols(combined, a_list).items():
+    for k, v in _build_weight_cols(combined_for_grid, a_list).items():
         wght_df[k] = v
 
     log("清空并写入 iis_ef_grid_srch_wght...")
@@ -468,33 +469,55 @@ def insert_results_to_db(mdl_ver_id: str, a_list: List[str], res_df: pd.DataFram
         except Exception as e:
             log(f"TRUNCATE 失败: {e}")
             raise
+    log("\t iis_ef_grid_srch_wght 表清空完成。")
     threaded_insert_dataframe(pool, [{'dataframe': wght_df, 'table': 'iis_ef_grid_srch_wght', 'batch_size': 5000}],
                               max_workers=1)
-    log("iis_ef_grid_srch_wght 表写入完成。")
+    log("\t iis_ef_grid_srch_wght 表写入完成。")
 
-    # --- 2. 准备并更新/插入 iis_aset_allc_indx_pub (有效前沿 + C1-C6) ---
+    # --- 2. 准备并写入 iis_aset_allc_indx_pub (有效前沿 + C1-C6) ---
     log(f"构建 iis_aset_allc_indx_pub 表的数据...")
     pub_df_source = combined[(combined['on_ef'] == True) | (combined['rsk_lvl'].isin([1, 2, 3, 4, 5, 6]))].copy()
 
-    # 确保 rsk_lvl 是唯一的整数
-    pub_df_source['rsk_lvl'] = pub_df_source['rsk_lvl'].astype(int)
-    pub_df_source = pub_df_source.sort_values(by='rsk_lvl').reset_index(drop=True)
+    # 分离C1-C6和纯有效前沿点
+    c1_c6_mask = pub_df_source['rsk_lvl'].isin([1, 2, 3, 4, 5, 6])
+    c1_c6_df = pub_df_source[c1_c6_mask]
+    ef_only_df = pub_df_source[~c1_c6_mask].copy()
+
+    # 对纯有效前沿点按收益率排序并重新分配rsk_lvl
+    if not ef_only_df.empty:
+        ef_only_df.sort_values(by='ret_annual', ascending=True, inplace=True)
+        ef_only_df['rsk_lvl'] = np.arange(11, 11 + len(ef_only_df))
+
+    # 重新合并
+    final_pub_df_source = pd.concat([c1_c6_df, ef_only_df], ignore_index=True)
+    final_pub_df_source['rsk_lvl'] = final_pub_df_source['rsk_lvl'].astype(int)
 
     pub_df = pd.DataFrame({
         'mdl_ver_id': mdl_ver_id,
-        'rsk_lvl': pub_df_source['rsk_lvl'],
-        'rate': pub_df_source['ret_annual'],
-        'shrp_prprtn': pub_df_source['sharpe_ratio'],
-        'var95_b': pub_df_source['var_annual'],
-        'var95': pub_df_source['var_annual'].clip(lower=0.0),
+        'rsk_lvl': final_pub_df_source['rsk_lvl'],
+        'rate': final_pub_df_source['ret_annual'],
+        'liquid': final_pub_df_source['vol_annual'].astype(float),
+        'shrp_prprtn': final_pub_df_source['sharpe_ratio'],
+        'var95_b': final_pub_df_source['var_annual'],
+        'var95': final_pub_df_source['var_annual'].clip(lower=0.0),
         'crt_tm': pd.to_datetime('now'),
     })
-    for k, v in _build_weight_cols(pub_df_source, a_list).items():
+    for k, v in _build_weight_cols(final_pub_df_source, a_list).items():
         pub_df[k] = v
 
-    log("Upserting 到 iis_aset_allc_indx_pub...")
-    threaded_upsert_dataframe_mysql(pool, [{'dataframe': pub_df, 'table': 'iis_aset_allc_indx_pub'}], max_workers=1)
-    log("iis_aset_allc_indx_pub 表更新/插入完成。")
+    log(f"删除并重新插入 iis_aset_allc_indx_pub 表中模型 {mdl_ver_id} 的数据...")
+    with pool.begin() as conn:
+        try:
+            conn.execute(
+                text("DELETE FROM iis_aset_allc_indx_pub WHERE mdl_ver_id = :mdl_ver_id"),
+                {"mdl_ver_id": mdl_ver_id}
+            )
+        except Exception as e:
+            log(f"DELETE FROM iis_aset_allc_indx_pub 失败: {e}")
+            raise
+    log("\t iis_aset_allc_indx_pub 表删除完成。")
+    threaded_insert_dataframe(pool, [{'dataframe': pub_df, 'table': 'iis_aset_allc_indx_pub'}], max_workers=1)
+    log("\t iis_aset_allc_indx_pub 表写入完成。")
 
     log(f"数据库操作总耗时 {time.time() - s_t:.1f} 秒")
 
@@ -687,15 +710,15 @@ def main():
             "msg": f"计算{len(weight_list)}个权重的指标失败: {e}"
         }, ensure_ascii=False)
 
-    # ''' 3) 画图 ------------------------------------------------------------------------------------- '''
-    # if db_host is None or db_host in ('localhost', '127.0.0.1'):  # 仅本机环境下进行画图
-    #     plot_efficient_frontier_plotly(
-    #         res_df,
-    #         asset_cols=a_list,
-    #         title='资产组合有效前沿（抽样非前沿点）',
-    #         sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
-    #         save_html='efficient_frontier.html'
-    #     )
+    ''' 3) 画图 ------------------------------------------------------------------------------------- '''
+    if db_host is None or db_host in ('localhost', '127.0.0.1'):  # 仅本机环境下进行画图
+        plot_efficient_frontier_plotly(
+            res_df,
+            asset_cols=a_list,
+            title='资产组合有效前沿（抽样非前沿点）',
+            sample_non_ef=50000,  # 抽样 N 个非前沿点以加快绘图速度
+            save_html='efficient_frontier.html'
+        )
 
     ''' 4) 结果保存到本地文件 -------------------------------------------------------------------------- '''
     try:
