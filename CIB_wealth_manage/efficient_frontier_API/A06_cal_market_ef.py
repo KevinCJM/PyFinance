@@ -22,7 +22,8 @@ try:
     from countus.efficient_frontier_API.Y02_asset_id_map import (asset_to_weight_column_map, aset_cd_nm_dict,
                                                                  rsk_level_code_dict)
     from countus.efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
-                                                             create_connection, threaded_upsert_dataframe_mysql)
+                                                             create_connection, threaded_upsert_dataframe_mysql,
+                                                             threaded_insert_dataframe)
     from countus.efficient_frontier_API.Y01_db_config import (db_type, db_host, db_port, db_name, db_user,
                                                               db_password)
 except ImportError:
@@ -32,7 +33,8 @@ except ImportError:
     from efficient_frontier_API.Y02_asset_id_map import (asset_to_weight_column_map, aset_cd_nm_dict,
                                                          rsk_level_code_dict)
     from efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, get_active_db_url, read_dataframe,
-                                                     create_connection, threaded_upsert_dataframe_mysql)
+                                                     create_connection, threaded_upsert_dataframe_mysql,
+                                                     threaded_insert_dataframe)
     from efficient_frontier_API.Y01_db_config import (db_type, db_host, db_port, db_name, db_user, db_password)
 
 # --- Constants ---
@@ -332,21 +334,30 @@ def main(json_input: str) -> str:
 
         if insert_table:
             log("步骤 6: 执行数据落表操作...")
-            db_df = final_df.copy()
+            db_df = result_df.copy()  # 使用已经整理好列的 result_df
             db_df['mdl_ver_id'] = mdl_ver_id
             db_df['is_efct_font'] = '1'
             db_df['dt_dt'] = last_nav_date
             db_df['crt_tm'] = pd.to_datetime('now')
-            # liquid 字段已在 final_df 中, 无需再单独赋值为 None
 
             db_url = get_active_db_url(db_type=db_type, db_user=db_user, db_password=db_password,
                                        db_host=db_host, db_port=db_port, db_name=db_name)
             pool = DatabaseConnectionPool(url=db_url)
-            
-            log(f"Upserting {len(db_df)} rows to iis_ef_rndm_srch_wght...")
-            threaded_upsert_dataframe_mysql(pool, [{'dataframe': db_df, 'table': 'iis_ef_rndm_srch_wght'}])
-            log("数据已更新/插入到 iis_ef_rndm_srch_wght 表。")
-            
+
+            log(f"删除并重新插入 iis_ef_rndm_srch_wght 表中模型 {mdl_ver_id} 的数据...")
+            with pool.begin() as conn:
+                try:
+                    conn.execute(
+                        text("DELETE FROM iis_ef_rndm_srch_wght WHERE mdl_ver_id = :mdl_ver_id"),
+                        {"mdl_ver_id": mdl_ver_id}
+                    )
+                except Exception as e:
+                    log(f"DELETE FROM iis_ef_rndm_srch_wght 失败: {e}")
+                    raise
+            log("\t iis_ef_rndm_srch_wght 表的数据已经删除。")
+            threaded_insert_dataframe(pool, [{'dataframe': db_df, 'table': 'iis_ef_rndm_srch_wght'}])
+            log("\t 数据已写入 iis_ef_rndm_srch_wght 表。")
+
             return json.dumps({"code": 0, "msg": ""}, ensure_ascii=False)
 
         result_data = result_df.to_dict(orient='records')
@@ -375,7 +386,7 @@ if __name__ == '__main__':
 
     in_dict = {
         "in_data": {
-            "insert_table": True,
+            # "insert_table": True,
             "asset_list": [
                 "01", "02", "03", "04", "05"
             ],
