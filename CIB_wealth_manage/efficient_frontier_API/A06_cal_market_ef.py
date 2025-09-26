@@ -287,6 +287,7 @@ def main(json_input: str) -> str:
         ef_df['shrp_prprtn'] = ef_sharpe
         ef_df['var95_b'] = ef_risk
         ef_df['var95'] = np.clip(ef_risk, 0, None)
+        ef_df['liquid'] = ef_vol  # 添加年化波动率
 
         ef_df = ef_df.sort_values(by='rate', ascending=True).reset_index(drop=True)
         ef_df['rsk_lvl'] = np.arange(11, 11 + len(ef_df))
@@ -296,12 +297,14 @@ def main(json_input: str) -> str:
             rsk_name = point['name']
             rsk_lvl = rsk_level_code_dict.get(rsk_name)
             if rsk_lvl is None: continue
+
             row = {
                 'rsk_lvl': rsk_lvl,
                 'rate': point['ret_annual'],
                 'shrp_prprtn': point['sharpe_ratio'],
                 'var95_b': point['var_value'],
                 'var95': max(0, point['var_value']),
+                'liquid': point['vol_annual'],  # 添加年化波动率
             }
             for i, asset_name in enumerate(asset_list):
                 row[asset_name] = point['weights'][i]
@@ -318,7 +321,7 @@ def main(json_input: str) -> str:
         final_df.rename(columns=rename_map, inplace=True)
 
         output_cols = [
-            'rsk_lvl', 'rate', 'csh_mgt_typ_pos', 'fx_yld_pos',
+            'rsk_lvl', 'rate', 'liquid', 'csh_mgt_typ_pos', 'fx_yld_pos',
             'mix_strg_typ_pos', 'eqty_invst_typ_pos', 'altnt_invst_pos',
             'shrp_prprtn', 'var95', 'var95_b'
         ]
@@ -334,15 +337,16 @@ def main(json_input: str) -> str:
             db_df['is_efct_font'] = '1'
             db_df['dt_dt'] = last_nav_date
             db_df['crt_tm'] = pd.to_datetime('now')
+            # liquid 字段已在 final_df 中, 无需再单独赋值为 None
 
             db_url = get_active_db_url(db_type=db_type, db_user=db_user, db_password=db_password,
                                        db_host=db_host, db_port=db_port, db_name=db_name)
             pool = DatabaseConnectionPool(url=db_url)
-
+            
             log(f"Upserting {len(db_df)} rows to iis_ef_rndm_srch_wght...")
             threaded_upsert_dataframe_mysql(pool, [{'dataframe': db_df, 'table': 'iis_ef_rndm_srch_wght'}])
             log("数据已更新/插入到 iis_ef_rndm_srch_wght 表。")
-
+            
             return json.dumps({"code": 0, "msg": ""}, ensure_ascii=False)
 
         result_data = result_df.to_dict(orient='records')
