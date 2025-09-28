@@ -364,7 +364,7 @@ def main(json_input: str) -> str:
         success_response = {
             "code": 0,
             "msg": "",
-            "data": result_data
+            "data": {"res": result_data}
         }
         return json.dumps(success_response, ensure_ascii=False, indent=2)
 

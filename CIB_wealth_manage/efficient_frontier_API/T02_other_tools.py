@@ -198,8 +198,7 @@ if HAS_NUMBA:
             else:
                 out_sharpe[j] = np.nan
 
-            var_val = z_score * annual_vol - annual_ret
-            out_var[j] = max(0.0, var_val)
+            out_var[j] = annual_ret - z_score * annual_vol
 
         return out_ret, out_vol, out_var, out_sharpe
 else:
