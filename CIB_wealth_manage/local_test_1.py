@@ -63,13 +63,13 @@ def run_local_test_with_check():
                      "privateVisible": 0,
                      "badPosAmt": 0.00,
                      "zgcyje": 10000000.00,
-                     "rjdy": "01002",
-                     "sjdy": "01002002",
+                     "rjdy": "01002",  # 二级定义
+                     "sjdy": "01002002",  # 三级定义
                      "closeDays": 1.0,
                      "risk": "1",
                      "isRecomm": False,
-                     "clazz": "01",
-                     "yjdy": "01",
+                     "clazz": "01",  # 所属大类资产
+                     "yjdy": "01",  # 一级定义
                      "fixProductId": "019B310006$^a002c30439c4bb3af4bc0823ee633b0",
                      "baseRate": 0.022,
                      "baseCode": "H11025.CSI"
