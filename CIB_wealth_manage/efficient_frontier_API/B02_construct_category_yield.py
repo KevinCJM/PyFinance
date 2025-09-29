@@ -5,7 +5,7 @@ B02_construct_category_yield.py
 根据模型配置汇总指数来源，并从 wind_cmfindexeod 抽取成分指数的净值数据。
 
 步骤
-1) 从 iis_wght_cfg_attc_mdl 取第一条记录：mdl_ver_id, cal_strt_dt, cal_end_dt
+1) 从 iis_wght_cnfg_attc_mdl 取第一条记录：mdl_ver_id, cal_strt_dt, cal_end_dt
 2) 读取 iis_wght_cnfg_mdl 中该 mdl_ver_id 的配置：mdl_ver_id, aset_bclass_cd, indx_num, indx_nm, wght
 3) 在 iis_fnd_indx_info 中查询这些 indx_num 的来源表：indx_num, src_tab_ennm
 4) 如果存在 src_tab_ennm != 'wind_cmfindexeod' 的记录，抛出错误
@@ -16,15 +16,6 @@ B02_construct_category_yield.py
 - T05_db_utils: DatabaseConnectionPool, read_dataframe, get_active_db_url
 - Y01_db_config: 数据库连接参数
 """
-import os
-import sys
-
-p_file = os.path.abspath("__file__")
-pp_file = os.path.dirname(p_file)
-sys.path.append(pp_file)
-ppp_file = os.path.dirname(pp_file)
-sys.path.append(ppp_file)
-
 import time
 import json
 import traceback
@@ -38,13 +29,15 @@ from typing import Dict, List, Tuple
 try:
     from countus.efficient_frontier_API.T02_other_tools import log
     from countus.efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, read_dataframe, get_active_db_url,
-                                                             threaded_upsert_dataframe_mysql)
+                                                             threaded_upsert_dataframe_mysql, threaded_insert_dataframe)
     from countus.efficient_frontier_API.Y02_asset_id_map import aset_cd_nm_dict
+    from countus.efficient_frontier_API.B01_cal_all_weights import fetch_standard_portfolios, generate_alloc_perf_numba
 except ImportError:
     from efficient_frontier_API.T02_other_tools import log
     from efficient_frontier_API.T05_db_utils import (DatabaseConnectionPool, read_dataframe, get_active_db_url,
-                                                     threaded_upsert_dataframe_mysql)
+                                                     threaded_upsert_dataframe_mysql, threaded_insert_dataframe)
     from efficient_frontier_API.Y02_asset_id_map import aset_cd_nm_dict
+    from efficient_frontier_API.B01_cal_all_weights import fetch_standard_portfolios, generate_alloc_perf_numba
 
 try:
     try:
@@ -69,9 +62,7 @@ def _db_pool() -> DatabaseConnectionPool:
 
 
 def _build_in_clause(name_prefix: str, values: List[str]) -> Tuple[str, Dict[str, str]]:
-    """为 SQLAlchemy 1.2 生成 IN 子句占位符与参数映射。
-    返回形如 "(:p0,:p1,...)" 与 {"p0": v0, ...}。
-    """
+    """为 SQLAlchemy 1.2 生成 IN 子句占位符与参数映射。"""
     params: Dict[str, str] = {}
     holders: List[str] = []
     for i, v in enumerate(values):
@@ -129,10 +120,65 @@ def fetch_wind_index_eod(pool: DatabaseConnectionPool, codes: List[str]) -> pd.D
     return read_dataframe(pool, sql, params=params)
 
 
+def calculate_and_insert_rsk_metrics(pool, mdl_ver_id, result_df):
+    log("开始计算C1-C6标准组合性能指标...")
+
+    # 1. 准备数据
+    code_to_name_map = {v: k for k, v in aset_cd_nm_dict.items()}
+    std_portfolios = fetch_standard_portfolios(pool, mdl_ver_id, code_to_name_map)
+    if not std_portfolios:
+        log("未能从数据库加载C1-C6标准组合权重，跳过指标计算。")
+        return
+
+    daily_returns_df = result_df.pivot_table(index="pct_yld_date", columns="aset_bclass_nm", values="pct_yld")
+    asset_list = daily_returns_df.columns.tolist()
+
+    weights_list = []
+    rsk_lvl_list = []
+    for lvl, wdict in std_portfolios:
+        weights = [wdict.get(name, 0.0) for name in asset_list]
+        weights_list.append(weights)
+        rsk_lvl_list.append(lvl)
+
+    weights_array = np.array(weights_list)
+
+    # 2. 计算指标
+    perf_df = generate_alloc_perf_numba(asset_list, daily_returns_df, weights_array)
+
+    # 3. 准备待插入的数据
+    perf_df['mdl_ver_id'] = mdl_ver_id
+    perf_df['rsk_lvl'] = rsk_lvl_list
+
+    db_df = perf_df.rename(columns={
+        'ret_annual': 'pct_yld',
+        'vol_annual': 'pct_std',
+        'sharpe_ratio': 'shrp_prprtn',
+        'var_annual': 'var_value'
+    })
+
+    final_cols = ['mdl_ver_id', 'rsk_lvl', 'pct_yld', 'pct_std', 'shrp_prprtn', 'var_value']
+    db_df = db_df[final_cols]
+
+    # 4. 执行数据库操作 (Delete + Insert)
+    log(f"删除并重新插入 iis_wght_cnfg_mdl_rsk 表中模型 {mdl_ver_id} 的数据...")
+    with pool.begin() as conn:
+        try:
+            conn.execute(
+                text("DELETE FROM iis_wght_cnfg_mdl_rsk WHERE mdl_ver_id = :mdl_ver_id"),
+                {"mdl_ver_id": mdl_ver_id}
+            )
+        except Exception as e:
+            log(f"DELETE FROM iis_wght_cnfg_mdl_rsk 失败: {e}")
+            raise
+
+    threaded_insert_dataframe(pool, [{'dataframe': db_df, 'table': 'iis_wght_cnfg_mdl_rsk'}])
+    log("iis_wght_cnfg_mdl_rsk 表写入完成。")
+
+
 def run():
     s_t = time.time()
     pool = _db_pool()
-    df_annual_stats = pd.DataFrame()  # 新增：初始化年度统计DF
+    df_annual_stats = pd.DataFrame()
 
     ''' 1. 数据获取 ----------------------------------------------------------------------------- '''
     # 1) 模型头信息
@@ -222,7 +268,7 @@ def run():
         # 3) 按资产大类加权拟合收益
         log("按资产大类加权拟合收益与年度指标")
         out_frames: List[pd.DataFrame] = []
-        annual_stats_list: List[Dict] = []  # 新增：年度统计列表
+        annual_stats_list: List[Dict] = []
 
         for aset_cd, grp in cfg_df.groupby("aset_bclass_cd"):
             g = grp.copy()
@@ -312,7 +358,6 @@ def run():
 
         # 清理 iis_mdl_aset_pct_d 的数据
         for aset_cd, sub in result_df.groupby("aset_bclass_cd"):
-            # 将 NaN 替换为 None 以便数据库驱动正确处理
             sub_cleaned = sub.replace({np.nan: None})
             datasets.append({
                 "dataframe": sub_cleaned,
@@ -342,6 +387,18 @@ def run():
             "code": 1,
             "msg": f"结果入库失败: {e}"
         }, ensure_ascii=False)
+
+    ''' 4. 计算标准组合指标并入库 ----------------------------------------------------------------------------- '''
+    try:
+        # 计算并插入C1-C6风险指标
+        calculate_and_insert_rsk_metrics(pool, mdl_ver_id, result_df)
+    except Exception as e:
+        print(traceback.format_exc())
+        return json.dumps({
+            "code": 1,
+            "msg": f"C1-C6风险指标计算或入库失败: {e}"
+        }, ensure_ascii=False)
+
     return json.dumps({
         "code": 0,
         "msg": ""
