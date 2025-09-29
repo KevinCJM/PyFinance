@@ -124,8 +124,7 @@ def calculate_and_insert_rsk_metrics(pool, mdl_ver_id, result_df):
     log("开始计算C1-C6标准组合性能指标...")
 
     # 1. 准备数据
-    code_to_name_map = {v: k for k, v in aset_cd_nm_dict.items()}
-    std_portfolios = fetch_standard_portfolios(pool, mdl_ver_id, code_to_name_map)
+    std_portfolios = fetch_standard_portfolios(pool, mdl_ver_id, aset_cd_nm_dict)
     if not std_portfolios:
         log("未能从数据库加载C1-C6标准组合权重，跳过指标计算。")
         return

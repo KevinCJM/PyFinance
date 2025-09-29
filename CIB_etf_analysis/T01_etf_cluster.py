@@ -337,7 +337,7 @@ if __name__ == '__main__':
         ['类别代码', 'ETF代码', 'ETF名称', '是否典型', '年化收益率', '年化波动率', '夏普比率']]
 
     print("\n步骤 6: 保存最终结果到 Excel, Parquet 和 CSV 文件...")
-    excel_path, = os.path.join(OUTPUT_DIR, 'cluster_results.xlsx')
+    excel_path = os.path.join(OUTPUT_DIR, 'cluster_results.xlsx')
     parquet_path = os.path.join(OUTPUT_DIR, 'cluster_results.parquet')
     csv_path = os.path.join(OUTPUT_DIR, 'cluster_results.csv')
     final_results.to_excel(excel_path, index=False)
