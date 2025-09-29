@@ -1,24 +1,23 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Dict, Any
-
-from fastapi import FastAPI, Query
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from functools import lru_cache
-import pandas as pd
-import numpy as np
-from pathlib import Path
 import json
-from starlette.responses import HTMLResponse, JSONResponse
-from starlette.staticfiles import StaticFiles
-from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
-from fit import compute_rolling_corr_classes, compute_class_consistency
-from optimizer import calculate_efficient_frontier_exploration
-from strategy import compute_risk_budget_weights, compute_target_weights
-from backtest_engine import backtest_portfolio, gen_rebalance_dates
-from datetime import datetime
 import math
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from datetime import datetime
+from functools import lru_cache
+from fastapi import FastAPI, Query
+from pydantic import BaseModel, Field
+from starlette.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from typing import List, Optional, Tuple, Dict, Any
+from starlette.responses import HTMLResponse, JSONResponse
+from optimizer import calculate_efficient_frontier_exploration
+from backtest_engine import backtest_portfolio, gen_rebalance_dates
+from fit import compute_rolling_corr_classes, compute_class_consistency
+from strategy import compute_risk_budget_weights, compute_target_weights
+from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
 
 
 class FrontierRequest(BaseModel):
@@ -28,7 +27,8 @@ class FrontierRequest(BaseModel):
     return_metric: Dict[str, Any]
     risk_metric: Dict[str, Any]
     risk_free_rate: float = 0.0  # 年化无风险利率（小数），用于夏普率
-    constraints: Optional[Dict[str, Any]] = None  # { single_limits: {name:{lo,hi}}, group_limits: [{assets:[name], lo, hi}] }
+    constraints: Optional[
+        Dict[str, Any]] = None  # { single_limits: {name:{lo,hi}}, group_limits: [{assets:[name], lo, hi}] }
     exploration: Optional[Dict[str, Any]] = None  # { rounds: [{samples:int, step:float, buckets:int}] }
     quantization: Optional[Dict[str, Any]] = None  # { step: float|null }
     refine: Optional[Dict[str, Any]] = None  # { use_slsqp: bool, count: int }
@@ -113,6 +113,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 包括模块化路由器（策略，分析）
+try:
+    from services.strategy_routes import router as strategy_router
+
+    app.include_router(strategy_router)
+except Exception:
+    pass
+try:
+    from services.analytics_routes import router as analytics_router
+
+    app.include_router(analytics_router)
+except Exception:
+    pass
+
 
 @app.get("/api/health")
 def health():
@@ -131,7 +145,6 @@ def solve(req: SolveRequest):
     - 非负权重，权重和=1；若 maxLeverage>0，则线性放大到 1+maxLeverage。
     - 目前仅实现基于波动率的风险度量（riskMetric 参数暂不影响计算）。
     """
-    import numpy as np
 
     # 读取并准备收益序列
     pq = DATA_DIR / "etf_daily_df.parquet"
@@ -157,6 +170,7 @@ def solve(req: SolveRequest):
     # 根据前端给的 code/name 匹配 ts_code/name
     series_list: List[pd.Series] = []
     labels: List[str] = []
+
     def _code_nosfx(x: str) -> str:
         xs = (x or "").strip()
         if "." in xs:
@@ -204,8 +218,7 @@ def solve(req: SolveRequest):
     # 协方差矩阵
     S = np.cov(X, rowvar=False, ddof=1)
 
-    # 目标预算 b
-    # 构建预算向量（与 labels 同序），同时兼容 code 无后缀/带后缀；name 作为兜底
+    # 目标预算 b, 构建预算向量（与 labels 同序），同时兼容 code 无后缀/带后缀；name 作为兜底
     budget_map = {}
     for it in req.etfs:
         c = (it.code or "").strip()
@@ -322,11 +335,15 @@ def fit_classes(req: FitRequest):
     for row in consistency_rows:
         cons_out.append({
             "name": str(row.get("name")),
-            "mean_corr": None if not isinstance(row.get("mean_corr"), (int,float)) or not (row.get("mean_corr") == row.get("mean_corr")) else float(row.get("mean_corr")),
-            "pca_evr1": None if not isinstance(row.get("pca_evr1"), (int,float)) or not (row.get("pca_evr1") == row.get("pca_evr1")) else float(row.get("pca_evr1")),
-            "max_te": None if not isinstance(row.get("max_te"), (int,float)) or not (row.get("max_te") == row.get("max_te")) else float(row.get("max_te")),
+            "mean_corr": None if not isinstance(row.get("mean_corr"), (int, float)) or not (
+                    row.get("mean_corr") == row.get("mean_corr")) else float(row.get("mean_corr")),
+            "pca_evr1": None if not isinstance(row.get("pca_evr1"), (int, float)) or not (
+                    row.get("pca_evr1") == row.get("pca_evr1")) else float(row.get("pca_evr1")),
+            "max_te": None if not isinstance(row.get("max_te"), (int, float)) or not (
+                    row.get("max_te") == row.get("max_te")) else float(row.get("max_te")),
         })
-    return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out, consistency=cons_out)
+    return FitResponse(dates=dates, navs=navs, corr=corr_vals, corr_labels=corr_labels, metrics=metrics_out,
+                       consistency=cons_out)
 
 
 @app.post("/api/rolling-corr", response_model=RollingResponse)
@@ -336,10 +353,14 @@ def rolling_corr(req: RollingRequest):
     except Exception:
         raise ValueError("startDate 格式错误，应为 YYYY-MM-DD")
     etfs = [ETFSpec(code=e.code, name=e.name, weight=float(e.weight)) for e in req.etfs]
-    idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window), req.targetCode, req.targetName)
+    idx, series_map, metrics = compute_rolling_corr(DATA_DIR, etfs, start, int(req.window),
+                                                    req.targetCode,
+                                                    req.targetName)
     dates = [d.strftime("%Y-%m-%d") for d in idx]
     # 清理 NaN/Inf
-    safe_series = {k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for k, v in series_map.items()}
+    safe_series = {
+        k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for
+        k, v in series_map.items()}
     for m in metrics:
         for k in list(m.keys()):
             if k == 'name':
@@ -374,9 +395,13 @@ def rolling_corr_classes(req: RollingClassesRequest):
         )
         for c in req.classes
     ]
-    idx, series_map, metrics = compute_rolling_corr_classes(DATA_DIR, classes, start, int(req.window), req.targetClassName)
+    idx, series_map, metrics = compute_rolling_corr_classes(DATA_DIR, classes, start,
+                                                            int(req.window),
+                                                            req.targetClassName)
     dates = [d.strftime("%Y-%m-%d") for d in idx]
-    safe_series = {k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for k, v in series_map.items()}
+    safe_series = {
+        k: [float(x) if isinstance(x, (int, float)) and (x == x) and abs(x) != float('inf') else 0.0 for x in v] for
+        k, v in series_map.items()}
     for m in metrics:
         for k in list(m.keys()):
             if k == 'name':
@@ -421,17 +446,19 @@ def save_allocation(req: SaveRequest):
                 "etf_weight": etf.weight,
                 "creat_time": now,
             })
-    
+
     new_info_df = pd.DataFrame(new_rows)
     updated_info_df = pd.concat([info_df, new_info_df], ignore_index=True)
     updated_info_df.to_parquet(info_path, index=False)
 
     # 2. 计算并保存虚拟净值
     try:
-        start_date = pd.to_datetime("2010-01-01") # 从一个较早的日期开始计算以获取完整历史
-        classes_spec = [ClassSpec(id=c.id, name=c.name, etfs=[ETFSpec(code=e.code, name=e.name, weight=e.weight) for e in c.etfs]) for c in req.classes]
+        start_date = pd.to_datetime("2010-01-01")  # 从一个较早的日期开始计算以获取完整历史
+        classes_spec = [
+            ClassSpec(id=c.id, name=c.name, etfs=[ETFSpec(code=e.code, name=e.name, weight=e.weight) for e in c.etfs])
+            for c in req.classes]
         NAV, _, _ = compute_classes_nav(DATA_DIR, classes_spec, start_date)
-        
+
         # 将宽表 NAV 转换为长表
         nav_long = NAV.reset_index().melt(id_vars=["date"], var_name="asset_name", value_name="nv")
         nav_long["asset_alloc_name"] = alloc_name
@@ -474,7 +501,7 @@ def load_allocation(name: str):
     info_path = DATA_DIR / "asset_alloc_info.parquet"
     if not info_path.exists():
         return JSONResponse(status_code=404, content={"detail": "配置文件不存在"})
-    
+
     df = pd.read_parquet(info_path)
     alloc_df = df[df["asset_alloc_name"] == name]
     if alloc_df.empty:
@@ -488,7 +515,7 @@ def load_allocation(name: str):
             classes_map[class_name] = {
                 "id": f"loaded-{class_name}-{datetime.now().timestamp()}",
                 "name": class_name,
-                "mode": "custom", # 默认导入为自定义权重模式
+                "mode": "custom",  # 默认导入为自定义权重模式
                 "etfs": [],
                 "riskMetric": "vol",
                 "maxLeverage": 0,
@@ -498,7 +525,7 @@ def load_allocation(name: str):
             "name": row["etf_name"],
             "weight": row["etf_weight"],
         })
-    
+
     return list(classes_map.values())
 
 
@@ -509,12 +536,12 @@ def post_efficient_frontier(req: FrontierRequest):
         return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
 
     df = pd.read_parquet(nv_path)
-    
+
     # 1. 筛选数据
     alloc_df = df[df["asset_alloc_name"] == req.alloc_name].copy()
     if alloc_df.empty:
         return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
-    
+
     alloc_df['date'] = pd.to_datetime(alloc_df['date'])
     mask = (alloc_df['date'] >= pd.to_datetime(req.start_date)) & (alloc_df['date'] <= pd.to_datetime(req.end_date))
     alloc_df = alloc_df.loc[mask]
@@ -524,7 +551,7 @@ def post_efficient_frontier(req: FrontierRequest):
 
     # 2. 准备收益率宽表
     nav_wide = alloc_df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
-    
+
     return_type = req.return_metric.get('type', 'simple')
     if return_type == 'log':
         returns_df = np.log(nav_wide / nav_wide.shift(1)).dropna()
@@ -613,7 +640,8 @@ def post_efficient_frontier(req: FrontierRequest):
     clean_results = {
         "asset_names": results.get("asset_names", []),
         "scatter": [p for p in results.get("scatter", []) if is_finite_point(p)],
-        "frontier": sorted([p for p in results.get("frontier", []) if is_finite_point(p)], key=lambda o: extract_value(o)[0]),
+        "frontier": sorted([p for p in results.get("frontier", []) if is_finite_point(p)],
+                           key=lambda o: extract_value(o)[0]),
         "max_sharpe": results.get("max_sharpe") if is_finite_point(results.get("max_sharpe")) else None,
         "min_variance": results.get("min_variance") if is_finite_point(results.get("min_variance")) else None,
         "max_return": results.get("max_return") if is_finite_point(results.get("max_return")) else None,
@@ -704,7 +732,8 @@ def api_compute_weights(req: ComputeWeightsRequest):
         if req.strategy.risk_metric in {"var", "es"}:
             if req.strategy.confidence is not None:
                 risk_cfg["confidence"] = float(req.strategy.confidence)
-        weights = compute_risk_budget_weights(nav_wide, risk_cfg, budgets, window_len=req.data_len, window_mode=(req.window_mode or 'firstN'))
+        weights = compute_risk_budget_weights(nav_wide, risk_cfg, budgets, window_len=req.data_len,
+                                              window_mode=(req.window_mode or 'firstN'))
         return {"weights": weights}
 
     if req.strategy.type == 'target':
@@ -733,7 +762,8 @@ def api_compute_weights(req: ComputeWeightsRequest):
                 assets = g.get('assets', [])
                 idxs = tuple(i for i, nm in enumerate(asset_names) if nm in assets)
                 if idxs:
-                    lo = float(g.get('lo', 0.0)); hi = float(g.get('hi', 1.0))
+                    lo = float(g.get('lo', 0.0));
+                    hi = float(g.get('hi', 1.0))
                     group_limits[idxs] = (lo, hi)
 
         weights = compute_target_weights(
@@ -776,10 +806,12 @@ def api_backtest(req: BacktestRequest):
     strat_list = []
     for s in req.strategies:
         cls_map = {c.name: c for c in s.classes}
-        weights = [float(cls_map.get(n).weight) if (n in cls_map and cls_map[n].weight is not None) else 0.0 for n in class_names]
+        weights = [float(cls_map.get(n).weight) if (n in cls_map and cls_map[n].weight is not None) else 0.0 for n in
+                   class_names]
         # pass rebalance info forward (ensure dict form)
         rb = s.rebalance if isinstance(s.rebalance, dict) else None
-        sdict = {"name": s.name or s.type, "type": s.type, "weights": weights, "rebalance": rb, "classes": [c.dict() for c in s.classes]}
+        sdict = {"name": s.name or s.type, "type": s.type, "weights": weights, "rebalance": rb,
+                 "classes": [c.dict() for c in s.classes]}
         if s.model:
             sdict["model"] = s.model
         strat_list.append(sdict)
@@ -898,7 +930,8 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
         dates = [d.date().isoformat() for d in rset]
 
     # Prepare args for processes
-    nav_split = {'index': [d.isoformat() for d in nav_wide.index], 'columns': asset_names, 'data': nav_wide.values.tolist()}
+    nav_split = {'index': [d.isoformat() for d in nav_wide.index], 'columns': asset_names,
+                 'data': nav_wide.values.tolist()}
     tasks = []
     if req.strategy.type == 'risk_budget':
         budgets = [float(c.budget or 0.0) for c in req.strategy.classes]
@@ -913,7 +946,10 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
         }
         model.update({k: v for k, v in (req.strategy.constraints or {}).items()})
         for d in dates:
-            tasks.append({'date': d, 'nav_split': nav_split, 'stype': 'risk_budget', 'model': {'risk_metric': model['risk_metric'], 'days': model.get('days'), 'window': model.get('window'), 'confidence': model.get('confidence'), 'window_mode': req.strategy.return_metric, 'data_len': None}, 'budgets': budgets})
+            tasks.append({'date': d, 'nav_split': nav_split, 'stype': 'risk_budget',
+                          'model': {'risk_metric': model['risk_metric'], 'days': model.get('days'),
+                                    'window': model.get('window'), 'confidence': model.get('confidence'),
+                                    'window_mode': req.strategy.return_metric, 'data_len': None}, 'budgets': budgets})
     else:
         model = {
             'target': req.strategy.target,
@@ -953,7 +989,8 @@ def api_compute_schedule_weights(req: ComputeScheduleRequest):
         results = [_compute_weight_for_date(t) for t in tasks]
     # order by date
     results.sort(key=lambda x: x['date'])
-    return {"asset_names": asset_names, "dates": [r['date'] for r in results], "weights": [r['weights'] for r in results]}
+    return {"asset_names": asset_names, "dates": [r['date'] for r in results],
+            "weights": [r['weights'] for r in results]}
 
 
 @app.get("/api/strategy/default-start")
@@ -1037,7 +1074,8 @@ def _load_universe() -> List[dict]:
                         {
                             "code": str(r[code_col]),
                             "name": str(r[name_col]),
-                            "management": None if not mgmt_col else (None if pd.isna(r[mgmt_col]) else str(r[mgmt_col])),
+                            "management": None if not mgmt_col else (
+                                None if pd.isna(r[mgmt_col]) else str(r[mgmt_col])),
                             "found_date": _normalize_date(None if not fd_col else r[fd_col]),
                         }
                     )
@@ -1081,12 +1119,12 @@ def _get_universe() -> List[dict]:
 
 @app.get("/api/etf/search")
 def etf_search(
-    q: Optional[str] = Query(default=""),
-    k: Optional[int] = Query(default=None),  # deprecated by page/page_size
-    sort_by: str = Query(default="name"),  # one of: name, code, found_date, management
-    sort_dir: str = Query(default="asc"),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=10, ge=1, le=200),
+        q: Optional[str] = Query(default=""),
+        k: Optional[int] = Query(default=None),  # deprecated by page/page_size
+        sort_by: str = Query(default="name"),  # one of: name, code, found_date, management
+        sort_dir: str = Query(default="asc"),
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=10, ge=1, le=200),
 ):
     arr = _get_universe()
     qnorm = (q or "").strip().lower()
@@ -1096,11 +1134,12 @@ def etf_search(
     else:
         filtered = []
         for x in arr:
-            hay = f"{x.get('code','')} {x.get('name','')} {x.get('management','')}".lower()
+            hay = f"{x.get('code', '')} {x.get('name', '')} {x.get('management', '')}".lower()
             if qnorm in hay:
                 filtered.append(x)
     reverse = sort_dir.lower() == "desc"
-    key = (lambda x: (x.get(sort_by) or "")) if sort_by in {"name", "code", "management", "found_date"} else (lambda x: x.get("name") or "")
+    key = (lambda x: (x.get(sort_by) or "")) if sort_by in {"name", "code", "management", "found_date"} else (
+        lambda x: x.get("name") or "")
     filtered.sort(key=key, reverse=reverse)
     total = len(filtered)
     if k is not None and k > 0:
@@ -1127,7 +1166,8 @@ def spa_fallback(full_path: str):
     index_file = DIST_DIR / "index.html"
     if index_file.exists():
         return HTMLResponse(index_file.read_text(encoding="utf-8"))
-    return HTMLResponse("<h3>Frontend not built. Run: cd frontend && npm install && npm run build</h3>", status_code=200)
+    return HTMLResponse("<h3>Frontend not built. Run: cd frontend && npm install && npm run build</h3>",
+                        status_code=200)
 
 
 if __name__ == "__main__":

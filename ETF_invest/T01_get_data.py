@@ -193,26 +193,26 @@ def main(
 
 
 if __name__ == "__main__":
-    # # 在此处配置运行参数（不使用环境变量）
-    # MAX_WORKERS = 8
-    # MAX_RETRIES = 3
-    # RETRY_BACKOFF_SEC = 1.5
-    # OUTPUT_DIR = "data"
-    # the_pro = ts.pro_api(TUSHARE_TOKEN)
-    #
-    # # 获取 ETF 净值数据
-    # main(
-    #     pro=the_pro,
-    #     max_workers=MAX_WORKERS,
-    #     max_retries=MAX_RETRIES,
-    #     backoff_sec=RETRY_BACKOFF_SEC,
-    #     output_dir=OUTPUT_DIR,
-    # )
-    #
-    # # 获取交易日历数据
-    # trade_day_df = the_pro.trade_cal(exchange='SSE', start_date='20100101',
-    #                                  end_date=pd.to_datetime('today').strftime('%Y%m%d'))
-    # trade_day_df.to_parquet(os.path.join(OUTPUT_DIR, "trade_day_df.parquet"), index=False)
-    # print(f"已保存交易日历 Parquet：{os.path.join(OUTPUT_DIR, 'trade_day_df.parquet')}，共 {len(trade_day_df)} 行")
+    # 在此处配置运行参数（不使用环境变量）
+    MAX_WORKERS = 8
+    MAX_RETRIES = 3
+    RETRY_BACKOFF_SEC = 1.5
+    OUTPUT_DIR = "data"
+    the_pro = ts.pro_api(TUSHARE_TOKEN)
+
+    # 获取 ETF 净值数据
+    main(
+        pro=the_pro,
+        max_workers=MAX_WORKERS,
+        max_retries=MAX_RETRIES,
+        backoff_sec=RETRY_BACKOFF_SEC,
+        output_dir=OUTPUT_DIR,
+    )
+
+    # 获取交易日历数据
+    trade_day_df = the_pro.trade_cal(exchange='SSE', start_date='20100101',
+                                     end_date=pd.to_datetime('today').strftime('%Y%m%d'))
+    trade_day_df.to_parquet(os.path.join(OUTPUT_DIR, "trade_day_df.parquet"), index=False)
+    print(f"已保存交易日历 Parquet：{os.path.join(OUTPUT_DIR, 'trade_day_df.parquet')}，共 {len(trade_day_df)} 行")
     df = pd.read_parquet("data/etf_daily_df.parquet")
     print(df)

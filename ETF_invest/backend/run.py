@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import sys
-import threading
 import time
+import uvicorn
+import threading
 import webbrowser
 from pathlib import Path
-
-import uvicorn
 
 
 def open_browser_when_ready(url: str, timeout: float = 8.0):
