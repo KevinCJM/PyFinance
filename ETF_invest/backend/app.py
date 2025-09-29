@@ -1,19 +1,37 @@
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from functools import lru_cache
 import pandas as pd
+import numpy as np
 from pathlib import Path
 import json
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
 from fit import compute_rolling_corr_classes, compute_class_consistency
+from optimizer import calculate_efficient_frontier_exploration
+from strategy import compute_risk_budget_weights, compute_target_weights
+from backtest_engine import backtest_portfolio
 from datetime import datetime
+import math
+
+
+class FrontierRequest(BaseModel):
+    alloc_name: str
+    start_date: str
+    end_date: str
+    return_metric: Dict[str, Any]
+    risk_metric: Dict[str, Any]
+    risk_free_rate: float = 0.0  # 年化无风险利率（小数），用于夏普率
+    constraints: Optional[Dict[str, Any]] = None  # { single_limits: {name:{lo,hi}}, group_limits: [{assets:[name], lo, hi}] }
+    exploration: Optional[Dict[str, Any]] = None  # { rounds: [{samples:int, step:float, buckets:int}] }
+    quantization: Optional[Dict[str, Any]] = None  # { step: float|null }
+    refine: Optional[Dict[str, Any]] = None  # { use_slsqp: bool, count: int }
 
 
 class SaveRequest(BaseModel):
@@ -482,6 +500,323 @@ def load_allocation(name: str):
         })
     
     return list(classes_map.values())
+
+
+@app.post("/api/efficient-frontier")
+def post_efficient_frontier(req: FrontierRequest):
+    nv_path = DATA_DIR / "asset_nv.parquet"
+    if not nv_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
+
+    df = pd.read_parquet(nv_path)
+    
+    # 1. 筛选数据
+    alloc_df = df[df["asset_alloc_name"] == req.alloc_name].copy()
+    if alloc_df.empty:
+        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
+    
+    alloc_df['date'] = pd.to_datetime(alloc_df['date'])
+    mask = (alloc_df['date'] >= pd.to_datetime(req.start_date)) & (alloc_df['date'] <= pd.to_datetime(req.end_date))
+    alloc_df = alloc_df.loc[mask]
+
+    if alloc_df.empty:
+        return JSONResponse(status_code=400, content={"detail": "在选定日期区间内没有数据"})
+
+    # 2. 准备收益率宽表
+    nav_wide = alloc_df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    
+    return_type = req.return_metric.get('type', 'simple')
+    if return_type == 'log':
+        returns_df = np.log(nav_wide / nav_wide.shift(1)).dropna()
+    else:
+        returns_df = nav_wide.pct_change().dropna()
+
+    # 3. 调用核心计算函数
+    # Map constraints by asset order
+    asset_names = list(nav_wide.columns)
+    single_limits = []
+    if req.constraints and isinstance(req.constraints.get('single_limits', None), dict):
+        m = req.constraints['single_limits']
+        for nm in asset_names:
+            v = m.get(nm, None)
+            lo = float(v.get('lo', 0.0)) if isinstance(v, dict) else 0.0
+            hi = float(v.get('hi', 1.0)) if isinstance(v, dict) else 1.0
+            single_limits.append((max(0.0, lo), min(1.0, hi)))
+    else:
+        single_limits = [(0.0, 1.0) for _ in asset_names]
+
+    group_limits = {}
+    if req.constraints and isinstance(req.constraints.get('group_limits', None), list):
+        for g in req.constraints['group_limits']:
+            assets = g.get('assets', [])
+            idxs = tuple(i for i, nm in enumerate(asset_names) if nm in assets)
+            if not idxs:
+                continue
+            lo = float(g.get('lo', 0.0))
+            hi = float(g.get('hi', 1.0))
+            group_limits[idxs] = (lo, hi)
+
+    rounds = None
+    if req.exploration and isinstance(req.exploration.get('rounds', None), list):
+        rounds = []
+        for r in req.exploration['rounds']:
+            rounds.append({
+                'samples': int(r.get('samples', 100)),
+                'step': float(r.get('step', 0.5)),
+                'buckets': int(r.get('buckets', 50)),
+            })
+
+    quant_step = None
+    if req.quantization:
+        try:
+            v = req.quantization.get('step', None)
+            quant_step = None if v in (None, 'none') else float(v)
+        except Exception:
+            quant_step = None
+
+    use_refine = False
+    refine_count = 0
+    if req.refine:
+        use_refine = bool(req.refine.get('use_slsqp', False))
+        refine_count = int(req.refine.get('count', 0))
+
+    results = calculate_efficient_frontier_exploration(
+        asset_returns=returns_df,
+        return_config=req.return_metric,
+        risk_config=req.risk_metric,
+        single_limits=single_limits,
+        group_limits=group_limits,
+        rounds=rounds,
+        quantize_step=quant_step,
+        use_slsqp_refine=use_refine,
+        refine_count=refine_count,
+        risk_free_rate=float(getattr(req, 'risk_free_rate', 0.0) or 0.0),
+    )
+
+    # 4. 数据净化，防止 NaN/Infinity 导致前端JSON解析或渲染失败
+    def extract_value(obj):
+        if obj is None:
+            return None
+        if isinstance(obj, (list, tuple)):
+            val = obj
+        else:
+            val = obj.get("value")
+        if not (isinstance(val, (list, tuple)) and len(val) == 2):
+            return None
+        x, y = val
+        return (x, y)
+
+    def is_finite_point(obj):
+        v = extract_value(obj)
+        return v is not None and math.isfinite(v[0]) and math.isfinite(v[1])
+
+    clean_results = {
+        "asset_names": results.get("asset_names", []),
+        "scatter": [p for p in results.get("scatter", []) if is_finite_point(p)],
+        "frontier": sorted([p for p in results.get("frontier", []) if is_finite_point(p)], key=lambda o: extract_value(o)[0]),
+        "max_sharpe": results.get("max_sharpe") if is_finite_point(results.get("max_sharpe")) else None,
+        "min_variance": results.get("min_variance") if is_finite_point(results.get("min_variance")) else None,
+        "max_return": results.get("max_return") if is_finite_point(results.get("max_return")) else None,
+    }
+
+    return clean_results
+
+
+# ---------------- Strategy: compute weights and backtest ----------------
+
+class StrategyClassItem(BaseModel):
+    name: str
+    weight: Optional[float] = None
+    budget: Optional[float] = None
+
+
+class StrategySpec(BaseModel):
+    type: str  # fixed | risk_budget | target
+    name: Optional[str] = None
+    classes: List[StrategyClassItem]
+    # rebalancing (optional)
+    rebalance: Optional[Dict[str, Any]] = None  # {enabled, mode, which, N, unit, fixedInterval}
+    # optional model config for dynamic recalculation on rebalance
+    model: Optional[Dict[str, Any]] = None
+    # risk budget params
+    risk_metric: Optional[str] = None
+    return_type: Optional[str] = None  # simple|log for risk calc
+    confidence: Optional[float] = None
+    days: Optional[int] = None
+    window: Optional[int] = None
+    # target params
+    target: Optional[str] = None  # min_risk|max_return|max_sharpe|risk_min_given_return|return_max_given_risk
+    return_metric: Optional[str] = None
+    risk_free_rate: Optional[float] = None
+    target_return: Optional[float] = None
+    target_risk: Optional[float] = None
+    # constraints
+    constraints: Optional[Dict[str, Any]] = None
+
+
+class ComputeWeightsRequest(BaseModel):
+    alloc_name: str
+    strategy: StrategySpec
+    data_len: Optional[int] = None  # e.g., 30, 60, ... None=all
+    window_mode: Optional[str] = None  # 'all'|'firstN'|'rollingN'
+
+
+@app.post("/api/strategy/compute-weights")
+def api_compute_weights(req: ComputeWeightsRequest):
+    nv_path = DATA_DIR / "asset_nv.parquet"
+    if not nv_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
+    df = pd.read_parquet(nv_path)
+    df = df[df["asset_alloc_name"] == req.alloc_name]
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
+    nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    # Filter to requested classes order
+    class_names = [c.name for c in req.strategy.classes]
+    nav_wide = nav_wide[class_names].dropna(how='all').dropna(axis=0)
+    if req.data_len and req.data_len > 0:
+        n = int(req.data_len)
+        if (req.window_mode or 'firstN') == 'rollingN':
+            nav_wide = nav_wide.tail(n + 1)
+        else:
+            nav_wide = nav_wide.head(n + 1)
+
+    if req.strategy.type == 'fixed':
+        weights = []
+        for c in req.strategy.classes:
+            w = 0.0 if c.weight is None else float(c.weight)
+            weights.append(w)
+        s = sum(weights)
+        if s <= 0:
+            n = len(weights)
+            weights = [1.0 / n for _ in range(n)]
+        else:
+            weights = [w / s for w in weights]
+        return {"weights": weights}
+
+    if req.strategy.type == 'risk_budget':
+        budgets = [float(c.budget or 0.0) for c in req.strategy.classes]
+        # risk config
+        risk_cfg = {"metric": req.strategy.risk_metric or "vol"}
+        if req.strategy.risk_metric in {"annual_vol", "ewm_vol"}:
+            if req.strategy.days is not None:
+                risk_cfg["days"] = int(req.strategy.days)
+        if req.strategy.risk_metric == "ewm_vol":
+            if req.strategy.window is not None:
+                risk_cfg["window"] = int(req.strategy.window)
+            if req.strategy.confidence is not None:  # not used here; kept for interface consistency
+                pass
+        if req.strategy.risk_metric in {"var", "es"}:
+            if req.strategy.confidence is not None:
+                risk_cfg["confidence"] = float(req.strategy.confidence)
+        weights = compute_risk_budget_weights(nav_wide, risk_cfg, budgets, window_len=req.data_len, window_mode=(req.window_mode or 'firstN'))
+        return {"weights": weights}
+
+    if req.strategy.type == 'target':
+        risk_cfg = {"metric": req.strategy.risk_metric or "vol"}
+        if req.strategy.risk_metric in {"annual_vol", "ewm_vol"} and req.strategy.days is not None:
+            risk_cfg["days"] = int(req.strategy.days)
+        if req.strategy.risk_metric == "ewm_vol" and req.strategy.window is not None:
+            risk_cfg["window"] = int(req.strategy.window)
+        if req.strategy.risk_metric in {"var", "es"} and req.strategy.confidence is not None:
+            risk_cfg["confidence"] = float(req.strategy.confidence)
+        ret_cfg = {"metric": req.strategy.return_metric or "annual", "days": int(req.strategy.days or 252)}
+        # map constraints
+        asset_names = list(nav_wide.columns)
+        single_limits: List[Tuple[float, float]] = [(0.0, 1.0) for _ in asset_names]
+        group_limits: Dict[Tuple[int, ...], Tuple[float, float]] = {}
+        if req.strategy.constraints and isinstance(req.strategy.constraints.get('single_limits', None), dict):
+            sl = req.strategy.constraints['single_limits']
+            single_limits = []
+            for nm in asset_names:
+                v = sl.get(nm, {})
+                lo = float(v.get('lo', 0.0)) if isinstance(v, dict) else 0.0
+                hi = float(v.get('hi', 1.0)) if isinstance(v, dict) else 1.0
+                single_limits.append((lo, hi))
+        if req.strategy.constraints and isinstance(req.strategy.constraints.get('group_limits', None), list):
+            for g in req.strategy.constraints['group_limits']:
+                assets = g.get('assets', [])
+                idxs = tuple(i for i, nm in enumerate(asset_names) if nm in assets)
+                if idxs:
+                    lo = float(g.get('lo', 0.0)); hi = float(g.get('hi', 1.0))
+                    group_limits[idxs] = (lo, hi)
+
+        weights = compute_target_weights(
+            nav_wide,
+            ret_cfg,
+            risk_cfg,
+            target=req.strategy.target or 'min_risk',
+            window_len=req.data_len,
+            window_mode=(req.window_mode or 'firstN'),
+            single_limits=single_limits,
+            group_limits=group_limits,
+            risk_free_rate=float(req.strategy.risk_free_rate or 0.0),
+            target_return=req.strategy.target_return,
+            target_risk=req.strategy.target_risk,
+        )
+        return {"weights": weights}
+
+    return JSONResponse(status_code=400, content={"detail": "未知策略类型"})
+
+
+class BacktestRequest(BaseModel):
+    alloc_name: str
+    start_date: Optional[str] = None
+    strategies: List[StrategySpec]
+
+
+@app.post("/api/strategy/backtest")
+def api_backtest(req: BacktestRequest):
+    nv_path = DATA_DIR / "asset_nv.parquet"
+    if not nv_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
+    df = pd.read_parquet(nv_path)
+    df = df[df["asset_alloc_name"] == req.alloc_name]
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
+    nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+
+    # Build strategies weights in class order
+    class_names = list(nav_wide.columns)
+    strat_list = []
+    for s in req.strategies:
+        cls_map = {c.name: c for c in s.classes}
+        weights = [float(cls_map.get(n).weight) if (n in cls_map and cls_map[n].weight is not None) else 0.0 for n in class_names]
+        # pass rebalance info forward (ensure dict form)
+        rb = s.rebalance if isinstance(s.rebalance, dict) else None
+        sdict = {"name": s.name or s.type, "type": s.type, "weights": weights, "rebalance": rb, "classes": [c.dict() for c in s.classes]}
+        if s.model:
+            sdict["model"] = s.model
+        strat_list.append(sdict)
+
+    res = backtest_portfolio(nav_wide, strat_list, start_date=req.start_date)
+    return res
+
+
+@app.get("/api/strategy/default-start")
+def api_default_start(alloc_name: str):
+    """Return the default backtest start date for an allocation: 
+    take the maximum of each asset's first available NAV date (ensures all series have data).
+    """
+    nv_path = DATA_DIR / "asset_nv.parquet"
+    if not nv_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
+    df = pd.read_parquet(nv_path)
+    df = df[df["asset_alloc_name"] == alloc_name]
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{alloc_name}' 的配置的净值数据"})
+    df = df.dropna(subset=["date"]).copy()
+    df["date"] = pd.to_datetime(df["date"])  # ensure datetime
+    first_dates = df.groupby("asset_name")["date"].min()
+    if first_dates.empty:
+        return {"default_start": None, "count": 0}
+    default_start_ts = first_dates.max()
+    default_start = default_start_ts.date().isoformat()
+    # total available trading days count (from earliest overall start), or from default_start?
+    nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    nav_wide = nav_wide[nav_wide.index >= default_start_ts]
+    count = int(len(nav_wide.index))
+    return {"default_start": default_start, "count": count}
 
 
 # -------------------- ETF Universe from data/ --------------------
