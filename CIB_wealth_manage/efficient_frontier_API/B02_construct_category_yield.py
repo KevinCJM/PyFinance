@@ -16,6 +16,15 @@ B02_construct_category_yield.py
 - T05_db_utils: DatabaseConnectionPool, read_dataframe, get_active_db_url
 - Y01_db_config: 数据库连接参数
 """
+import os
+import sys
+
+p_file = os.path.abspath("__file__")
+pp_file = os.path.dirname(p_file)
+sys.path.append(pp_file)
+ppp_file = os.path.dirname(pp_file)
+sys.path.append(ppp_file)
+
 import time
 import json
 import traceback
