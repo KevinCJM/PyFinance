@@ -16,7 +16,7 @@ from fit import ClassSpec, ETFSpec, compute_classes_nav, compute_rolling_corr
 from fit import compute_rolling_corr_classes, compute_class_consistency
 from optimizer import calculate_efficient_frontier_exploration
 from strategy import compute_risk_budget_weights, compute_target_weights
-from backtest_engine import backtest_portfolio
+from backtest_engine import backtest_portfolio, gen_rebalance_dates
 from datetime import datetime
 import math
 
@@ -674,12 +674,7 @@ def api_compute_weights(req: ComputeWeightsRequest):
     # Filter to requested classes order
     class_names = [c.name for c in req.strategy.classes]
     nav_wide = nav_wide[class_names].dropna(how='all').dropna(axis=0)
-    if req.data_len and req.data_len > 0:
-        n = int(req.data_len)
-        if (req.window_mode or 'firstN') == 'rollingN':
-            nav_wide = nav_wide.tail(n + 1)
-        else:
-            nav_wide = nav_wide.head(n + 1)
+    # 窗口裁剪逻辑由下游 compute_* 函数处理，避免重复裁剪导致结果一致
 
     if req.strategy.type == 'fixed':
         weights = []
@@ -791,6 +786,174 @@ def api_backtest(req: BacktestRequest):
 
     res = backtest_portfolio(nav_wide, strat_list, start_date=req.start_date)
     return res
+
+
+# --------- Compute schedule weights for recalc ahead of backtest ---------
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+
+class ComputeScheduleRequest(BaseModel):
+    alloc_name: str
+    start_date: Optional[str] = None
+    strategy: StrategySpec
+
+
+def _compute_weight_for_date(args: Dict[str, Any]) -> Dict[str, Any]:
+    import pandas as pd
+    from strategy import compute_risk_budget_weights, compute_target_weights
+    nav_split = args['nav_split']
+    nav = pd.DataFrame(nav_split['data'], index=pd.to_datetime(nav_split['index']), columns=nav_split['columns'])
+    up_to = pd.to_datetime(args['date'])
+    nav = nav.loc[nav.index <= up_to]
+    stype = args['stype']
+    model = args['model'] or {}
+    # windowing
+    window_mode = model.get('window_mode') or 'rollingN'
+    n = int(model.get('data_len') or 0)
+    if window_mode != 'all' and n > 0:
+        nav = nav.tail(n)
+    asset_names = list(nav.columns)
+    if stype == 'risk_budget':
+        budgets = args['budgets']
+        risk_cfg = {'metric': model.get('risk_metric') or 'vol'}
+        if model.get('days') is not None:
+            risk_cfg['days'] = int(model.get('days'))
+        if model.get('window') is not None:
+            risk_cfg['window'] = int(model.get('window'))
+        if model.get('confidence') is not None:
+            risk_cfg['confidence'] = float(model.get('confidence'))
+        w = compute_risk_budget_weights(nav, risk_cfg, budgets, window_len=None)
+        return {'date': args['date'], 'weights': [float(x) for x in w]}
+    else:  # target
+        ret_cfg = {
+            'metric': model.get('return_metric') or 'annual',
+            'days': int(model.get('days') or 252),
+            'alpha': model.get('ret_alpha'),
+            'window': model.get('ret_window'),
+        }
+        risk_cfg = {
+            'metric': model.get('risk_metric') or 'vol',
+            'days': model.get('risk_days'),
+            'alpha': model.get('risk_alpha'),
+            'window': model.get('risk_window'),
+            'confidence': model.get('risk_confidence'),
+        }
+        # constraints map
+        single_limits = []
+        sl = (model.get('constraints') or {}).get('single_limits', {})
+        for nm in asset_names:
+            v = sl.get(nm, {})
+            lo = float(v.get('lo', 0.0)) if isinstance(v, dict) else 0.0
+            hi = float(v.get('hi', 1.0)) if isinstance(v, dict) else 1.0
+            single_limits.append((lo, hi))
+        group_limits = {}
+        for g in (model.get('constraints') or {}).get('group_limits', []) or []:
+            assets = g.get('assets', [])
+            idxs = tuple(i for i, nm in enumerate(asset_names) if nm in assets)
+            if idxs:
+                group_limits[idxs] = (float(g.get('lo', 0.0)), float(g.get('hi', 1.0)))
+        w = compute_target_weights(
+            nav, ret_cfg, risk_cfg,
+            target=str(model.get('target') or 'min_risk'),
+            window_len=None, window_mode=None,
+            single_limits=single_limits, group_limits=group_limits,
+            risk_free_rate=float(model.get('risk_free_rate') or 0.0),
+            target_return=model.get('target_return'), target_risk=model.get('target_risk'),
+            use_exploration=False,
+        )
+        return {'date': args['date'], 'weights': [float(x) for x in w]}
+
+
+@app.post("/api/strategy/compute-schedule-weights")
+def api_compute_schedule_weights(req: ComputeScheduleRequest):
+    nv_path = DATA_DIR / "asset_nv.parquet"
+    if not nv_path.exists():
+        return JSONResponse(status_code=404, content={"detail": "净值数据文件 asset_nv.parquet 不存在"})
+    df = pd.read_parquet(nv_path)
+    df = df[df["asset_alloc_name"] == req.alloc_name]
+    if df.empty:
+        return JSONResponse(status_code=404, content={"detail": f"未找到名为 '{req.alloc_name}' 的配置的净值数据"})
+    nav_wide = df.pivot_table(index='date', columns='asset_name', values='nv').sort_index()
+    if req.start_date:
+        nav_wide = nav_wide[nav_wide.index >= pd.to_datetime(req.start_date)]
+    # align to classes order
+    class_names = [c.name for c in req.strategy.classes]
+    nav_wide = nav_wide[class_names].dropna(how='all').dropna(axis=0)
+    asset_names = list(nav_wide.columns)
+
+    rb = req.strategy.rebalance or {}
+    if not rb.get('enabled') or not rb.get('recalc'):
+        # only compute one snapshot at start
+        dates = [nav_wide.index[0].date().isoformat()]
+    else:
+        mode = str(rb.get('mode', 'monthly'))
+        which = str(rb.get('which', 'nth'))
+        N = int(rb.get('N', 1))
+        unit = str(rb.get('unit', 'trading'))
+        fixed_interval = int(rb.get('fixedInterval', 20)) if mode == 'fixed' else None
+        rset = gen_rebalance_dates(nav_wide.index, mode, N=N, which=which, unit=unit, fixed_interval=fixed_interval)
+        rset = sorted([d for d in rset if d in nav_wide.index])
+        if not rset or rset[0] != nav_wide.index[0]:
+            rset = [nav_wide.index[0]] + rset
+        dates = [d.date().isoformat() for d in rset]
+
+    # Prepare args for processes
+    nav_split = {'index': [d.isoformat() for d in nav_wide.index], 'columns': asset_names, 'data': nav_wide.values.tolist()}
+    tasks = []
+    if req.strategy.type == 'risk_budget':
+        budgets = [float(c.budget or 0.0) for c in req.strategy.classes]
+        model = {
+            'risk_metric': req.strategy.risk_metric or 'vol',
+            'days': req.strategy.days,
+            'window': req.strategy.window,
+            'confidence': req.strategy.confidence,
+            # window config for workers
+            'window_mode': (req.strategy.return_metric or 'rollingN'),
+            'data_len': None,
+        }
+        model.update({k: v for k, v in (req.strategy.constraints or {}).items()})
+        for d in dates:
+            tasks.append({'date': d, 'nav_split': nav_split, 'stype': 'risk_budget', 'model': {'risk_metric': model['risk_metric'], 'days': model.get('days'), 'window': model.get('window'), 'confidence': model.get('confidence'), 'window_mode': req.strategy.return_metric, 'data_len': None}, 'budgets': budgets})
+    else:
+        model = {
+            'target': req.strategy.target,
+            'return_metric': req.strategy.return_metric or 'annual',
+            'return_type': req.strategy.return_type or 'simple',
+            'days': req.strategy.days or 252,
+            'ret_alpha': None,
+            'ret_window': None,
+            'risk_metric': req.strategy.risk_metric or 'vol',
+            'risk_days': req.strategy.days,
+            'risk_alpha': None,
+            'risk_window': req.strategy.window,
+            'risk_confidence': req.strategy.confidence,
+            'risk_free_rate': req.strategy.risk_free_rate or 0.0,
+            'constraints': req.strategy.constraints or {},
+            'window_mode': (req.strategy.return_metric or 'rollingN'),
+            'data_len': None,
+            'target_return': req.strategy.target_return,
+            'target_risk': req.strategy.target_risk,
+        }
+        for d in dates:
+            tasks.append({'date': d, 'nav_split': nav_split, 'stype': 'target', 'model': model, 'budgets': None})
+
+    # Parallel compute with fallback sequential on error
+    results: List[Dict[str, Any]] = []
+    try:
+        max_workers = min(4, (os.cpu_count() or 2))
+    except Exception:
+        max_workers = 2
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futs = [ex.submit(_compute_weight_for_date, t) for t in tasks]
+            for f in as_completed(futs):
+                results.append(f.result())
+    except Exception:
+        # fallback sequential
+        results = [_compute_weight_for_date(t) for t in tasks]
+    # order by date
+    results.sort(key=lambda x: x['date'])
+    return {"asset_names": asset_names, "dates": [r['date'] for r in results], "weights": [r['weights'] for r in results]}
 
 
 @app.get("/api/strategy/default-start")

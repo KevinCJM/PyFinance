@@ -343,7 +343,6 @@ def run():
             df_annual_stats = pd.DataFrame(annual_stats_list)
         else:
             log("未能为任何大类生成年度统计数据")
-
     except Exception as e:
         return json.dumps({
             "code": 1,
@@ -379,7 +378,6 @@ def run():
                 f"耗时 {time.time() - s_t:.2f} 秒")
         else:
             log("没有数据需要入库。")
-
     except Exception as e:
         print(traceback.format_exc())
         return json.dumps({
