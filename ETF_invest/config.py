@@ -6,4 +6,4 @@
 @Descriptions: 各类配置参数
 """
 
-TUSHARE_TOKEN = "YOUR_TOKEN"  # TODO: 在此填写你的 Tushare Pro 令牌
+TUSHARE_TOKEN = "cdcff0dd57ef63b6e9a347481996ea8f555b0aae35088c9b921a06c9"  # TODO: 在此填写你的 Tushare Pro 令牌

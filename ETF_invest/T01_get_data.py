@@ -119,7 +119,7 @@ def fetch_nav_with_retry(
     return None
 
 
-def main(
+def main_nv(
         pro,
         *,
         max_workers: int = 8,
@@ -201,7 +201,7 @@ if __name__ == "__main__":
     the_pro = ts.pro_api(TUSHARE_TOKEN)
 
     # 获取 ETF 净值数据
-    main(
+    main_nv(
         pro=the_pro,
         max_workers=MAX_WORKERS,
         max_retries=MAX_RETRIES,
