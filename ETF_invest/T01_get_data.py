@@ -192,6 +192,171 @@ def main_nv(
     print(f"已保存 Parquet：{out_path}，共 {len(etf_daily_df)} 行；失败 {len(failures)} 支。")
 
 
+def fetch_candle_once(pro, ts_code: str, limiter: RateLimiter) -> Optional[pd.DataFrame]:
+    """
+    分段拉取单个ETF的日线行情数据，以规避单次2000行的限制。
+    """
+    all_df = []
+    end_date = pd.to_datetime("today").strftime("%Y%m%d")
+    # 循环获取，每次取约8年数据（2000交易日近似值），最多取5次（40年）
+    for _ in range(5):
+        start_date = (pd.to_datetime(end_date) - pd.DateOffset(years=8)).strftime(
+            "%Y%m%d"
+        )
+        limiter.acquire()
+        try:
+            df_chunk = pro.fund_daily(
+                ts_code=ts_code, start_date=start_date, end_date=end_date
+            )
+        except Exception:
+            # Tushare 可能会在某些情况下抛出异常而不是返回None
+            df_chunk = None
+
+        if df_chunk is None or df_chunk.empty:
+            break
+
+        all_df.append(df_chunk)
+
+        # 如果返回的数据量小于2000，说明已经取完所有历史数据
+        if len(df_chunk) < 2000:
+            break
+
+        # 准备获取更早的数据
+        oldest_date_in_chunk = pd.to_datetime(df_chunk["trade_date"].min())
+        end_date = (oldest_date_in_chunk - pd.DateOffset(days=1)).strftime("%Y%m%d")
+
+    if not all_df:
+        return None
+
+    # 合并所有分块并去重
+    full_df = pd.concat(all_df, ignore_index=True)
+    full_df = full_df.drop_duplicates(subset=["ts_code", "trade_date"]).reset_index(
+        drop=True
+    )
+
+    # 规范化
+    if "trade_date" in full_df.columns:
+        full_df["date"] = pd.to_datetime(full_df["trade_date"])
+
+    return full_df
+
+
+def fetch_candle_with_retry(
+        pro,
+        ts_code: str,
+        name: str,
+        max_retries: int,
+        backoff_sec: float,
+        limiter: RateLimiter,
+        wait_on_rate_limit_sec: float,
+) -> Optional[pd.DataFrame]:
+    last_err: Optional[Exception] = None
+    backoff = backoff_sec
+    for attempt in range(1, max_retries + 1):
+        try:
+            df = fetch_candle_once(pro, ts_code, limiter)
+            if df is not None and not df.empty:
+                df["name"] = name
+                df = df.sort_values("date").reset_index(drop=True)
+                return df
+            last_err = RuntimeError("empty response")
+        except Exception as e:
+            last_err = e
+            msg = str(last_err)
+            if (
+                    "每分钟最多访问该接口80次" in msg
+                    or "doc_id=108" in msg
+                    or "rate limit" in msg.lower()
+            ):
+                print(
+                    f"[INFO][CANDLE] 触发接口限流，对 {ts_code}-{name} 暂停 {wait_on_rate_limit_sec}s 后重试。"
+                )
+                time.sleep(wait_on_rate_limit_sec)
+        if attempt < max_retries:
+            time.sleep(backoff)
+            backoff *= 2
+    print(f"[WARN][CANDLE] 拉取 {ts_code} - {name} 失败，错误：{last_err}")
+    return None
+
+
+def main_candle(
+        pro,
+        *,
+        max_workers: int = 8,
+        max_retries: int = 3,
+        backoff_sec: float = 1.5,
+        output_dir: str = "data",
+        max_calls_per_minute: int = 80,
+        wait_on_rate_limit_sec: float = 10.0,
+) -> None:
+    ensure_output_dir(output_dir)
+
+    limiter = RateLimiter(max_calls=max_calls_per_minute, period=60.0)
+
+    # 1) 获取 ETF 列表 (复用已有函数)
+    etf_info_df = fetch_etf_list(output_dir, pro)
+    etf_dict: Dict[str, str] = {
+        i: j
+        for i, j in zip(
+            etf_info_df.get("ts_code", []), etf_info_df.get("name", [])
+        )
+    }
+    total = len(etf_dict)
+    print(
+        f"\n准备抓取 {total} 只 ETF 的日线行情(K线)数据，线程数={max_workers}，重试={max_retries}，限流≤{max_calls_per_minute}/min"
+    )
+
+    # 2) 并发抓取日线行情
+    results: List[pd.DataFrame] = []
+    failures: List[str] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_code = {
+            executor.submit(
+                fetch_candle_with_retry,
+                pro,
+                code,
+                name,
+                max_retries,
+                backoff_sec,
+                limiter,
+                wait_on_rate_limit_sec,
+            ): (code, name)
+            for code, name in etf_dict.items()
+        }
+        for idx, future in enumerate(as_completed(future_to_code), 1):
+            code, name = future_to_code[future]
+            try:
+                df = future.result()
+                if df is not None and not df.empty:
+                    results.append(df)
+                else:
+                    failures.append(code)
+            except Exception as e:
+                print(f"[WARN][CANDLE] 任务异常 {code}-{name}：{e}")
+                failures.append(code)
+            if idx % 50 == 0 or idx == total:
+                print(
+                    f"[CANDLE] 进度：{idx}/{total}，成功 {len(results)}，失败 {len(failures)}"
+                )
+
+    if not results:
+        print("[WARN][CANDLE] 抓取结束：未获得任何 ETF 日线行情数据。")
+        return
+
+    # 3) 合并与保存
+    etf_candle_df = pd.concat(results, axis=0, ignore_index=True)
+    if {"ts_code", "trade_date"}.issubset(etf_candle_df.columns):
+        etf_candle_df = etf_candle_df.drop_duplicates(
+            subset=["ts_code", "trade_date"]
+        ).reset_index(drop=True)
+
+    out_path = os.path.join(output_dir, "etf_daily_candle_df.parquet")
+    etf_candle_df.to_parquet(out_path, index=False)
+    print(
+        f"已保存日线行情 Parquet：{out_path}，共 {len(etf_candle_df)} 行；失败 {len(failures)} 支。"
+    )
+
+
 if __name__ == "__main__":
     # 在此处配置运行参数（不使用环境变量）
     MAX_WORKERS = 8
@@ -200,8 +365,17 @@ if __name__ == "__main__":
     OUTPUT_DIR = "data"
     the_pro = ts.pro_api(TUSHARE_TOKEN)
 
-    # 获取 ETF 净值数据
-    main_nv(
+    # # 获取 ETF 净值数据
+    # main_nv(
+    #     pro=the_pro,
+    #     max_workers=MAX_WORKERS,
+    #     max_retries=MAX_RETRIES,
+    #     backoff_sec=RETRY_BACKOFF_SEC,
+    #     output_dir=OUTPUT_DIR,
+    # )
+
+    # 获取 ETF 日线行情数据
+    main_candle(
         pro=the_pro,
         max_workers=MAX_WORKERS,
         max_retries=MAX_RETRIES,
