@@ -41,12 +41,14 @@ def find_a_points(
         # ==== 文本说明 ====
         with_explain_strings: bool = True,  # 是否生成 A_point_desc
 
-        # ==== 其他可参数化选项 ====
-        ma_full_window: bool = True,  # 均线 min_periods：True=等于窗口；False=1
-        cross_requires_prev_below: bool = True,  # 当日上穿是否必须“前一日不在上方”
-        confirm_min_crosses: int = 1,  # 条件3 需要的最少上穿次数
+        # ==== 其他可参数化选项（保持最小化，遵循原始逻辑）====
         vr1_lookback: int = 10,  # VR1 的回看窗口长度（取 max 之前）
         eps: float = 0.0,  # 比较时的容忍度，例如 > 变为 > + eps
+        cross_requires_prev_below: bool = True,  # 上穿是否要求前一日不在上方（原始逻辑：要求）
+        # ==== 条件组参数（独立控制，可选，提供则覆盖上面的同类项）====
+        cond1: Optional[dict] = None,
+        cond2: Optional[dict] = None,
+        cond3: Optional[dict] = None,
 ) -> pd.DataFrame:
     """
     返回：在原 df 基础上新增条件解释列与信号列（仅返回 df，不单独返回 a_points）。
@@ -67,10 +69,36 @@ def find_a_points(
       - 每条短均线的 above_k / crossup_k / recent_cross_k（便于复核）
       - condX_enabled/ok/expect/actual 与 A_point
     """
-    if required_shorts is None:
-        required_shorts = tuple(short_windows)
+    # ---- 独立条件参数合并 —— 默认值与传入 condX 合并 ----
+    c1_enabled = bool(enable_cond1 if cond1 is None else cond1.get("enabled", enable_cond1))
+    c1_long = int(long_window if cond1 is None else cond1.get("long_window", long_window))
+    c1_down_lookback = int(down_lookback if cond1 is None else cond1.get("down_lookback", down_lookback))
+
+    # 条件2：可独立的短/长窗口与集合
+    c2_enabled = bool(enable_cond2 if cond2 is None else cond2.get("enabled", enable_cond2))
+    c2_shorts = tuple(short_windows if (cond2 is None or cond2.get("short_windows") is None)
+                      else tuple(cond2.get("short_windows")))
+    c2_long = int(long_window if cond2 is None else cond2.get("long_window", long_window))
+    c2_cross_window = int(cross_window if cond2 is None else cond2.get("cross_window", cross_window))
+    c2_require_all = bool(require_all if cond2 is None else cond2.get("require_all", require_all))
+    # required_shorts 合并
+    if cond2 is not None and cond2.get("required_shorts") is not None:
+        req_s = tuple(sorted(set(cond2.get("required_shorts"))))
     else:
-        required_shorts = tuple(sorted(set(required_shorts)))
+        req_s = tuple(sorted(set(c2_shorts)))
+    required_shorts = req_s
+
+    c2_cross_prev_below = bool(cross_requires_prev_below if cond2 is None
+                               else cond2.get("cross_requires_prev_below", cross_requires_prev_below))
+
+    # 条件3：独立确认参数
+    c3_enabled = bool(enable_cond3 if cond3 is None else cond3.get("enabled", enable_cond3))
+    c3_lookback = int(
+        confirm_lookback_days if cond3 is None else cond3.get("confirm_lookback_days", confirm_lookback_days))
+    c3_ma = (confirm_ma_window if cond3 is None else cond3.get("confirm_ma_window", confirm_ma_window))
+    c3_price_col = str(confirm_price_col if cond3 is None else cond3.get("confirm_price_col", confirm_price_col))
+    # 原始逻辑固定需要≥1次价格上穿；这里保留读取但默认1
+    c3_min_crosses = int(cond3.get("confirm_min_crosses", 1)) if cond3 is not None else 1
 
     # ---------- 预处理 ----------
     d = df.copy()
@@ -79,51 +107,50 @@ def find_a_points(
     g = d.groupby(code_col, sort=False)
 
     # ---------- 均线 ----------
-    needed_ma_windows = set(short_windows) | {long_window}
-    if confirm_ma_window:
-        needed_ma_windows.add(confirm_ma_window)
+    needed_ma_windows = set(c2_shorts) | {c1_long, c2_long}
+    if c3_ma:
+        needed_ma_windows.add(int(c3_ma))
     for k in sorted(needed_ma_windows):
-        minp = k if ma_full_window else 1
-        d[f"ma_{k}"] = g[close_col].transform(lambda s: s.rolling(k, min_periods=minp).mean())
+        # 原始逻辑：均线 min_periods = 窗口长度
+        d[f"ma_{k}"] = g[close_col].transform(lambda s: s.rolling(k, min_periods=k).mean())
 
-    ma_long = f"ma_{long_window}"
+    ma_long1 = f"ma_{c1_long}"
+    ma_long2 = f"ma_{c2_long}"
 
     # ---------- 条件1：长均线下跌 ----------
-    d["cond1_enabled"] = bool(enable_cond1)
+    d["cond1_enabled"] = bool(c1_enabled)
 
-    maL_t1 = g[ma_long].shift(1)
-    maL_t1_L = g[ma_long].shift(1 + down_lookback)
+    maL_t1 = g[ma_long1].shift(1)
+    maL_t1_L = g[ma_long1].shift(1 + c1_down_lookback)
     cond1_ok_series = (maL_t1.notna() & maL_t1_L.notna()) & ((maL_t1 + eps) < maL_t1_L)
     d["ma_long_down"] = cond1_ok_series
-    d["cond1_ok"] = np.where(enable_cond1, cond1_ok_series, True)
+    d["cond1_ok"] = np.where(c1_enabled, cond1_ok_series, True)
 
     # 期望/实际文本（逐元素格式化）
     d["cond1_expect"] = pd.Series(
-        f"MA{long_window}(t-1) < MA{long_window}(t-1-{down_lookback})", index=d.index
+        f"MA{c1_long}(t-1) < MA{c1_long}(t-1-{c1_down_lookback})", index=d.index
     )
     ma_t1_str = maL_t1.map(lambda x: f"{x:.4f}" if pd.notna(x) else "nan")
     ma_t1L_str = maL_t1_L.map(lambda x: f"{x:.4f}" if pd.notna(x) else "nan")
 
     # ✅ 用向量化字符串拼接，不再使用 .format 放 Series
-    prefix1 = f"MA{long_window}(t-1)="
-    prefix2 = f", MA{long_window}(t-1-{down_lookback})="
+    prefix1 = f"MA{c1_long}(t-1)="
+    prefix2 = f", MA{c1_long}(t-1-{c1_down_lookback})="
     d["cond1_actual"] = prefix1 + ma_t1_str + prefix2 + ma_t1L_str
 
     # ---------- 条件2：短均线上穿（仅当日触发） ----------
-    d["cond2_enabled"] = bool(enable_cond2)
+    d["cond2_enabled"] = bool(c2_enabled)
 
     # 为每条短均线生成 above_k / crossup_k / recent_cross_k
-    for k in short_windows:
+    for k in c2_shorts:
         ma_s = f"ma_{k}"
         above_col = f"above_{k}"
         cross_col = f"crossup_{k}"
 
-        d[above_col] = (d[ma_s] + eps) > d[ma_long]
-        if cross_requires_prev_below:
-            prev_above = (g[ma_s].shift(1) + eps) > g[ma_long].shift(1)
-            d[cross_col] = d[above_col] & (~prev_above.fillna(False))
-        else:
-            d[cross_col] = d[above_col]
+        d[above_col] = (d[ma_s] + eps) > d[ma_long2]
+        # 原始逻辑：要求上一日不在上方（由下向上上穿）
+        prev_above = (g[ma_s].shift(1) + eps) > g[ma_long2].shift(1)
+        d[cross_col] = d[above_col] & (~prev_above.fillna(False))
 
     # 当日至少一条 required_shorts 发生上穿
     today_any_cross = None
@@ -134,10 +161,10 @@ def find_a_points(
         today_any_cross = pd.Series(False, index=d.index)
 
     # （仅在 require_all=True 时使用）最近 cross_window 内 required_shorts 是否“每条均已发生过上穿”
-    if require_all:
+    if c2_require_all:
         recent_all = None
         for k in required_shorts:
-            rc = g[f"crossup_{k}"].transform(lambda s: s.rolling(cross_window, min_periods=1).max()) > 0
+            rc = g[f"crossup_{k}"].transform(lambda s: s.rolling(c2_cross_window, min_periods=1).max()) > 0
             recent_all = rc if recent_all is None else (recent_all & rc)
 
         # 当日 required_shorts 是否全部在 MA_long 上方
@@ -156,18 +183,18 @@ def find_a_points(
     d["recent_all_cross"] = recent_all
     d["today_all_above"] = all_above_today
 
-    d["cond2_ok"] = np.where(enable_cond2, cond2_core, True)
+    d["cond2_ok"] = np.where(c2_enabled, cond2_core, True)
 
     # 期望/实际（条件2）
     req_list_str = "、".join([f"MA{k}" for k in required_shorts])
-    if require_all:
+    if c2_require_all:
         cond2_expect_str = (
-            f"当日至少一条({req_list_str})上穿MA{long_window}；"
-            f"最近{cross_window}日内上述每条均出现过上穿；"
-            f"且当日这些均线均在MA{long_window}上方"
+            f"当日至少一条({req_list_str})上穿MA{c2_long}；"
+            f"最近{c2_cross_window}日内上述每条均出现过上穿；"
+            f"且当日这些均线均在MA{c2_long}上方"
         )
     else:
-        cond2_expect_str = f"当日至少一条({req_list_str})上穿MA{long_window}"
+        cond2_expect_str = f"当日至少一条({req_list_str})上穿MA{c2_long}"
 
     d["cond2_expect"] = pd.Series(cond2_expect_str, index=d.index)
 
@@ -186,13 +213,13 @@ def find_a_points(
     )
 
     # ---------- 条件3：A点前 N 天 价格上穿 MA_confirm（由下向上） ----------
-    d["cond3_enabled"] = bool(enable_cond3)
+    d["cond3_enabled"] = bool(c3_enabled)
 
-    if (confirm_lookback_days > 0) and (confirm_ma_window is not None) and enable_cond3:
-        price_col = confirm_price_col
+    if (c3_lookback > 0) and (c3_ma is not None) and c3_enabled:
+        price_col = c3_price_col
         if price_col not in d.columns:
             raise ValueError(f"confirm_price_col='{price_col}' 不在 df 列中。")
-        ma_c = f"ma_{confirm_ma_window}"
+        ma_c = f"ma_{int(c3_ma)}"
 
         prev_below = g[price_col].shift(1) < g[ma_c].shift(1)
         cross_price_up = (d[price_col] >= d[ma_c]) & prev_below.fillna(False)
@@ -200,11 +227,12 @@ def find_a_points(
 
         # 统计 [t-N, t-1] 内的上穿次数
         confirm_cnt = g["_cross_price_up"].transform(
-            lambda s: s.shift(1).rolling(int(confirm_lookback_days), min_periods=int(confirm_lookback_days)).sum()
+            lambda s: s.shift(1).rolling(int(c3_lookback), min_periods=int(c3_lookback)).sum()
         )
         d["confirm_cross_cnt"] = confirm_cnt
-        cond3_ok_series = (confirm_cnt >= int(confirm_min_crosses))
-        cond3_expect_str = f"A点前{confirm_lookback_days}日内，{price_col}由下上穿MA{confirm_ma_window}≥{confirm_min_crosses}次（区间[t-N,t-1]）"
+        # 原始逻辑：至少 1 次
+        cond3_ok_series = (confirm_cnt >= 1)
+        cond3_expect_str = f"A点前{c3_lookback}日内，{price_col}由下上穿MA{int(c3_ma)}≥1次（区间[t-N,t-1]）"
         # 实际：给出次数
         cnt_str = confirm_cnt.fillna(0).astype(int).astype(str)
         d["cond3_actual"] = "cross_cnt=" + cnt_str
@@ -215,7 +243,7 @@ def find_a_points(
         d["_cross_price_up"] = np.nan
         d["cond3_actual"] = "（未启用）"
 
-    d["cond3_ok"] = np.where(enable_cond3, cond3_ok_series, True)
+    d["cond3_ok"] = np.where(c3_enabled, cond3_ok_series, True)
     d["cond3_expect"] = pd.Series(cond3_expect_str, index=d.index)
 
     # ---------- VR1 ----------
@@ -560,431 +588,3 @@ def find_b_points(
            inplace=True, errors="ignore")
 
     return d
-
-
-def explain_ab_pairs(
-        df_code: pd.DataFrame,
-        *,
-        code_col: str = "code",
-        date_col: str = "date",
-        volume_col: str = "volume",
-        low_col: str = "low",
-):
-    """
-    输入：单只股票的 DataFrame（建议已先后运行 find_a_points 与 find_b_points）。
-    输出：按 A1/B1、A2/B2… 排列的中文说明列表（仅输出“有对应B点”的 A）。
-    说明策略：
-      - A端：优先读取 A_point_desc；若无则做最小兜底（基于 crossup_/above_/ma_long_down）。
-      - B端：优先读取现有格式列 condX_enabled/ok/expect/actual；否则退回 B_point_desc（或最小兜底）。
-    """
-    d = df_code.copy()
-    # 基础清洗
-    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
-    d = d.sort_values(date_col)
-    if d[code_col].nunique() != 1:
-        raise ValueError("explain_ab_pairs: df_code 必须只包含单一股票的数据。")
-    code = str(d[code_col].iloc[0])
-
-    # 分段：若无 seg_id，退化为按 A_point 累积
-    if "seg_id" not in d.columns:
-        if "A_point" not in d.columns:
-            raise ValueError("缺少 seg_id 与 A_point，无法配对 A/B。")
-        d["seg_id"] = d["A_point"].astype(bool).cumsum()
-
-    # B 点列名（兼容旧/新）
-    b_flag_col = "B_point" if "B_point" in d.columns else ("B_point_v2" if "B_point_v2" in d.columns else None)
-    if b_flag_col is None:
-        raise ValueError("未找到 B 点标记列（B_point 或 B_point_v2）。")
-
-    out: List[str] = []
-    pair_idx = 1
-
-    # -------- helpers --------
-    def _fmt_cond_line(row: pd.Series, i: int) -> Optional[str]:
-        """
-        尝试用“现有格式”输出：条件i: expect（实际：actual） —— 满足/未满足/未启用
-        若缺列，返回 None。
-        """
-        en_key = f"cond{i}_enabled"
-        ok_key = f"cond{i}_ok"
-        ex_key = f"cond{i}_expect"
-        ac_key = f"cond{i}_actual"
-        if ex_key in row.index or ac_key in row.index or ok_key in row.index or en_key in row.index:
-            enabled = bool(row.get(en_key, True))
-            expect = row.get(ex_key, "（无期望）")
-            actual = row.get(ac_key, "（无实际）")
-            ok_val = row.get(ok_key, None)
-            tail = ""
-            if not enabled:
-                tail = "（未启用）"
-            elif ok_val is not None:
-                tail = " —— 满足" if bool(ok_val) else " —— 未满足"
-            return f"条件{i}: {expect}（实际：{actual}）{tail}"
-        return None
-
-    def _fmt_a_minimal(rowA: pd.Series) -> str:
-        # 最小兜底：仅在 A_point_desc 缺失时使用，避免口径偏差
-        dtA = pd.to_datetime(rowA[date_col]).strftime("%Y年%m月%d日")
-        # 条件1
-        c1 = "条件1: 前期MA60下跌" if bool(rowA.get("ma_long_down", False)) else "条件1: 前期MA60下跌 未满足"
-        # 条件2：当日上穿的短均线列表（若存在）
-        crossed = []
-        for k in (5, 10, 20, 30, 60):
-            col = f"crossup_{k}"
-            if col in rowA.index and bool(rowA[col]):
-                crossed.append(f"MA{k}")
-        c2 = f"条件2: 当日短均线上穿MA60: " + ("、".join(crossed) if crossed else "（无）")
-        # 条件3：当日位置
-        pos = []
-        for k in (5, 10, 20, 30, 60):
-            col = f"above_{k}"
-            if col in rowA.index:
-                pos.append(f"MA{k}{'>' if bool(rowA[col]) else '<='}MA60")
-        c3 = ("条件3: 当日位置 " + "，".join(pos)) if pos else None
-        parts = [c1, c2] + ([c3] if c3 else [])
-        return f"{code}股票在{dtA}, 有A{pair_idx}点. " + "；".join(parts)
-
-    def _fmt_b_minimal(rowB: pd.Series) -> str:
-        # 最小兜底：仅在 condX_* 与 B_point_desc 均缺失时使用
-        dtB = pd.to_datetime(rowB[date_col]).strftime("%Y年%m月%d日")
-        parts = []
-        if "pos_below_ma60" in rowB.index:
-            parts.append(f"条件1: 当日 MA5/MA10 均≤MA60({'满足' if bool(rowB['pos_below_ma60']) else '未满足'})")
-        if "days_since_A" in rowB.index:
-            parts.append(f"条件(时间): A→B={int(rowB['days_since_A'])}天")
-        if "dryness_ratio" in rowB.index and "vma_10" in rowB.index:
-            ratio = rowB["dryness_ratio"]
-            vma10 = rowB["vma_10"]
-            vol = rowB.get(volume_col, np.nan)
-            parts.append(
-                f"条件(干缩): ratio={ratio:.2f if pd.notna(ratio) else 'nan'}, 当日量≤VMA10={bool(vol <= vma10) if pd.notna(vma10) and pd.notna(vol) else 'nan'}")
-        if "cond4_metric_name" in rowB.index and "cond4_metric" in rowB.index:
-            parts.append(f"条件(价稳): {rowB['cond4_metric_name']} = {rowB['cond4_metric']}")
-        return f"{code}股票在{dtB}, 有B{pair_idx}点. " + "；".join(parts)
-
-    # -------- 遍历每个段，组装 A/B 说明 --------
-    for seg, sub in d.groupby("seg_id", sort=True):
-        if seg <= 0:
-            continue
-        # A 行
-        if "A_point" not in sub.columns:
-            continue
-        a_mask = sub["A_point"].astype(bool).to_numpy()
-        if not a_mask.any():
-            continue
-        posA = int(np.where(a_mask)[0][0])
-        rowA = sub.iloc[posA]
-
-        # B 行（A 之后的第一个 B）
-        if b_flag_col not in sub.columns:
-            continue
-        b_idx_all = np.where(sub[b_flag_col].astype(bool).to_numpy())[0]
-        b_idx_after = b_idx_all[b_idx_all > posA]
-        if b_idx_after.size == 0:
-            continue
-        posB = int(b_idx_after[0])
-        rowB = sub.iloc[posB]
-
-        # ===== A 端输出 =====
-        if "A_point_desc" in rowA.index and pd.notna(rowA["A_point_desc"]):
-            out.append(str(rowA["A_point_desc"]).replace("为A点", f"有A{pair_idx}点"))
-        else:
-            out.append(_fmt_a_minimal(rowA))
-
-        # ===== B 端输出 =====
-        dtB = pd.to_datetime(rowB[date_col]).strftime("%Y年%m月%d日")
-
-        # 优先：现有格式 condX_*（B 函数生成）
-        have_cond = any(k in rowB.index for k in [
-            "cond1_enabled", "cond1_ok", "cond1_expect", "cond1_actual",
-            "cond2_enabled", "cond2_ok", "cond2_expect", "cond2_actual",
-            "cond3_enabled", "cond3_ok", "cond3_expect", "cond3_actual",
-            "cond4_enabled", "cond4_ok", "cond4_expect", "cond4_actual",
-        ])
-        if have_cond:
-            lines = []
-            for i in (1, 2, 3, 4):
-                line = _fmt_cond_line(rowB, i)
-                if line is not None:
-                    lines.append(line)
-            if lines:
-                out.append(f"{code}股票在{dtB}, 有B{pair_idx}点. " + "；".join(lines))
-                pair_idx += 1
-                continue  # 已输出
-
-        # 次优：已有描述列
-        desc_col = "B_point_desc" if "B_point_desc" in rowB.index and pd.notna(rowB["B_point_desc"]) else \
-            ("B_point_desc_v2" if "B_point_desc_v2" in rowB.index and pd.notna(rowB["B_point_desc_v2"]) else None)
-        if desc_col:
-            out.append(str(rowB[desc_col]).replace("为B点", f"有B{pair_idx}点"))
-            pair_idx += 1
-            continue
-
-        # 兜底：最小字段拼出
-        out.append(_fmt_b_minimal(rowB))
-        pair_idx += 1
-
-    return out
-
-
-def plot_kline_brush_with_ab(
-        df_code: pd.DataFrame,
-        *,
-        date_col: str = "date",
-        code_col: str = "code",
-        open_col: str = "open",
-        high_col: str = "high",
-        low_col: str = "low",
-        close_col: str = "close",
-        volume_col: str = "volume",
-        ma5_col: str = "ma_5",
-        ma10_col: str = "ma_10",
-        ma60_col: str = "ma_60",
-        a_flag_col: str = "A_point",
-        b_flag_col: str = "B_point",
-        a_desc_col: Optional[str] = "A_point_desc",  # 若无则自动降级
-        b_desc_col: Optional[str] = "B_point_desc",
-
-        title: Optional[str] = None,
-        width: str = "1200px",
-        height: str = "780px",
-
-        a_point_at: str = "low",  # "low" 或 "close"
-        b_point_at: str = "low",  # "low" 或 "close"
-) -> Grid:
-    """
-    仅画图。要求 df_code 为【单只股票】的 DataFrame，且已包含 A_point / B_point / seg_id 等字段。
-    可选显示说明列 a_desc_col / b_desc_col（若存在）。
-    """
-    d = df_code.copy()
-    # --- 基础清洗 ---
-    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
-    d = d.dropna(subset=[date_col, open_col, high_col, low_col, close_col]).sort_values(date_col)
-    if d.empty:
-        raise ValueError("输入数据为空或 OHLC 列存在大量 NaN。")
-
-    # 单票检查（可按需移除）
-    if d[code_col].nunique() != 1:
-        raise ValueError("df_code 必须只包含单一股票的数据。")
-
-    # 轴与基础数组
-    x = d[date_col].dt.strftime("%Y-%m-%d").tolist()
-    op = d[open_col].astype(float).to_numpy()
-    hi = d[high_col].astype(float).to_numpy()
-    lo = d[low_col].astype(float).to_numpy()
-    cl = d[close_col].astype(float).to_numpy()
-    vol = d[volume_col].astype(float).fillna(0.0).to_numpy()
-    up_mask = (cl >= op)
-
-    # ---------------- 主图（K线） ----------------
-    kdata = d[[open_col, close_col, low_col, high_col]].astype(float).values.tolist()
-    kline = (
-        Kline(init_opts=opts.InitOpts(width=width, height=height))
-        .add_xaxis(x)
-        .add_yaxis(
-            "K", kdata,
-            itemstyle_opts=opts.ItemStyleOpts(
-                color="#ef232a", color0="#14b143",
-                border_color="#ef232a", border_color0="#14b143",
-            ),
-        )
-        .set_global_opts(
-            title_opts=opts.TitleOpts(title=title or f"{d[code_col].iloc[0]} — K线/MA/量/A-B"),
-            legend_opts=opts.LegendOpts(pos_top="1%"),
-            tooltip_opts=opts.TooltipOpts(trigger="axis", axis_pointer_type="cross"),
-            datazoom_opts=[
-                opts.DataZoomOpts(type_="inside", xaxis_index=[0, 1], range_start=70, range_end=100),
-                opts.DataZoomOpts(type_="slider", xaxis_index=[0, 1], pos_top="85%"),
-            ],
-            brush_opts=opts.BrushOpts(
-                tool_box=["rect", "lineX", "lineY", "keep", "clear"],
-                brush_type="lineX", brush_mode="single",
-                x_axis_index="all", y_axis_index="all",
-            ),
-            xaxis_opts=opts.AxisOpts(
-                type_="category", boundary_gap=False,
-                axisline_opts=opts.AxisLineOpts(is_on_zero=False),
-            ),
-            yaxis_opts=opts.AxisOpts(type_="value", is_scale=True),  # 兼容旧版
-        )
-    )
-
-    # ---------------- 均线（若存在才画） ----------------
-    def _add_ma_line(name: str, y: pd.Series):
-        if y.name in d.columns or isinstance(y, pd.Series):
-            kline.overlap(
-                Line()
-                .add_xaxis(x)
-                .add_yaxis(name, y.astype(float).round(4).tolist(),
-                           is_smooth=True, is_symbol_show=False,
-                           linestyle_opts=opts.LineStyleOpts(width=1.2, opacity=0.9))
-            )
-
-    if ma5_col in d.columns:  _add_ma_line("MA5", d[ma5_col])
-    if ma10_col in d.columns: _add_ma_line("MA10", d[ma10_col])
-    if ma60_col in d.columns: _add_ma_line("MA60", d[ma60_col])
-
-    # ---------------- 只保留“有对应 B 点”的 A 点 ----------------
-    if "seg_id" not in d.columns:
-        d["seg_id"] = d[a_flag_col].cumsum()
-
-    ab_pairs = []  # (idxA, idxB)
-    for seg, sub in d.groupby("seg_id", sort=True):
-        if seg <= 0:
-            continue
-        idxs = sub.index.to_numpy()
-        maskA = sub[a_flag_col].astype(bool).to_numpy()
-        maskB = sub[b_flag_col].astype(bool).to_numpy() if (b_flag_col in sub.columns) else np.zeros_like(maskA, bool)
-        if not maskA.any() or not maskB.any():
-            continue
-
-        # A 的位置（段内第1个 A）
-        posA_all = np.where(maskA)[0]
-        posA = posA_all[0]
-
-        # 选择“在 A 之后”的第一个 B（严格 >）
-        posB_all = np.where(maskB)[0]
-        posB_after = posB_all[posB_all > posA]
-        if posB_after.size == 0:
-            continue
-        posB = posB_after[0]
-
-        # 回到原始行索引
-        iA = idxs[posA]
-        iB = idxs[posB]
-        ab_pairs.append((iA, iB))
-
-    # 若无任何 A-B 配对，A/B 均不显示
-    show_A = show_B = len(ab_pairs) > 0
-
-    # ---------------- A/B 散点 ----------------
-    if show_A:
-        A_idx = [iA for (iA, _) in ab_pairs]
-        A_x = d.loc[A_idx, date_col].dt.strftime("%Y-%m-%d").tolist()
-        A_y = (d.loc[A_idx, low_col] * 0.995 if a_point_at == "low" else d.loc[A_idx, close_col]).astype(float).tolist()
-
-        kline = kline.overlap(
-            Scatter()
-            .add_xaxis(A_x)
-            .add_yaxis(
-                "A点(配对)", A_y,
-                symbol="triangle-up", symbol_size=14,
-                itemstyle_opts=opts.ItemStyleOpts(color="#2563eb", border_color="#1e40af", border_width=1),
-                label_opts=opts.LabelOpts(is_show=False),
-                tooltip_opts=opts.TooltipOpts(formatter="A点<br/>{b}: {c}")
-            )
-        )
-
-    if show_B:
-        B_idx = [iB for (_, iB) in ab_pairs]
-        B_x = d.loc[B_idx, date_col].dt.strftime("%Y-%m-%d").tolist()
-        B_y = (d.loc[B_idx, low_col] * 0.995 if b_point_at == "low" else d.loc[B_idx, close_col]).astype(float).tolist()
-
-        kline = kline.overlap(
-            Scatter()
-            .add_xaxis(B_x)
-            .add_yaxis(
-                "B点", B_y,
-                symbol="triangle-down", symbol_size=14,
-                itemstyle_opts=opts.ItemStyleOpts(color="#f59e0b", border_color="#b45309", border_width=1),
-                label_opts=opts.LabelOpts(is_show=False),
-                tooltip_opts=opts.TooltipOpts(formatter="B点<br/>{b}: {c}")
-            )
-        )
-
-    # ---------------- A-B 虚线连接 ----------------
-    # 用位置映射，避免 get_loc 在重复索引时的歧义
-    pos_map = pd.Series(np.arange(len(d)), index=d.index)
-
-    if ab_pairs:
-        N = len(x)
-        for iA, iB in ab_pairs:
-            posA = int(pos_map[iA])
-            posB = int(pos_map[iB])
-
-            yA = float(d.at[iA, low_col] * 0.995 if a_point_at == "low" else d.at[iA, close_col])
-            yB = float(d.at[iB, low_col] * 0.995 if b_point_at == "low" else d.at[iB, close_col])
-
-            y_line = [None] * N
-            y_line[posA] = yA
-            y_line[posB] = yB
-
-            kline = kline.overlap(
-                Line()
-                .add_xaxis(x)
-                .add_yaxis(
-                    "A-B", y_line,
-                    is_symbol_show=False,
-                    linestyle_opts=opts.LineStyleOpts(width=1.2, type_="dashed", opacity=0.9),
-                )
-            )
-
-    # ---------------- 量能副图 ----------------
-    bar_items = [
-        opts.BarItem(
-            name=x[i],
-            value=float(vol[i]),
-            itemstyle_opts=opts.ItemStyleOpts(color=("#ef232a" if up_mask[i] else "#14b143"))
-        )
-        for i in range(len(x))
-    ]
-    volume_bar = (
-        Bar()
-        .add_xaxis(x)
-        .add_yaxis("Volume", bar_items, xaxis_index=1, yaxis_index=1, label_opts=opts.LabelOpts(is_show=False))
-        .set_global_opts(
-            xaxis_opts=opts.AxisOpts(type_="category", grid_index=1),
-            yaxis_opts=opts.AxisOpts(grid_index=1, type_="value", is_scale=True, split_number=2),
-            legend_opts=opts.LegendOpts(pos_top="91%"),
-        )
-    )
-
-    # ---------------- 拼接 Grid ----------------
-    grid = Grid(init_opts=opts.InitOpts(width=width, height=height))
-    grid.add(kline, grid_opts=opts.GridOpts(pos_left="5%", pos_right="3%", pos_top="8%", pos_bottom="28%"))
-    grid.add(volume_bar, grid_opts=opts.GridOpts(pos_left="5%", pos_right="3%", pos_top="76%", pos_bottom="8%"))
-    return grid
-
-
-if __name__ == '__main__':
-    from pathlib import Path
-    code = "600121"
-    data_dir = Path(__file__).resolve().parent.parent / "data"
-    # 读取文件
-    print("读取的 DataFrame：")
-    stock_df = pd.read_parquet(data_dir / f'{code}.parquet')
-    print(stock_df.tail())
-    stock_df.rename(columns={"股票代码": "code", "日期": "date", "开盘": "open", "收盘": "close",
-                             "最高": "high", "最低": "low", "成交量": "volume"}, inplace=True)
-    stock_df = stock_df[["date", "code", "open", "high", "low", "close", "volume"]]
-    print("转换后的 DataFrame：")
-    print(stock_df.tail())
-
-    # 找到 A 点
-    stock_df = find_a_points(stock_df, short_windows=(5, 10), long_window=60,
-                             required_shorts=(5,), require_all=True,
-                             # A 点前 5 天内，最高价“上穿”5 日均线至少一次
-                             confirm_lookback_days=5, confirm_ma_window=5, confirm_price_col="high"
-                             )
-    print(f"\n{code} 的 A 点：")
-    print(stock_df)
-
-    # 找到 B 点
-    stock_df = find_b_points(stock_df)
-    print(f"\n{code} 的 B 点：")
-    print(stock_df)
-
-    # df_code: 单只股票的 DataFrame，已包含 A_point/B_point/seg_id 等列（你的“现有字段”）
-    grid = plot_kline_brush_with_ab(
-        stock_df,
-        title=f"{stock_df['code'].iloc[0]} — A/B配对",
-        a_point_at="low",
-        b_point_at="low",
-    )
-    grid.render("kline_ab_pairs.html")
-
-    # 打印 A-B 配对的说明
-    l = explain_ab_pairs(stock_df)
-    print("\nA-B 配对说明：")
-    for line in l:
-        print(line)
