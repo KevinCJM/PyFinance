@@ -1,0 +1,30 @@
+# Scope: applies to WF/ subtree only
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.venv/
+.env
+.env.*
+
+# Backend data/cache
+backend/data/*
+!backend/data/.gitkeep
+/*.parquet
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.eslintcache
+
+# Logs
+*.log
+logs/
