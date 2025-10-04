@@ -125,6 +125,11 @@ def find_a_points(
     d["ma_long_down"] = cond1_ok_series
     d["cond1_ok"] = np.where(c1_enabled, cond1_ok_series, True)
 
+    # 为前端诊断表提供数值列：MA_long 在 t-1 与 t-1-down_lookback
+    # 仅在条件1开启时保留有意义数值，关闭时也保留列但为 NaN（以便后端根据开关决定是否返回）
+    d["ma_long_t1"] = maL_t1
+    d["ma_long_t1_prev"] = maL_t1_L
+
     # 期望/实际文本（逐元素格式化）
     d["cond1_expect"] = pd.Series(
         f"MA{c1_long}(t-1) < MA{c1_long}(t-1-{c1_down_lookback})", index=d.index
@@ -903,33 +908,44 @@ def find_c_points(
     vr1_enabled = bool(_c2.get("vr1_enabled", True))
     vma_cmp_enabled = bool(_c2.get("vma_cmp_enabled", False))
     vol_up_enabled = bool(_c2.get("vol_up_enabled", False))
-    # 模块1：VR1 放量
+    # 模块1：VR1 放量（仅启用时计算）
     c2_recent_n = int(_c2.get("recent_n", recent_n))
     c2_multiple = float(_c2.get("vol_multiple", vol_multiple))
-    prevNmax = g_code[volume_col].shift(1).rolling(c2_recent_n, min_periods=1).max()
-    d["prevNmax_vol"] = prevNmax
-    d["vol_ratio_vs_prevNmax"] = d[volume_col] / prevNmax
-    c2_vr1_ok = (d[volume_col] >= (c2_multiple * prevNmax)) if vr1_enabled else pd.Series(True, index=d.index)
+    if vr1_enabled:
+        prevNmax = g_code[volume_col].shift(1).rolling(c2_recent_n, min_periods=1).max()
+        d["prevNmax_vol"] = prevNmax
+        d["vol_ratio_vs_prevNmax"] = d[volume_col] / prevNmax
+        c2_vr1_ok = (d[volume_col] >= (c2_multiple * prevNmax))
+    else:
+        d["prevNmax_vol"] = np.nan
+        d["vol_ratio_vs_prevNmax"] = np.nan
+        c2_vr1_ok = pd.Series(True, index=d.index)
     d["c2_vr1_ok"] = c2_vr1_ok
-    # 模块2：量均线比较（短在长上）
+    # 模块2：量均线比较（短在长上）（仅启用时计算）
     c2_vma_short = int(_c2.get("vma_short_days", vma_short_days))
     c2_vma_long = int(_c2.get("vma_long_days", vma_long_days))
-    d["vma_short"] = g_code[volume_col].transform(lambda s: s.rolling(c2_vma_short, min_periods=c2_vma_short).mean())
-    d["vma_long"] = g_code[volume_col].transform(lambda s: s.rolling(c2_vma_long, min_periods=c2_vma_long).mean())
-    c2_vma_ok = (d["vma_short"] > d["vma_long"]) if vma_cmp_enabled else pd.Series(True, index=d.index)
-    d["c2_vma_ok"] = c2_vma_ok
-    # 模块3：前X日(含当日)成交量递增
-    inc_days = int(_c2.get("vol_increasing_days", vol_increasing_days))
-    if inc_days <= 1:
-        c2_up_ok = pd.Series(True, index=d.index)
+    if vma_cmp_enabled:
+        d["vma_short"] = g_code[volume_col].transform(lambda s: s.rolling(c2_vma_short, min_periods=c2_vma_short).mean())
+        d["vma_long"] = g_code[volume_col].transform(lambda s: s.rolling(c2_vma_long, min_periods=c2_vma_long).mean())
+        c2_vma_ok = (d["vma_short"] > d["vma_long"])
     else:
-        # 严格递增：要求最近 inc_days 天体现在 (inc_days-1) 次相邻差分均 > 0
-        win = int(max(1, inc_days - 1))
-        inc = g_code[volume_col].diff(1) > 0  # Series[bool]，按代码分组计算
-        # 在每个代码分组内，对 inc 做 rolling(win) 并要求“全部为 True”
-        c2_up_ok = inc.groupby(d[code_col]).transform(lambda s: s.rolling(win, min_periods=win).sum() == win)
-        c2_up_ok = c2_up_ok.fillna(False)
-    d["c2_up_ok"] = (c2_up_ok if vol_up_enabled else pd.Series(True, index=d.index))
+        d["vma_short"] = np.nan
+        d["vma_long"] = np.nan
+        c2_vma_ok = pd.Series(True, index=d.index)
+    d["c2_vma_ok"] = c2_vma_ok
+    # 模块3：前X日(含当日)成交量递增（仅启用时计算）
+    if vol_up_enabled:
+        inc_days = int(_c2.get("vol_increasing_days", vol_increasing_days))
+        if inc_days <= 1:
+            c2_up_ok = pd.Series(True, index=d.index)
+        else:
+            win = int(max(1, inc_days - 1))
+            inc = g_code[volume_col].diff(1) > 0
+            c2_up_ok = inc.groupby(d[code_col]).transform(lambda s: s.rolling(win, min_periods=win).sum() == win)
+            c2_up_ok = c2_up_ok.fillna(False)
+    else:
+        c2_up_ok = pd.Series(True, index=d.index)
+    d["c2_up_ok"] = c2_up_ok
     # cond2 汇总：仅对启用的子模块取与
     enabled_mask = (
             (vr1_enabled & True) | (vma_cmp_enabled & True) | (vol_up_enabled & True)

@@ -555,57 +555,114 @@ def compute_b_points(symbol: str, params: Dict[str, Any]):
                     "price_close": None if price_close is None else float(price_close),
                 })
 
-        # 组装诊断表格
+        # 组装诊断表格（仅输出基础列 + 已启用条件/子模块的相关列）
+        # 读取前端开关，决定列的裁剪
+        _c1 = cond1 or {}
+        _c2 = cond2 or {}
+        _c3 = cond3 or {}
+        _c4 = cond4 or {}
+        _c5 = cond5 or {}
+        _c6 = cond6 or {}
+
+        def _bool(v, default=False):
+            if v is None:
+                return default
+            if isinstance(v, bool):
+                return v
+            s = str(v).strip().lower()
+            return s in ("1", "true", "yes", "y", "on") if s != '' else default
+
+        c1_enabled = _bool(_c1.get("enabled", True), True)
+        c2_enabled = _bool(_c2.get("enabled", True), True)
+        c3_enabled = _bool(_c3.get("enabled", True), True)
+        c4_enabled = _bool(_c4.get("enabled", True), True)
+        c5_enabled = _bool(_c5.get("enabled", True), True)
+        c6_enabled = _bool(_c6.get("enabled", False), False)
+
+        # cond5 子模块开关（新式）
+        has_new_flags = any(k in _c5 for k in ("vr1_enabled", "recent_n", "vr1_max", "vma_rel_enabled", "vol_down_enabled", "ratio_enabled", "vol_cmp_enabled"))
+        vr1_sub_enabled = _bool(_c5.get("vr1_enabled", False), False)
+        vma_rel_enabled = _bool(_c5.get("vma_rel_enabled", False), False)
+        vol_down_enabled = _bool(_c5.get("vol_down_enabled", False), False)
+        ratio_enabled = _bool(_c5.get("ratio_enabled", (False if has_new_flags else True)), (False if has_new_flags else True))
+        vol_cmp_enabled = _bool(_c5.get("vol_cmp_enabled", (_c5.get("require_vol_le_vma10", True) if not has_new_flags else False)), (not has_new_flags))
+
         table = []
         for i in range(len(out)):
             row = out.iloc[i]
-            table.append({
+            rec = {
                 "date": pd.to_datetime(row.get("date")).strftime("%Y-%m-%d") if pd.notna(row.get("date")) else None,
                 "open": None if pd.isna(row.get("open")) else float(row.get("open")),
                 "close": None if pd.isna(row.get("close")) else float(row.get("close")),
                 "low": None if pd.isna(row.get("low")) else float(row.get("low")),
                 "high": None if pd.isna(row.get("high")) else float(row.get("high")),
                 "volume": None if pd.isna(row.get("volume")) else float(row.get("volume")),
-                "ma_long": None if pd.isna(row.get("ma_long_b")) else float(row.get("ma_long_b")),
-                "days_since_A": None if pd.isna(row.get("days_since_A")) else int(row.get("days_since_A")),
-                # cond1 时间
-                "cond1": bool(row.get("cond1_ok")) if pd.notna(row.get("cond1_ok")) else False,
-                # cond2 MA关系
-                "cond2_ratio_pct": (
-                    None if pd.isna(row.get("maN_above_ratio")) else float(row.get("maN_above_ratio") * 100.0)),
-                "cond2": bool(row.get("cond2_ok")) if pd.notna(row.get("cond2_ok")) else False,
-                # cond3 触及/阴线/收≤昨收
-                "cond3": bool(row.get("cond3_ok")) if pd.notna(row.get("cond3_ok")) else False,
-                "bearish": bool(row.get("cond3_bearish_ok")) if pd.notna(row.get("cond3_bearish_ok")) else True,
-                "close_le_prev": bool(row.get("cond3_close_le_prev_ok")) if pd.notna(
-                    row.get("cond3_close_le_prev_ok")) else True,
-                "touch_ma60": bool(row.get("cond3_touch_ok")) if pd.notna(row.get("cond3_touch_ok")) else True,
-                # cond4 量能上限（VR1）
-                "cond4": bool(row.get("cond4_ok")) if pd.notna(row.get("cond4_ok")) else False,
-                "vr1_ok": bool(row.get("cond4_vr1_ok")) if pd.notna(row.get("cond4_vr1_ok")) else True,
-                # cond5 干缩
-                "cond5": bool(row.get("cond5_ok")) if pd.notna(row.get("cond5_ok")) else False,
-                "c5_ratio_ok": bool(row.get("c5_ratio_ok")) if "c5_ratio_ok" in row.index and pd.notna(
-                    row.get("c5_ratio_ok")) else None,
-                "c5_vol_cmp_ok": bool(row.get("c5_vol_cmp_ok")) if "c5_vol_cmp_ok" in row.index and pd.notna(
-                    row.get("c5_vol_cmp_ok")) else None,
-                "c5_down_ok": bool(row.get("c5_down_ok")) if "c5_down_ok" in row.index and pd.notna(
-                    row.get("c5_down_ok")) else None,
-                "c5_vr1_ok": bool(row.get("c5_vr1_ok")) if "c5_vr1_ok" in row.index and pd.notna(
-                    row.get("c5_vr1_ok")) else None,
-                "c5_vma_rel_ok": bool(row.get("c5_vma_rel_ok")) if "c5_vma_rel_ok" in row.index and pd.notna(
-                    row.get("c5_vma_rel_ok")) else None,
-                "vol_down_streak": None if (
-                            "vol_down_streak" not in row.index or pd.isna(row.get("vol_down_streak"))) else int(
-                    row.get("vol_down_streak")),
-                "dryness_ratio": None if pd.isna(row.get("dryness_ratio")) else float(row.get("dryness_ratio")),
-                "dry_recent_cnt": None if pd.isna(row.get("dryness_recent_cnt_v2")) else int(
-                    row.get("dryness_recent_cnt_v2")),
-                # cond6 价稳
-                "cond6": bool(row.get("cond6_ok")) if pd.notna(row.get("cond6_ok")) else False,
-                "cond6_metric": None if pd.isna(row.get("cond6_metric")) else float(row.get("cond6_metric")),
-                "B_point": bool(row.get("B_point")) if pd.notna(row.get("B_point")) else False,
-            })
+            }
+
+            if c1_enabled:
+                rec.update({
+                    "days_since_A": None if pd.isna(row.get("days_since_A")) else int(row.get("days_since_A")),
+                    "cond1": bool(row.get("cond1_ok")) if pd.notna(row.get("cond1_ok")) else False,
+                })
+
+            if c2_enabled:
+                rec.update({
+                    "cond2_ratio_pct": (None if pd.isna(row.get("maN_above_ratio")) else float(row.get("maN_above_ratio") * 100.0)),
+                    "cond2": bool(row.get("cond2_ok")) if pd.notna(row.get("cond2_ok")) else False,
+                })
+
+            if c3_enabled:
+                rec.update({
+                    "ma_long": None if pd.isna(row.get("ma_long_b")) else float(row.get("ma_long_b")),
+                    "cond3": bool(row.get("cond3_ok")) if pd.notna(row.get("cond3_ok")) else False,
+                    "bearish": bool(row.get("cond3_bearish_ok")) if pd.notna(row.get("cond3_bearish_ok")) else True,
+                    "close_le_prev": bool(row.get("cond3_close_le_prev_ok")) if pd.notna(row.get("cond3_close_le_prev_ok")) else True,
+                    "touch_ma60": bool(row.get("cond3_touch_ok")) if pd.notna(row.get("cond3_touch_ok")) else True,
+                })
+
+            if c4_enabled:
+                # 同时输出 vr1 数值便于校验
+                rec.update({
+                    "vr1": None if pd.isna(row.get("vr1")) else float(row.get("vr1")),
+                    "cond4": bool(row.get("cond4_ok")) if pd.notna(row.get("cond4_ok")) else False,
+                    "vr1_ok": bool(row.get("cond4_vr1_ok")) if pd.notna(row.get("cond4_vr1_ok")) else True,
+                })
+
+            if c5_enabled:
+                # cond5 总体结果
+                rec.update({"cond5": bool(row.get("cond5_ok")) if pd.notna(row.get("cond5_ok")) else False})
+                # 子模块明细（仅开启的才输出）
+                if vr1_sub_enabled:
+                    rec.update({
+                        "c5_vr1_ok": bool(row.get("c5_vr1_ok")) if "c5_vr1_ok" in row.index and pd.notna(row.get("c5_vr1_ok")) else False,
+                    })
+                if vma_rel_enabled:
+                    rec.update({
+                        "c5_vma_rel_ok": bool(row.get("c5_vma_rel_ok")) if "c5_vma_rel_ok" in row.index and pd.notna(row.get("c5_vma_rel_ok")) else False,
+                    })
+                if ratio_enabled:
+                    rec.update({
+                        "c5_ratio_ok": bool(row.get("c5_ratio_ok")) if "c5_ratio_ok" in row.index and pd.notna(row.get("c5_ratio_ok")) else False,
+                        "dryness_ratio": None if pd.isna(row.get("dryness_ratio")) else float(row.get("dryness_ratio")),
+                    })
+                if vol_cmp_enabled:
+                    rec.update({
+                        "c5_vol_cmp_ok": bool(row.get("c5_vol_cmp_ok")) if "c5_vol_cmp_ok" in row.index and pd.notna(row.get("c5_vol_cmp_ok")) else False,
+                    })
+                if vol_down_enabled:
+                    rec.update({
+                        "c5_down_ok": bool(row.get("c5_down_ok")) if "c5_down_ok" in row.index and pd.notna(row.get("c5_down_ok")) else False,
+                        "vol_down_streak": None if ("vol_down_streak" not in row.index or pd.isna(row.get("vol_down_streak"))) else int(row.get("vol_down_streak")),
+                    })
+
+            if c6_enabled:
+                rec.update({
+                    "cond6": bool(row.get("cond6_ok")) if pd.notna(row.get("cond6_ok")) else False,
+                    "cond6_metric": None if pd.isna(row.get("cond6_metric")) else float(row.get("cond6_metric")),
+                })
+
+            rec["B_point"] = bool(row.get("B_point")) if pd.notna(row.get("B_point")) else False
+            table.append(rec)
 
         return {"points": pts, "count": len(pts), "table": table}
     except HTTPException:
@@ -702,33 +759,65 @@ def compute_c_points(symbol: str, params: Dict[str, Any]):
                     "price_close": None if price_close is None else float(price_close),
                 })
 
-        # 诊断表
+        # 诊断表（基础列 + 已启用条件/子模块）
+        _c1 = cond1 or {}
+        _c2 = cond2 or {}
+        _c3 = cond3 or {}
+        def _bool(v, default=False):
+            if v is None: return default
+            if isinstance(v, bool): return v
+            s = str(v).strip().lower()
+            return s in ("1","true","yes","y","on") if s!='' else default
+
+        c1_enabled = _bool(_c1.get("enabled", True), True)
+        c2_enabled = _bool(_c2.get("enabled", True), True)
+        c3_enabled = _bool(_c3.get("enabled", True), True)
+        vr1_enabled = _bool(_c2.get("vr1_enabled", True), True)
+        vma_cmp_enabled = _bool(_c2.get("vma_cmp_enabled", False), False)
+        vol_up_enabled = _bool(_c2.get("vol_up_enabled", False), False)
+
         table = []
         for i in range(len(out)):
             r = out.iloc[i]
-            table.append({
+            rec = {
                 "date": pd.to_datetime(r.get("date")).strftime("%Y-%m-%d") if pd.notna(r.get("date")) else None,
                 "open": None if pd.isna(r.get("open")) else float(r.get("open")),
                 "close": None if pd.isna(r.get("close")) else float(r.get("close")),
                 "low": None if pd.isna(r.get("low")) else float(r.get("low")),
                 "high": None if pd.isna(r.get("high")) else float(r.get("high")),
                 "volume": None if pd.isna(r.get("volume")) else float(r.get("volume")),
-                "ma_Y": None if pd.isna(r.get("maY")) else float(r.get("maY")),
-                "days_since_B": None if pd.isna(r.get("days_since_B")) else int(r.get("days_since_B")),
-                "cond1": bool(r.get("cond1_ok")) if pd.notna(r.get("cond1_ok")) else False,
-                "cond2": bool(r.get("cond2_ok")) if pd.notna(r.get("cond2_ok")) else False,
-                "c2_vr1_ok": (None if 'c2_vr1_ok' not in r else bool(r.get("c2_vr1_ok")) if pd.notna(
-                    r.get("c2_vr1_ok")) else False),
-                "c2_vma_ok": (None if 'c2_vma_ok' not in r else bool(r.get("c2_vma_ok")) if pd.notna(
-                    r.get("c2_vma_ok")) else False),
-                "c2_up_ok": (
-                    None if 'c2_up_ok' not in r else bool(r.get("c2_up_ok")) if pd.notna(r.get("c2_up_ok")) else False),
-                "vol_ratio": None if pd.isna(r.get("vol_ratio_vs_prevNmax")) else float(r.get("vol_ratio_vs_prevNmax")),
-                "vma_short": None if pd.isna(r.get("vma_short")) else float(r.get("vma_short")),
-                "vma_long": None if pd.isna(r.get("vma_long")) else float(r.get("vma_long")),
-                "cond3": bool(r.get("cond3_ok")) if pd.notna(r.get("cond3_ok")) else False,
-                "C_point": bool(r.get("C_point")) if pd.notna(r.get("C_point")) else False,
-            })
+            }
+            if c1_enabled:
+                rec.update({
+                    "days_since_B": None if pd.isna(r.get("days_since_B")) else int(r.get("days_since_B")),
+                    "cond1": bool(r.get("cond1_ok")) if pd.notna(r.get("cond1_ok")) else False,
+                })
+            if c2_enabled:
+                rec.update({
+                    "cond2": bool(r.get("cond2_ok")) if pd.notna(r.get("cond2_ok")) else False,
+                })
+                if vr1_enabled:
+                    rec.update({
+                        "vol_ratio": None if pd.isna(r.get("vol_ratio_vs_prevNmax")) else float(r.get("vol_ratio_vs_prevNmax")),
+                        "c2_vr1_ok": (None if 'c2_vr1_ok' not in r else bool(r.get("c2_vr1_ok")) if pd.notna(r.get("c2_vr1_ok")) else False),
+                    })
+                if vma_cmp_enabled:
+                    rec.update({
+                        "vma_short": None if pd.isna(r.get("vma_short")) else float(r.get("vma_short")),
+                        "vma_long": None if pd.isna(r.get("vma_long")) else float(r.get("vma_long")),
+                        "c2_vma_ok": (None if 'c2_vma_ok' not in r else bool(r.get("c2_vma_ok")) if pd.notna(r.get("c2_vma_ok")) else False),
+                    })
+                if vol_up_enabled:
+                    rec.update({
+                        "c2_up_ok": (None if 'c2_up_ok' not in r else bool(r.get("c2_up_ok")) if pd.notna(r.get("c2_up_ok")) else False),
+                    })
+            if c3_enabled:
+                rec.update({
+                    "ma_Y": None if pd.isna(r.get("maY")) else float(r.get("maY")),
+                    "cond3": bool(r.get("cond3_ok")) if pd.notna(r.get("cond3_ok")) else False,
+                })
+            rec["C_point"] = bool(r.get("C_point")) if pd.notna(r.get("C_point")) else False
+            table.append(rec)
 
         return {"points": pts, "count": len(pts), "table": table}
     except HTTPException:
@@ -881,25 +970,33 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
             vol_up_enabled = False
             vol_increasing_days = 3
 
-        # 模块1：VR1 放量
-        prevXmax = out["volume"].shift(1).rolling(recent_n if recent_n and recent_n > 0 else 1, min_periods=1).max()
-        vr1_ok_series = (out["volume"] >= (vol_multiple * prevXmax)) if vr1_enabled else pd.Series(True,
-                                                                                                   index=out.index)
-        # 模块2：量均比较
-        vmaD = out["volume"].rolling(vma_short_days if vma_short_days and vma_short_days > 0 else 1,
-                                     min_periods=vma_short_days if vma_short_days and vma_short_days > 0 else 1).mean()
-        vmaF = out["volume"].rolling(vma_long_days if vma_long_days and vma_long_days > 0 else 1,
-                                     min_periods=vma_long_days if vma_long_days and vma_long_days > 0 else 1).mean()
-        vma_ok_series = (vmaD > vmaF) if vma_cmp_enabled else pd.Series(True, index=out.index)
-        # 模块3：近X日量严格递增
-        if vol_increasing_days and vol_increasing_days > 1:
+        # 模块1：VR1 放量（仅启用时计算）
+        if vr1_enabled:
+            prevXmax = out["volume"].shift(1).rolling(recent_n if recent_n and recent_n > 0 else 1, min_periods=1).max()
+            vr1_ok_series = (out["volume"] >= (vol_multiple * prevXmax))
+        else:
+            prevXmax = pd.Series([np.nan]*len(out), index=out.index)
+            vr1_ok_series = pd.Series(True, index=out.index)
+        # 模块2：量均比较（仅启用时计算）
+        if vma_cmp_enabled:
+            vmaD = out["volume"].rolling(vma_short_days if vma_short_days and vma_short_days > 0 else 1,
+                                         min_periods=vma_short_days if vma_short_days and vma_short_days > 0 else 1).mean()
+            vmaF = out["volume"].rolling(vma_long_days if vma_long_days and vma_long_days > 0 else 1,
+                                         min_periods=vma_long_days if vma_long_days and vma_long_days > 0 else 1).mean()
+            vma_ok_series = (vmaD > vmaF)
+        else:
+            vmaD = pd.Series([np.nan]*len(out), index=out.index)
+            vmaF = pd.Series([np.nan]*len(out), index=out.index)
+            vma_ok_series = pd.Series(True, index=out.index)
+        # 模块3：近X日量严格递增（仅启用时计算）
+        if vol_up_enabled and vol_increasing_days and vol_increasing_days > 1:
             win = int(max(1, vol_increasing_days - 1))
             inc = out["volume"].diff(1) > 0
             up_ok = inc.rolling(win, min_periods=win).sum() == win
             up_ok = up_ok.fillna(False)
+            up_ok_series = up_ok
         else:
-            up_ok = pd.Series(True, index=out.index)
-        up_ok_series = up_ok if vol_up_enabled else pd.Series(True, index=out.index)
+            up_ok_series = pd.Series(True, index=out.index)
 
         # cond4 汇总：仅对启用的子模块取与；若全部子模块关闭，则视为通过
         any_sub_enabled = (vr1_enabled or vma_cmp_enabled or vol_up_enabled)
@@ -930,51 +1027,75 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
                 "price_close": None if pd.isna(r.get("close")) else float(r["close"]),
             })
 
-        # 诊断表直接使用 out 的 open/low/high/close。之前通过 merge 会引入 open_x/open_y 等后缀，
-        # 导致前端按 open/low/high 读取不到值而显示为 '-'。
+        # 诊断表：仅输出“基本信息 + 已开启条件/子模块”的相关列
         merged = out.copy()
         lw = c1["long_window"]
+        long2 = c2["long_window"]
+        shorts = list(c2["short_windows"]) if isinstance(c2.get("short_windows"), tuple) else []
         table = []
         for i, r in merged.iterrows():
-            # 补充量能相关列
-            pv = prevXmax.iat[i] if i < len(prevXmax) else None
-            vol = r.get("volume")
-            vol_ratio = (float(vol) / float(pv)) if (pd.notna(vol) and pd.notna(pv) and float(pv) != 0.0) else None
-            vD = vmaD.iat[i] if i < len(vmaD) else None
-            vF = vmaF.iat[i] if i < len(vmaF) else None
-            table.append({
+            row = {
                 "date": pd.to_datetime(r.get("date")).strftime("%Y-%m-%d") if pd.notna(r.get("date")) else None,
                 "open": None if pd.isna(r.get("open")) else float(r.get("open")),
                 "close": None if pd.isna(r.get("close")) else float(r.get("close")),
                 "low": None if pd.isna(r.get("low")) else float(r.get("low")),
                 "high": None if pd.isna(r.get("high")) else float(r.get("high")),
                 "volume": None if pd.isna(r.get("volume")) else float(r.get("volume")),
-                "MA_long": None if pd.isna(r.get(f"ma_{lw}")) else float(r.get(f"ma_{lw}")),
-                "today_any_cross": bool(r.get("today_any_cross")) if pd.notna(r.get("today_any_cross")) else False,
-                "recent_all_cross": bool(r.get("recent_all_cross")) if pd.notna(r.get("recent_all_cross")) else False,
-                "today_all_above": bool(r.get("today_all_above")) if pd.notna(r.get("today_all_above")) else False,
-                "confirm_cross_cnt": None if pd.isna(r.get("confirm_cross_cnt")) else int(r.get("confirm_cross_cnt")),
-                "VR1": None if (pd.isna(r.get("vr1"))) else float(r.get("vr1")),
-                "cond1": bool(r.get("cond1_ok")) if pd.notna(r.get("cond1_ok")) else False,
-                "cond2": bool(r.get("cond2_ok")) if pd.notna(r.get("cond2_ok")) else False,
-                "cond3": bool(r.get("cond3_ok")) if pd.notna(r.get("cond3_ok")) else False,
-                "prevXmax": None if pv is None or pd.isna(pv) else float(pv),
-                "vol_ratio": None if vol_ratio is None else float(vol_ratio),
-                "vmaD": None if vD is None or pd.isna(vD) else float(vD),
-                "vmaF": None if vF is None or pd.isna(vF) else float(vF),
-                "cond4": bool(cond4_ok.iat[i]) if i < len(cond4_ok) and not pd.isna(cond4_ok.iat[i]) else True,
-                "c4_vr1_ok": bool(vr1_ok_series.iat[i]) if i < len(vr1_ok_series) and not pd.isna(
-                    vr1_ok_series.iat[i]) else True,
-                "c4_vma_ok": bool(vma_ok_series.iat[i]) if i < len(vma_ok_series) and not pd.isna(
-                    vma_ok_series.iat[i]) else True,
-                "c4_up_ok": bool(up_ok_series.iat[i]) if i < len(up_ok_series) and not pd.isna(
-                    up_ok_series.iat[i]) else True,
-                # 兼容旧版“条件5：量均线比较”列（未启用则视为通过）
-                "cond5": bool(vma_ok_series.iat[i]) if (
-                            i < len(vma_ok_series) and not pd.isna(vma_ok_series.iat[i]) and vma_cmp_enabled) else (
-                    True if not vma_cmp_enabled else False),
-                "A_point": bool(A2.iat[i]) if i < len(A2) and not pd.isna(A2.iat[i]) else False,
-            })
+            }
+
+            # 条件1：长均线下跌
+            if c1["enabled"]:
+                row.update({
+                    "ma_long_t1": None if pd.isna(r.get("ma_long_t1")) else float(r.get("ma_long_t1")),
+                    "ma_long_t1_prev": None if pd.isna(r.get("ma_long_t1_prev")) else float(r.get("ma_long_t1_prev")),
+                    "cond1": bool(r.get("cond1_ok")) if pd.notna(r.get("cond1_ok")) else False,
+                })
+
+            # 条件2：短均线上穿
+            if c2["enabled"]:
+                for k in shorts:
+                    key = f"ma_{k}"
+                    row[key] = None if pd.isna(r.get(key)) else float(r.get(key))
+                if long2 is not None:
+                    keyL = f"ma_{int(long2)}"
+                    row[keyL] = None if pd.isna(r.get(keyL)) else float(r.get(keyL))
+                row["cond2"] = bool(r.get("cond2_ok")) if pd.notna(r.get("cond2_ok")) else False
+
+            # 条件3：价格确认
+            if c3["enabled"]:
+                row.update({
+                    "confirm_cross_cnt": None if pd.isna(r.get("confirm_cross_cnt")) else int(r.get("confirm_cross_cnt")),
+                    "cond3": bool(r.get("cond3_ok")) if pd.notna(r.get("cond3_ok")) else False,
+                })
+
+            # 条件4组：放量确认（仅开启的子模块输出）
+            if g4_enabled:
+                if vr1_enabled:
+                    pv = prevXmax.iat[i] if i < len(prevXmax) else None
+                    vol = r.get("volume")
+                    vol_ratio = (float(vol) / float(pv)) if (pd.notna(vol) and pd.notna(pv) and float(pv) != 0.0) else None
+                    row.update({
+                        "prevXmax": None if pv is None or pd.isna(pv) else float(pv),
+                        "vol_ratio": None if vol_ratio is None else float(vol_ratio),
+                        "VR1": None if pd.isna(r.get("vr1")) else float(r.get("vr1")),
+                        "c4_vr1_ok": bool(vr1_ok_series.iat[i]) if i < len(vr1_ok_series) and not pd.isna(vr1_ok_series.iat[i]) else False,
+                    })
+                if vma_cmp_enabled:
+                    vD = vmaD.iat[i] if i < len(vmaD) else None
+                    vF = vmaF.iat[i] if i < len(vmaF) else None
+                    row.update({
+                        "vmaD": None if vD is None or pd.isna(vD) else float(vD),
+                        "vmaF": None if vF is None or pd.isna(vF) else float(vF),
+                        "c4_vma_ok": bool(vma_ok_series.iat[i]) if i < len(vma_ok_series) and not pd.isna(vma_ok_series.iat[i]) else False,
+                    })
+                if vol_up_enabled:
+                    row.update({
+                        "c4_up_ok": bool(up_ok_series.iat[i]) if i < len(up_ok_series) and not pd.isna(up_ok_series.iat[i]) else False,
+                    })
+                row["cond4"] = bool(cond4_ok.iat[i]) if i < len(cond4_ok) and not pd.isna(cond4_ok.iat[i]) else False
+
+            row["A_point"] = bool(A2.iat[i]) if i < len(A2) and not pd.isna(A2.iat[i]) else False
+            table.append(row)
 
         print(f"[A_POINTS_V2] returning points={len(pts)} table_rows={len(table)}")
         return {"points": pts, "count": len(pts), "table": table}
