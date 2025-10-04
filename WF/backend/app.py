@@ -35,9 +35,11 @@ DATA_FILE = DATA_DIR / "stock_basic.parquet"
 JOBS: Dict[str, Dict[str, Any]] = {}
 JOBS_LOCK = threading.Lock()
 
+
 def _log(job: Dict[str, Any], msg: str):
     ts = datetime.datetime.now().strftime('%H:%M:%S')
     job['logs'].append(f"[{ts}] {msg}")
+
 
 def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
     with JOBS_LOCK:
@@ -92,6 +94,7 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
             job['error'] = f"{type(e).__name__}: {e}"
         _log(job, f"任务异常: {type(e).__name__}: {e}")
 
+
 @app.post("/api/fetch_all/start")
 def start_fetch_all(sleep_max: float = 1.0):
     job_id = uuid.uuid4().hex[:8]
@@ -114,6 +117,7 @@ def start_fetch_all(sleep_max: float = 1.0):
     t.start()
     return {'job_id': job_id}
 
+
 @app.get("/api/fetch_all/{job_id}/status")
 def fetch_all_status(job_id: str):
     with JOBS_LOCK:
@@ -123,22 +127,24 @@ def fetch_all_status(job_id: str):
         # 返回浅拷贝，避免并发修改
         return dict(job)
 
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/api/stocks")
 def get_stocks(
-    page: int = 1,
-    page_size: int = 10,
-    sort_by: Optional[str] = None,
-    sort_dir: str = 'asc',
-    market: Optional[str] = None,
-    industry: Optional[str] = None,
-    code: Optional[str] = Query(None, description="按股票代码模糊匹配（substring）"),
-    name: Optional[str] = Query(None, description="按股票名称匹配（可模糊）"),
-    name_fuzzy: bool = Query(True, description="名称是否使用相似度匹配"),
-    name_sim_threshold: float = Query(0.55, ge=0.0, le=1.0, description="相似度阈值，仅在 name_fuzzy 时生效"),
+        page: int = 1,
+        page_size: int = 10,
+        sort_by: Optional[str] = None,
+        sort_dir: str = 'asc',
+        market: Optional[str] = None,
+        industry: Optional[str] = None,
+        code: Optional[str] = Query(None, description="按股票代码模糊匹配（substring）"),
+        name: Optional[str] = Query(None, description="按股票名称匹配（可模糊）"),
+        name_fuzzy: bool = Query(True, description="名称是否使用相似度匹配"),
+        name_sim_threshold: float = Query(0.55, ge=0.0, le=1.0, description="相似度阈值，仅在 name_fuzzy 时生效"),
 ):
     """
     Get a list of stocks with pagination, sorting, and filtering.
@@ -148,7 +154,8 @@ def get_stocks(
 
     try:
         # 优先从 data 目录读取；兼容旧路径（WF 根目录）
-        df = pd.read_parquet(DATA_FILE) if DATA_FILE.exists() else pd.read_parquet(Path(__file__).parent.parent / "stock_basic.parquet")
+        df = pd.read_parquet(DATA_FILE) if DATA_FILE.exists() else pd.read_parquet(
+            Path(__file__).parent.parent / "stock_basic.parquet")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read stock data: {e}")
 
@@ -172,6 +179,7 @@ def get_stocks(
                         return difflib.SequenceMatcher(None, str(s).lower(), name_q.lower()).ratio()
                     except Exception:
                         return 0.0
+
                 df = df.copy()
                 df['__similarity__'] = df['name'].astype(str).map(_sim)
                 df = df[df['__similarity__'] >= float(name_sim_threshold)]
@@ -204,6 +212,7 @@ def get_stocks(
         "page_size": page_size,
     }
 
+
 @app.get("/api/stocks/{symbol}")
 def get_stock_kline(symbol: str):
     """
@@ -216,6 +225,10 @@ def get_stock_kline(symbol: str):
         if existing.exists():
             df = pd.read_parquet(existing)
             df = _normalize_kline_df(df)
+            # 仅返回前端绘图所需列，避免列名干扰
+            needed = [c for c in ['日期', '开盘', '收盘', '最高', '最低', '成交量'] if c in df.columns]
+            if needed:
+                df = df[needed]
             return df.to_dict(orient='records')
 
         # Fallback: fetch using akshare and save parquet inside get_stock_data
@@ -223,11 +236,17 @@ def get_stock_kline(symbol: str):
         if stock_df is None or stock_df.empty:
             raise HTTPException(status_code=404, detail="Stock data not found for the given symbol.")
         stock_df = _normalize_kline_df(stock_df)
+        needed = [c for c in ['日期', '开盘', '收盘', '最高', '最低', '成交量'] if c in stock_df.columns]
+        if needed:
+            stock_df = stock_df[needed]
+        print('----')
+        print(stock_df)
         return stock_df.to_dict(orient='records')
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/stocks/{symbol}/refresh")
 def refresh_stock_kline(symbol: str):
@@ -239,11 +258,17 @@ def refresh_stock_kline(symbol: str):
         if stock_df is None or stock_df.empty:
             raise HTTPException(status_code=404, detail="Stock data not found for the given symbol.")
         stock_df = _normalize_kline_df(stock_df)
+        needed = [c for c in ['日期', '开盘', '收盘', '最高', '最低', '成交量'] if c in stock_df.columns]
+        if needed:
+            stock_df = stock_df[needed]
+        print('----')
+        print(stock_df)
         return stock_df.to_dict(orient='records')
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/stocks/{symbol}/a_points")
 def compute_a_points(symbol: str, params: Dict[str, Any]):
@@ -306,11 +331,13 @@ def compute_a_points(symbol: str, params: Dict[str, Any]):
             x = np.arange(M, dtype=float)
             x_mean = x.mean()
             x_var = ((x - x_mean) ** 2).sum()
+
             def _slope(arr: np.ndarray) -> float:
                 y = arr.astype(float)
                 y_mean = y.mean()
                 cov = ((x - x_mean) * (y - y_mean)).sum()
                 return float(cov / x_var) if x_var != 0 else 0.0
+
             slope_series = maY.rolling(M, min_periods=M).apply(lambda a: _slope(a), raw=True)
         else:
             slope_series = pd.Series(0.0, index=d.index)
@@ -404,8 +431,11 @@ def compute_a_points(symbol: str, params: Dict[str, Any]):
                 "maY2": None if pd.isna(maY2.iat[i]) else float(maY2.iat[i]),
                 "maY_long": None if pd.isna(maY.iat[i]) else float(maY.iat[i]),
                 "slope_t1": None if pd.isna(slope_series.shift(1).iat[i]) else float(slope_series.shift(1).iat[i]),
-                "prevJmax": None if pd.isna(prevJmax.iat[i]) else float(prevJmax.iat[i]) if 'prevJmax' in locals() else None,
-                "vr": None if ('prevJmax' not in locals() or pd.isna(prevJmax.iat[i]) or pd.isna(d.at[i, "volume"])) else float(d.at[i, "volume"]) / float(prevJmax.iat[i]) if float(prevJmax.iat[i]) != 0 else None,
+                "prevJmax": None if pd.isna(prevJmax.iat[i]) else float(
+                    prevJmax.iat[i]) if 'prevJmax' in locals() else None,
+                "vr": None if ('prevJmax' not in locals() or pd.isna(prevJmax.iat[i]) or pd.isna(
+                    d.at[i, "volume"])) else float(d.at[i, "volume"]) / float(prevJmax.iat[i]) if float(
+                    prevJmax.iat[i]) != 0 else None,
                 "vmaD": None if pd.isna(vmaD.iat[i]) else float(vmaD.iat[i]),
                 "vmaF": None if pd.isna(vmaF.iat[i]) else float(vmaF.iat[i]),
                 "above_all": bool(above_all.iat[i]) if not pd.isna(above_all.iat[i]) else False,
@@ -541,26 +571,36 @@ def compute_b_points(symbol: str, params: Dict[str, Any]):
                 # cond1 时间
                 "cond1": bool(row.get("cond1_ok")) if pd.notna(row.get("cond1_ok")) else False,
                 # cond2 MA关系
-                "cond2_ratio_pct": (None if pd.isna(row.get("maN_above_ratio")) else float(row.get("maN_above_ratio") * 100.0)),
+                "cond2_ratio_pct": (
+                    None if pd.isna(row.get("maN_above_ratio")) else float(row.get("maN_above_ratio") * 100.0)),
                 "cond2": bool(row.get("cond2_ok")) if pd.notna(row.get("cond2_ok")) else False,
                 # cond3 触及/阴线/收≤昨收
                 "cond3": bool(row.get("cond3_ok")) if pd.notna(row.get("cond3_ok")) else False,
                 "bearish": bool(row.get("cond3_bearish_ok")) if pd.notna(row.get("cond3_bearish_ok")) else True,
-                "close_le_prev": bool(row.get("cond3_close_le_prev_ok")) if pd.notna(row.get("cond3_close_le_prev_ok")) else True,
+                "close_le_prev": bool(row.get("cond3_close_le_prev_ok")) if pd.notna(
+                    row.get("cond3_close_le_prev_ok")) else True,
                 "touch_ma60": bool(row.get("cond3_touch_ok")) if pd.notna(row.get("cond3_touch_ok")) else True,
                 # cond4 量能上限（VR1）
                 "cond4": bool(row.get("cond4_ok")) if pd.notna(row.get("cond4_ok")) else False,
                 "vr1_ok": bool(row.get("cond4_vr1_ok")) if pd.notna(row.get("cond4_vr1_ok")) else True,
                 # cond5 干缩
                 "cond5": bool(row.get("cond5_ok")) if pd.notna(row.get("cond5_ok")) else False,
-                "c5_ratio_ok": bool(row.get("c5_ratio_ok")) if "c5_ratio_ok" in row.index and pd.notna(row.get("c5_ratio_ok")) else None,
-                "c5_vol_cmp_ok": bool(row.get("c5_vol_cmp_ok")) if "c5_vol_cmp_ok" in row.index and pd.notna(row.get("c5_vol_cmp_ok")) else None,
-                "c5_down_ok": bool(row.get("c5_down_ok")) if "c5_down_ok" in row.index and pd.notna(row.get("c5_down_ok")) else None,
-                "c5_vr1_ok": bool(row.get("c5_vr1_ok")) if "c5_vr1_ok" in row.index and pd.notna(row.get("c5_vr1_ok")) else None,
-                "c5_vma_rel_ok": bool(row.get("c5_vma_rel_ok")) if "c5_vma_rel_ok" in row.index and pd.notna(row.get("c5_vma_rel_ok")) else None,
-                "vol_down_streak": None if ("vol_down_streak" not in row.index or pd.isna(row.get("vol_down_streak"))) else int(row.get("vol_down_streak")),
+                "c5_ratio_ok": bool(row.get("c5_ratio_ok")) if "c5_ratio_ok" in row.index and pd.notna(
+                    row.get("c5_ratio_ok")) else None,
+                "c5_vol_cmp_ok": bool(row.get("c5_vol_cmp_ok")) if "c5_vol_cmp_ok" in row.index and pd.notna(
+                    row.get("c5_vol_cmp_ok")) else None,
+                "c5_down_ok": bool(row.get("c5_down_ok")) if "c5_down_ok" in row.index and pd.notna(
+                    row.get("c5_down_ok")) else None,
+                "c5_vr1_ok": bool(row.get("c5_vr1_ok")) if "c5_vr1_ok" in row.index and pd.notna(
+                    row.get("c5_vr1_ok")) else None,
+                "c5_vma_rel_ok": bool(row.get("c5_vma_rel_ok")) if "c5_vma_rel_ok" in row.index and pd.notna(
+                    row.get("c5_vma_rel_ok")) else None,
+                "vol_down_streak": None if (
+                            "vol_down_streak" not in row.index or pd.isna(row.get("vol_down_streak"))) else int(
+                    row.get("vol_down_streak")),
                 "dryness_ratio": None if pd.isna(row.get("dryness_ratio")) else float(row.get("dryness_ratio")),
-                "dry_recent_cnt": None if pd.isna(row.get("dryness_recent_cnt_v2")) else int(row.get("dryness_recent_cnt_v2")),
+                "dry_recent_cnt": None if pd.isna(row.get("dryness_recent_cnt_v2")) else int(
+                    row.get("dryness_recent_cnt_v2")),
                 # cond6 价稳
                 "cond6": bool(row.get("cond6_ok")) if pd.notna(row.get("cond6_ok")) else False,
                 "cond6_metric": None if pd.isna(row.get("cond6_metric")) else float(row.get("cond6_metric")),
@@ -677,9 +717,12 @@ def compute_c_points(symbol: str, params: Dict[str, Any]):
                 "days_since_B": None if pd.isna(r.get("days_since_B")) else int(r.get("days_since_B")),
                 "cond1": bool(r.get("cond1_ok")) if pd.notna(r.get("cond1_ok")) else False,
                 "cond2": bool(r.get("cond2_ok")) if pd.notna(r.get("cond2_ok")) else False,
-                "c2_vr1_ok": (None if 'c2_vr1_ok' not in r else bool(r.get("c2_vr1_ok")) if pd.notna(r.get("c2_vr1_ok")) else False),
-                "c2_vma_ok": (None if 'c2_vma_ok' not in r else bool(r.get("c2_vma_ok")) if pd.notna(r.get("c2_vma_ok")) else False),
-                "c2_up_ok": (None if 'c2_up_ok' not in r else bool(r.get("c2_up_ok")) if pd.notna(r.get("c2_up_ok")) else False),
+                "c2_vr1_ok": (None if 'c2_vr1_ok' not in r else bool(r.get("c2_vr1_ok")) if pd.notna(
+                    r.get("c2_vr1_ok")) else False),
+                "c2_vma_ok": (None if 'c2_vma_ok' not in r else bool(r.get("c2_vma_ok")) if pd.notna(
+                    r.get("c2_vma_ok")) else False),
+                "c2_up_ok": (
+                    None if 'c2_up_ok' not in r else bool(r.get("c2_up_ok")) if pd.notna(r.get("c2_up_ok")) else False),
                 "vol_ratio": None if pd.isna(r.get("vol_ratio_vs_prevNmax")) else float(r.get("vol_ratio_vs_prevNmax")),
                 "vma_short": None if pd.isna(r.get("vma_short")) else float(r.get("vma_short")),
                 "vma_long": None if pd.isna(r.get("vma_long")) else float(r.get("vma_long")),
@@ -692,6 +735,7 @@ def compute_c_points(symbol: str, params: Dict[str, Any]):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/stocks/{symbol}/a_points_v2")
 def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
@@ -826,7 +870,8 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
             vol_increasing_days = _int(p4_group.get("量连升天数", p4_group.get("vol_increasing_days", 3)), 3)
         else:
             # 旧版兼容：条件4=VR1、条件5=量均比较；量连升默认关闭
-            g4_enabled = _bool(p4.get("启用", p4.get("enabled", False)), False) or _bool(p5.get("启用", p5.get("enabled", False)), False)
+            g4_enabled = _bool(p4.get("启用", p4.get("enabled", False)), False) or _bool(
+                p5.get("启用", p5.get("enabled", False)), False)
             vr1_enabled = _bool(p4.get("启用", p4.get("enabled", False)), False)
             recent_n = _int(p4.get("对比天数", p4.get("J", 10)), 10)
             vol_multiple = float(p4.get("倍数", p4.get("K", 2.0)) or 2.0)
@@ -838,10 +883,13 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
 
         # 模块1：VR1 放量
         prevXmax = out["volume"].shift(1).rolling(recent_n if recent_n and recent_n > 0 else 1, min_periods=1).max()
-        vr1_ok_series = (out["volume"] >= (vol_multiple * prevXmax)) if vr1_enabled else pd.Series(True, index=out.index)
+        vr1_ok_series = (out["volume"] >= (vol_multiple * prevXmax)) if vr1_enabled else pd.Series(True,
+                                                                                                   index=out.index)
         # 模块2：量均比较
-        vmaD = out["volume"].rolling(vma_short_days if vma_short_days and vma_short_days > 0 else 1, min_periods=vma_short_days if vma_short_days and vma_short_days > 0 else 1).mean()
-        vmaF = out["volume"].rolling(vma_long_days if vma_long_days and vma_long_days > 0 else 1, min_periods=vma_long_days if vma_long_days and vma_long_days > 0 else 1).mean()
+        vmaD = out["volume"].rolling(vma_short_days if vma_short_days and vma_short_days > 0 else 1,
+                                     min_periods=vma_short_days if vma_short_days and vma_short_days > 0 else 1).mean()
+        vmaF = out["volume"].rolling(vma_long_days if vma_long_days and vma_long_days > 0 else 1,
+                                     min_periods=vma_long_days if vma_long_days and vma_long_days > 0 else 1).mean()
         vma_ok_series = (vmaD > vmaF) if vma_cmp_enabled else pd.Series(True, index=out.index)
         # 模块3：近X日量严格递增
         if vol_increasing_days and vol_increasing_days > 1:
@@ -882,15 +930,9 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
                 "price_close": None if pd.isna(r.get("close")) else float(r["close"]),
             })
 
-        merged = out.merge(
-            pd.DataFrame({
-                "date": pd.to_datetime(df_cn["日期"], errors="coerce"),
-                "open": pd.to_numeric(df_cn.get("开盘"), errors="coerce"),
-                "low": pd.to_numeric(df_cn.get("最低"), errors="coerce"),
-                "high": pd.to_numeric(df_cn.get("最高"), errors="coerce"),
-            }),
-            on="date", how="left"
-        )
+        # 诊断表直接使用 out 的 open/low/high/close。之前通过 merge 会引入 open_x/open_y 等后缀，
+        # 导致前端按 open/low/high 读取不到值而显示为 '-'。
+        merged = out.copy()
         lw = c1["long_window"]
         table = []
         for i, r in merged.iterrows():
@@ -921,11 +963,16 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
                 "vmaD": None if vD is None or pd.isna(vD) else float(vD),
                 "vmaF": None if vF is None or pd.isna(vF) else float(vF),
                 "cond4": bool(cond4_ok.iat[i]) if i < len(cond4_ok) and not pd.isna(cond4_ok.iat[i]) else True,
-                "c4_vr1_ok": bool(vr1_ok_series.iat[i]) if i < len(vr1_ok_series) and not pd.isna(vr1_ok_series.iat[i]) else True,
-                "c4_vma_ok": bool(vma_ok_series.iat[i]) if i < len(vma_ok_series) and not pd.isna(vma_ok_series.iat[i]) else True,
-                "c4_up_ok": bool(up_ok_series.iat[i]) if i < len(up_ok_series) and not pd.isna(up_ok_series.iat[i]) else True,
+                "c4_vr1_ok": bool(vr1_ok_series.iat[i]) if i < len(vr1_ok_series) and not pd.isna(
+                    vr1_ok_series.iat[i]) else True,
+                "c4_vma_ok": bool(vma_ok_series.iat[i]) if i < len(vma_ok_series) and not pd.isna(
+                    vma_ok_series.iat[i]) else True,
+                "c4_up_ok": bool(up_ok_series.iat[i]) if i < len(up_ok_series) and not pd.isna(
+                    up_ok_series.iat[i]) else True,
                 # 兼容旧版“条件5：量均线比较”列（未启用则视为通过）
-                "cond5": bool(vma_ok_series.iat[i]) if (i < len(vma_ok_series) and not pd.isna(vma_ok_series.iat[i]) and vma_cmp_enabled) else (True if not vma_cmp_enabled else False),
+                "cond5": bool(vma_ok_series.iat[i]) if (
+                            i < len(vma_ok_series) and not pd.isna(vma_ok_series.iat[i]) and vma_cmp_enabled) else (
+                    True if not vma_cmp_enabled else False),
                 "A_point": bool(A2.iat[i]) if i < len(A2) and not pd.isna(A2.iat[i]) else False,
             })
 
@@ -938,6 +985,7 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
         print("[A_POINTS_V2_ERROR]", type(e).__name__, str(e))
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
 
 @app.get("/api/stocks/{symbol}/info")
 def get_stock_info_api(symbol: str):
@@ -967,10 +1015,12 @@ def get_stock_info_api(symbol: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ---- 静态页面托管 ----
 DIST_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 if DIST_DIR.exists():
     app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="static")
+
 
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
@@ -983,6 +1033,8 @@ def spa_fallback(full_path: str):
         except Exception:
             return HTMLResponse("<h1>Frontend index.html 读取失败</h1>", status_code=500)
     return HTMLResponse("<h1>前端未构建，缺少 dist/index.html</h1>", status_code=404)
+
+
 def _normalize_kline_df(df: pd.DataFrame) -> pd.DataFrame:
     """Ensure K-line dataframe has expected columns and types, sorted by 日期 ascending.
     Returns a dataframe with at least: 日期, 开盘, 收盘, 最高, 最低, 成交量.
