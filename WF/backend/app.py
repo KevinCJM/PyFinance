@@ -14,6 +14,8 @@ from services.tushare_get_data import fetch_stock_daily
 from services.analysis_service import find_a_points, find_b_points, find_c_points
 from starlette.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 app = FastAPI(title="Stock Data API")
 
@@ -31,6 +33,8 @@ app.add_middleware(
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DATA_FILE = DATA_DIR / "stock_basic.parquet"
+ANALYSIS_DIR = DATA_DIR / "analysis"
+ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- 批量拉取任务（全量获取） ----
 JOBS: Dict[str, Dict[str, Any]] = {}
@@ -40,6 +44,133 @@ JOBS_LOCK = threading.Lock()
 def _log(job: Dict[str, Any], msg: str):
     ts = datetime.datetime.now().strftime('%H:%M:%S')
     job['logs'].append(f"[{ts}] {msg}")
+
+
+# ---------------- 批量 ABC 择时（进程池） ----------------
+
+def _abc_worker(symbol: str, a_params: Dict[str, Any], b_params: Dict[str, Any], c_params: Dict[str, Any]) -> Dict[str, Any]:
+    """子进程执行：单只股票的 A/B/C 分析与结果落盘。
+    返回：{symbol, a_count, b_count, c_count, b_recent: bool}
+    """
+    # 延迟导入，避免主进程启动时产生代价，并确保在子进程中可加载本模块依赖
+    import pandas as pd
+    from pathlib import Path
+    from typing import Dict, Any
+    # 引入本模块内函数
+    from app import compute_a_points_v2, compute_b_points, compute_c_points, DATA_DIR, ANALYSIS_DIR
+
+    out_dir = (ANALYSIS_DIR / symbol)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # A 点
+    a_res = compute_a_points_v2(symbol, a_params)
+    a_pts = a_res.get('points', []) or []
+    a_tbl = pd.DataFrame(a_res.get('table', []) or [])
+    if not a_tbl.empty:
+        a_tbl.to_excel(out_dir / 'A_point.xlsx', index=False)
+    a_dates = [p.get('date') for p in a_pts if p.get('date')]
+
+    # B 点
+    bp = dict(b_params)
+    bp['a_points_dates'] = a_dates
+    b_res = compute_b_points(symbol, bp)
+    b_pts = b_res.get('points', []) or []
+    b_tbl = pd.DataFrame(b_res.get('table', []) or [])
+    if not b_tbl.empty:
+        b_tbl.to_excel(out_dir / 'B_point.xlsx', index=False)
+    b_dates = [p.get('date') for p in b_pts if p.get('date')]
+
+    # 近5天是否有 B 点
+    b_recent = False
+    try:
+        if b_dates:
+            today = pd.Timestamp.today().normalize()
+            thresh = today - pd.Timedelta(days=5)
+            for ds in b_dates:
+                dt = pd.to_datetime(ds, errors='coerce')
+                if pd.notna(dt) and dt.normalize() >= thresh:
+                    b_recent = True
+                    break
+    except Exception:
+        b_recent = False
+
+    # C 点
+    cp = dict(c_params)
+    cp['a_points_dates'] = a_dates
+    cp['b_points_dates'] = b_dates
+    c_res = compute_c_points(symbol, cp)
+    c_tbl = pd.DataFrame(c_res.get('table', []) or [])
+    if not c_tbl.empty:
+        c_tbl.to_excel(out_dir / 'C_point.xlsx', index=False)
+
+    return {
+        'symbol': symbol,
+        'a_count': int(len(a_pts)),
+        'b_count': int(len(b_pts)),
+        'c_count': int(len(c_res.get('points', []) or [])),
+        'b_recent': bool(b_recent),
+    }
+
+
+def _run_abc_batch(job_id: str):
+    """主线程中启动进程池，批量执行 ABC 择时。"""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if not job:
+        return
+    try:
+        if not DATA_FILE.exists():
+            raise RuntimeError("stock_basic.parquet 不存在，无法获取股票列表")
+        base = pd.read_parquet(DATA_FILE)
+        symbols: List[str] = [str(s) for s in base['symbol'].dropna().astype(str).tolist()]
+        # 映射：代码->名称/市场
+        name_map = {str(r['symbol']): r.get('name') for _, r in base.iterrows()}
+        market_map = {str(r['symbol']): r.get('market') for _, r in base.iterrows()}
+
+        with JOBS_LOCK:
+            job['total'] = len(symbols)
+        a_params = job.get('a_params', {}) or {}
+        b_params = job.get('b_params', {}) or {}
+        c_params = job.get('c_params', {}) or {}
+
+        max_workers = max(1, multiprocessing.cpu_count() - 1)
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            futures = [ex.submit(_abc_worker, sym, a_params, b_params, c_params) for sym in symbols]
+            for fut in as_completed(futures):
+                res = None
+                try:
+                    res = fut.result()
+                    sym = res.get('symbol')
+                    with JOBS_LOCK:
+                        job = JOBS.get(job_id)
+                        job['done'] += 1
+                        job['success'] += 1
+                        job['last_symbol'] = sym
+                        if res.get('b_recent'):
+                            entry = {
+                                'symbol': sym,
+                                'name': name_map.get(sym, ''),
+                                'market': market_map.get(sym, ''),
+                            }
+                            job.setdefault('b_recent', [])
+                            job['b_recent'].append(entry)
+                    _log(job, f"完成 {sym}")
+                except Exception as e:
+                    with JOBS_LOCK:
+                        job = JOBS.get(job_id)
+                        job['done'] += 1
+                        job['fail'] += 1
+                        job.setdefault('failed', []).append('unknown')
+                    _log(job, f"失败（子进程）：{type(e).__name__} {e}")
+        with JOBS_LOCK:
+            job['status'] = 'finished'
+            job['finished_at'] = datetime.datetime.now().isoformat()
+        _log(job, "ABC 择时批量完成")
+    except Exception as e:
+        with JOBS_LOCK:
+            job['status'] = 'error'
+            job['error'] = f"{type(e).__name__}: {e}"
+        _log(job, f"任务异常: {type(e).__name__}: {e}")
 
 
 def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
@@ -127,6 +258,46 @@ def fetch_all_status(job_id: str):
         if not job:
             raise HTTPException(status_code=404, detail='job not found')
         # 返回浅拷贝，避免并发修改
+        return dict(job)
+
+
+# ---- ABC 批量分析 API ----
+
+@app.post("/api/abc_batch/start")
+def start_abc_batch(params: Dict[str, Any]):
+    job_id = uuid.uuid4().hex[:8]
+    job = {
+        'job_id': job_id,
+        'status': 'running',
+        'started_at': datetime.datetime.now().isoformat(),
+        'finished_at': None,
+        'total': 0,
+        'done': 0,
+        'success': 0,
+        'fail': 0,
+        'failed': [],
+        'logs': [],
+        'last_symbol': None,
+        # 记录近5天存在B点的股票
+        'b_recent': [],
+        # 记录参数以传递给子进程
+        'a_params': params.get('a_params', {}),
+        'b_params': params.get('b_params', {}),
+        'c_params': params.get('c_params', {}),
+    }
+    with JOBS_LOCK:
+        JOBS[job_id] = job
+    t = threading.Thread(target=_run_abc_batch, args=(job_id,), daemon=True)
+    t.start()
+    return {'job_id': job_id}
+
+
+@app.get("/api/abc_batch/{job_id}/status")
+def abc_batch_status(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail='job not found')
         return dict(job)
 
 
