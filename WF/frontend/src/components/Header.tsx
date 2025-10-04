@@ -11,11 +11,10 @@ export default function Header() {
         <div className="text-lg font-semibold text-gray-800">择时分析</div>
         <nav className="flex items-center gap-2">
           <Link to="/" className={tabClass(pathname === '/' || pathname.startsWith('/stocks'))}>股票列表</Link>
-          <Link to="/fetch-all" className={tabClass(pathname.startsWith('/fetch-all'))}>全量股票数据获取</Link>
-          <Link to="/full-abc" className={tabClass(pathname.startsWith('/full-abc'))}>全量股票ABC择时分析</Link>
+          <Link to="/fetch-all" className={tabClass(pathname.startsWith('/fetch-all'))}>批量股票数据获取</Link>
+          <Link to="/full-abc" className={tabClass(pathname.startsWith('/full-abc'))}>批量股票ABC择时分析</Link>
         </nav>
       </div>
     </header>
   );
 }
-

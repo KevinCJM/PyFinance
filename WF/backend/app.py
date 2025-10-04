@@ -2,7 +2,7 @@ from __future__ import annotations
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Body
 import threading, time, random, uuid, datetime
 import difflib
 from fastapi.middleware.cors import CORSMiddleware
@@ -122,7 +122,17 @@ def _run_abc_batch(job_id: str):
         if not DATA_FILE.exists():
             raise RuntimeError("stock_basic.parquet 不存在，无法获取股票列表")
         base = pd.read_parquet(DATA_FILE)
-        symbols: List[str] = [str(s) for s in base['symbol'].dropna().astype(str).tolist()]
+        # 过滤：symbols 或 market
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            job_symbols = set([str(s) for s in (job.get('symbols') or [])])
+            job_market = (job.get('market') or '').strip()
+        df = base.copy()
+        if job_market:
+            df = df[df['market'].astype(str) == job_market]
+        if job_symbols:
+            df = df[df['symbol'].astype(str).isin(job_symbols)]
+        symbols: List[str] = [str(s) for s in df['symbol'].dropna().astype(str).tolist()]
         # 映射：代码->名称/市场
         name_map = {str(r['symbol']): r.get('name') for _, r in base.iterrows()}
         market_map = {str(r['symbol']): r.get('market') for _, r in base.iterrows()}
@@ -183,7 +193,18 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
         if not DATA_FILE.exists():
             raise RuntimeError("stock_basic.parquet 不存在，无法获取股票列表")
         df = pd.read_parquet(DATA_FILE)
-        symbols = []
+        # 支持 job 参数过滤
+        with JOBS_LOCK:
+            job = JOBS.get(job_id)
+            job_symbols = set([str(s) for s in (job.get('symbols') or [])])
+            job_market = (job.get('market') or '').strip()
+
+        if job_market:
+            # 使用 stock_basic 中的 market 列过滤板块
+            df = df[df['market'].astype(str) == job_market]
+        if job_symbols:
+            df = df[df['symbol'].astype(str).isin(job_symbols)]
+
         if 'symbol' in df.columns:
             symbols = [str(s) for s in df['symbol'].tolist() if pd.notna(s)]
         elif '代码' in df.columns:
@@ -229,7 +250,7 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
 
 
 @app.post("/api/fetch_all/start")
-def start_fetch_all(sleep_max: float = 1.0):
+def start_fetch_all(payload: Dict[str, Any] = Body(default=None), sleep_max: float = 1.0):
     job_id = uuid.uuid4().hex[:8]
     job = {
         'job_id': job_id,
@@ -244,8 +265,18 @@ def start_fetch_all(sleep_max: float = 1.0):
         'logs': [],
         'last_symbol': None,
     }
+    # 接收过滤参数：symbols(列表)、market(板块)
+    if isinstance(payload, dict):
+        syms = payload.get('symbols')
+        mkt = payload.get('market')
+    else:
+        syms, mkt = None, None
     with JOBS_LOCK:
         JOBS[job_id] = job
+        if syms:
+            JOBS[job_id]['symbols'] = [str(s).strip() for s in syms if str(s).strip()]
+        if mkt:
+            JOBS[job_id]['market'] = str(mkt).strip()
     t = threading.Thread(target=_run_fetch_all, args=(job_id, sleep_max), daemon=True)
     t.start()
     return {'job_id': job_id}
@@ -287,6 +318,13 @@ def start_abc_batch(params: Dict[str, Any]):
     }
     with JOBS_LOCK:
         JOBS[job_id] = job
+        # 过滤参数（可选）：symbols / market
+        syms = params.get('symbols')
+        mkt = params.get('market')
+        if syms:
+            JOBS[job_id]['symbols'] = [str(s).strip() for s in syms if str(s).strip()]
+        if mkt:
+            JOBS[job_id]['market'] = str(mkt).strip()
     t = threading.Thread(target=_run_abc_batch, args=(job_id,), daemon=True)
     t.start()
     return {'job_id': job_id}

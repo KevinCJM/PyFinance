@@ -17,6 +17,9 @@ interface JobStatus {
 }
 
 export default function FullABC() {
+  // 过滤参数：指定股票/板块
+  const [symbolsText, setSymbolsText] = useState('');
+  const [market, setMarket] = useState('');
   // A 点参数（与个股页保持一致）
   const [aCond1, setACond1] = useState<{ 启用: boolean; 长均线窗口: number; 下跌跨度: number }>({ 启用: true, 长均线窗口: 60, 下跌跨度: 30 });
   const [aCond2, setACond2] = useState<{ 启用: boolean; 短均线集合: string; 长均线窗口: number; 上穿完备窗口: number; 必须满足的短均线: string; 全部满足: boolean }>({ 启用: true, 短均线集合: '5,10', 长均线窗口: 60, 上穿完备窗口: 3, 必须满足的短均线: '', 全部满足: false });
@@ -80,7 +83,29 @@ export default function FullABC() {
 
   return (
     <div className="container mx-auto p-4">
-      <h1 className="text-2xl font-bold mb-4">全量股票ABC择时分析</h1>
+      <h1 className="text-2xl font-bold mb-4">批量股票ABC择时分析</h1>
+
+      {/* 过滤选项 */}
+      <div className="bg-white p-4 rounded shadow mb-4">
+        <div className="font-semibold mb-2">选择范围</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <div className="font-medium">指定股票（逗号/空白分隔，多只）</div>
+            <textarea className="mt-1 w-full border rounded p-2 h-24" placeholder="示例：000001, 600000, 300008" value={symbolsText} onChange={e => setSymbolsText(e.target.value)} />
+          </div>
+          <div>
+            <div className="font-medium">指定板块</div>
+            <select className="mt-1 w-full border rounded p-2" value={market} onChange={e => setMarket(e.target.value)}>
+              <option value="">不指定</option>
+              <option value="主板">主板</option>
+              <option value="科创板">科创板</option>
+              <option value="创业板">创业板</option>
+              <option value="北交所">北交所</option>
+            </select>
+            <div className="text-xs text-gray-500 mt-1">若同时指定股票与板块，则仅对交集执行。</div>
+          </div>
+        </div>
+      </div>
 
       {/* A 点参数 */}
       <div className="bg-white p-4 rounded shadow mb-4">
@@ -352,6 +377,9 @@ export default function FullABC() {
                 b_params: { cond1: bCond1, cond2: bCond2MA, cond3: bCond2, cond4: { enabled: bCond4VR.enabled, vr1_max: bCond4VR.vr1_max === '' ? null : bCond4VR.vr1_max, recent_max_vol_window: bCond4VR.recent_max_vol_window }, cond5: { ...bCond3, vma_short_window: bCond3.short_days, vma_long_window: bCond3.long_days, vol_compare_long_window: bCond3.vol_compare_long_window }, cond6: bCond4 },
                 c_params: { cond1: cCond1, cond2: cCond2, cond3: cCond3 },
               };
+              const symbols = Array.from(new Set(symbolsText.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)));
+              if (symbols.length) (payload as any).symbols = symbols;
+              if (market) (payload as any).market = market;
               const r = await fetch('/api/abc_batch/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
               if (!r.ok) throw new Error('启动失败');
               const data = await r.json();
