@@ -28,7 +28,25 @@ try:  # Lazy import to allow tests to mock
 except Exception:  # pragma: no cover - tests mock get_pro
     ts = None  # type: ignore
 
-from config import TUSHARE_TOKEN
+import os
+
+def _load_token() -> str:
+    """Load Tushare token with multiple fallbacks:
+    - top-level config.py:TUSHARE_TOKEN (repo根目录)
+    - environment variable TUSHARE_TOKEN
+    """
+    # 1) 尝试从顶层 config.py 读取
+    try:
+        from config import TUSHARE_TOKEN  # type: ignore
+        if TUSHARE_TOKEN:
+            return str(TUSHARE_TOKEN)
+    except Exception:
+        pass
+    # 2) 环境变量
+    token = os.environ.get("TUSHARE_TOKEN", "")
+    if token:
+        return token
+    raise RuntimeError("未找到 TUSHARE_TOKEN，请在 config.py 或环境变量中配置")
 
 
 # Keep consistent with data_service.py
@@ -46,9 +64,8 @@ def get_pro():
         return _PRO
     if ts is None:
         raise RuntimeError("tushare is not available in this environment")
-    if not TUSHARE_TOKEN or not isinstance(TUSHARE_TOKEN, str):
-        raise RuntimeError("Missing TUSHARE_TOKEN in config.py")
-    ts.set_token(TUSHARE_TOKEN)
+    token = _load_token()
+    ts.set_token(token)
     _PRO = ts.pro_api()
     return _PRO
 

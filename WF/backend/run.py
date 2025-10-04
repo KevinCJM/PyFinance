@@ -21,6 +21,11 @@ def main():
     port = 8000
     url = f"http://127.0.0.1:{port}"
 
+    # 确保项目根目录在 sys.path，便于在 backend 下运行时引入顶层 config.py 等模块
+    root = Path(__file__).resolve().parent.parent
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+
     dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     if not dist.exists():
         print("[WARN] 未找到前端构建产物 frontend/dist。请先执行：\n  cd frontend && npm install && npm run build")
