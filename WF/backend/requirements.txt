@@ -3,3 +3,5 @@ uvicorn[standard]
 pandas
 pyarrow
 akshare
+tushare
+pytest
