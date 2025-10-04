@@ -143,7 +143,15 @@ def _run_abc_batch(job_id: str):
         b_params = job.get('b_params', {}) or {}
         c_params = job.get('c_params', {}) or {}
 
-        max_workers = max(1, multiprocessing.cpu_count() - 1)
+        # 读取并发设置；默认 CPU-1，范围 [1, CPU]
+        req_workers = None
+        with JOBS_LOCK:
+            req_workers = JOBS.get(job_id, {}).get('max_workers', None)
+        cpu_n = max(1, multiprocessing.cpu_count())
+        if isinstance(req_workers, int) and req_workers > 0:
+            max_workers = max(1, min(cpu_n, req_workers))
+        else:
+            max_workers = max(1, cpu_n - 1)
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = [ex.submit(_abc_worker, sym, a_params, b_params, c_params) for sym in symbols]
             for fut in as_completed(futures):
@@ -315,6 +323,7 @@ def start_abc_batch(params: Dict[str, Any]):
         'a_params': params.get('a_params', {}),
         'b_params': params.get('b_params', {}),
         'c_params': params.get('c_params', {}),
+        'max_workers': params.get('max_workers', None),
     }
     with JOBS_LOCK:
         JOBS[job_id] = job

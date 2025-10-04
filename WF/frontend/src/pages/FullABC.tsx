@@ -59,6 +59,7 @@ export default function FullABC() {
   const [jobId, setJobId] = useState<string>('');
   const [status, setStatus] = useState<JobStatus | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
+  const [maxWorkers, setMaxWorkers] = useState<number>(Math.max(1, navigator.hardwareConcurrency ? navigator.hardwareConcurrency - 1 : 4));
 
   useEffect(() => {
     if (!jobId) return;
@@ -103,6 +104,11 @@ export default function FullABC() {
               <option value="北交所">北交所</option>
             </select>
             <div className="text-xs text-gray-500 mt-1">若同时指定股票与板块，则仅对交集执行。</div>
+          </div>
+          <div>
+            <div className="font-medium">最大并发进程数</div>
+            <input type="number" className="mt-1 w-full border rounded p-2" value={maxWorkers} onChange={e => setMaxWorkers(Math.max(1, parseInt(e.target.value||'1',10)))} />
+            <div className="text-xs text-gray-500 mt-1">默认 CPU 数量-1；建议不要超过物理核心数。</div>
           </div>
         </div>
       </div>
@@ -380,6 +386,7 @@ export default function FullABC() {
               const symbols = Array.from(new Set(symbolsText.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)));
               if (symbols.length) (payload as any).symbols = symbols;
               if (market) (payload as any).market = market;
+              (payload as any).max_workers = maxWorkers;
               const r = await fetch('/api/abc_batch/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
               if (!r.ok) throw new Error('启动失败');
               const data = await r.json();
