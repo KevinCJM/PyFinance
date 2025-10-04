@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any
 
 # Assuming data_service.py is in the services directory
 from services.data_service import get_stock_data, get_stock_info
+from services.tushare_get_data import fetch_stock_daily
 from services.analysis_service import find_a_points, find_b_points, find_c_points
 from starlette.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse
@@ -66,8 +67,9 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
                 if not job or job.get('status') == 'cancelled':
                     return
             try:
-                _log(job, f"开始获取 {sym} ...")
-                data = get_stock_data(sym)
+                _log(job, f"开始获取 {sym} (tushare) ...")
+                # 使用 Tushare 接口抓取并保存到 backend/data/{code}.parquet
+                data = fetch_stock_daily(sym)
                 if data is None or data.empty:
                     raise RuntimeError("返回空数据")
                 with JOBS_LOCK:
