@@ -16,7 +16,9 @@ interface Stock {
 export default function StockList() {
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshingBasic, setRefreshingBasic] = useState(false);
   const [error, setError] = useState('');
+  const [version, setVersion] = useState(0); // 触发刷新
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [total, setTotal] = useState(0);
@@ -61,7 +63,7 @@ export default function StockList() {
     };
 
     fetchStocks();
-  }, [page, pageSize, sortBy, sortDir, marketFilter, industryFilter, codeQuery, nameQuery, nameFuzzy]);
+  }, [page, pageSize, sortBy, sortDir, marketFilter, industryFilter, codeQuery, nameQuery, nameFuzzy, version]);
 
   const handleSort = (column: string) => {
     if (sortBy === column) {
@@ -78,6 +80,24 @@ export default function StockList() {
     <div className="container mx-auto p-4">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-bold">股票列表</h1>
+        <button
+          className="px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded disabled:opacity-50"
+          disabled={refreshingBasic}
+          onClick={async () => {
+            try {
+              setRefreshingBasic(true);
+              const r = await fetch('/api/stocks_basic/refresh', { method: 'POST' });
+              if (!r.ok) throw new Error('刷新失败');
+              await r.json();
+              // 重新加载列表
+              setVersion(v => v + 1);
+            } catch (e: any) {
+              setError(e.message || '刷新失败');
+            } finally {
+              setRefreshingBasic(false);
+            }
+          }}
+        >{refreshingBasic ? '刷新中...' : '刷新股票列表'}</button>
       </div>
 
       <div className="flex space-x-4 mb-4">
@@ -138,6 +158,11 @@ export default function StockList() {
       
       {!loading && !error && (
         <>
+          {refreshingBasic && (
+            <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center">
+              <div className="bg-white rounded px-6 py-4 shadow text-sm">正在刷新股票列表，请稍候...</div>
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">

@@ -29,6 +29,7 @@ export default function FullFetch() {
   const [maxCps, setMaxCps] = useState<number>(8);
   const [resume, setResume] = useState<boolean>(true);
   const [force, setForce] = useState<boolean>(false);
+  const [refreshingBasic, setRefreshingBasic] = useState(false);
 
   // 进入页面时，若已有运行中的任务，则直接接管显示
   useEffect(() => {
@@ -78,7 +79,25 @@ export default function FullFetch() {
     <div className="container mx-auto p-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">全量获取所有股票数据</h1>
-        <Link to="/" className="text-indigo-600 hover:text-indigo-900">返回股票列表</Link>
+        <div className="flex items-center gap-3">
+          <button
+            className="px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded disabled:opacity-50"
+            disabled={!!jobId || refreshingBasic}
+            onClick={async () => {
+              try {
+                setRefreshingBasic(true);
+                const r = await fetch('/api/stocks_basic/refresh', { method: 'POST' });
+                if (!r.ok) throw new Error('刷新失败');
+                await r.json();
+              } catch (e) {
+                alert((e as any).message || '刷新失败');
+              } finally {
+                setRefreshingBasic(false);
+              }
+            }}
+          >{refreshingBasic ? '刷新中...' : '刷新股票列表'}</button>
+          <Link to="/" className="text-indigo-600 hover:text-indigo-900">返回股票列表</Link>
+        </div>
       </div>
 
       {!jobId && (
@@ -132,7 +151,7 @@ export default function FullFetch() {
               } catch (e) {
                 alert((e as any).message || '启动失败');
               }
-            }}>开始获取</button>
+            }} disabled={refreshingBasic}>开始获取</button>
           </div>
         </div>
       )}
@@ -166,6 +185,16 @@ export default function FullFetch() {
               {status?.failed && status.failed.length > 0 && (
                 <div className="text-sm text-gray-700">失败代码：{status.failed.join(', ')}</div>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {(refreshingBasic || jobId) && (
+        <div className="fixed inset-0 pointer-events-none">
+          {refreshingBasic && (
+            <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center pointer-events-auto">
+              <div className="bg-white rounded px-6 py-4 shadow text-sm">正在刷新股票列表，请稍候...</div>
             </div>
           )}
         </div>
