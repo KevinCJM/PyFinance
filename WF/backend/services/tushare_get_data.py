@@ -263,6 +263,7 @@ def fetch_stock_daily_incremental(
     resume: bool = True,
     force: bool = False,
     limiter: Optional[RateLimiter] = None,
+    ts_code: Optional[str] = None,
 ) -> IncrementalResult:
     """Incremental fetch for a single stock using meta_index + last trading day.
 
@@ -271,7 +272,7 @@ def fetch_stock_daily_incremental(
     - Merge and write atomically; update meta_index
     """
     pro = get_pro()
-    ts_c = _guess_ts_code(code)
+    ts_c = ts_code or _guess_ts_code(code)
     meta = load_meta_index()
     last_trading = get_last_trading_day(pro)
     end_ymd = (end_date or _today_yyyymmdd())
@@ -394,6 +395,7 @@ def fetch_many_daily(
     resume: bool = True,
     force: bool = False,
     on_progress: Optional[Callable[[IncrementalResult], None]] = None,
+    codes_ts_map: Optional[Dict[str, str]] = None,
 ) -> Dict[str, FetchResult]:
     """Batch fetch daily kline (incremental) with adaptive rate limiting.
 
@@ -412,6 +414,7 @@ def fetch_many_daily(
                 resume=resume,
                 force=force,
                 limiter=limiter,
+                ts_code=(codes_ts_map.get(c) if codes_ts_map else None),
             )
             if on_progress:
                 try:

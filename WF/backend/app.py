@@ -220,8 +220,14 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
 
         if 'symbol' in df.columns:
             symbols = [str(s) for s in df['symbol'].tolist() if pd.notna(s)]
+            # 同时准备 ts_code 映射，优先使用 tushare 的 ts_code 减少市场猜测
+            ts_map = {}
+            if 'ts_code' in df.columns:
+                for _, r in df[['symbol','ts_code']].dropna().iterrows():
+                    ts_map[str(r['symbol'])] = str(r['ts_code'])
         elif '代码' in df.columns:
             symbols = [str(s) for s in df['代码'].tolist() if pd.notna(s)]
+            ts_map = {}
         else:
             raise RuntimeError("股票列表缺少 symbol 列")
         with JOBS_LOCK:
@@ -267,6 +273,7 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
             resume=resume,
             force=force,
             on_progress=_on_progress,
+            codes_ts_map=ts_map,
         )
         with JOBS_LOCK:
             job['status'] = 'finished'

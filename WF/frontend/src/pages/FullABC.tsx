@@ -342,11 +342,52 @@ export default function FullABC() {
               <div className="font-medium">条件5：缩量</div>
               <label className="inline-flex items-center space-x-2 text-sm"><input type="checkbox" checked={bCond3.enabled} onChange={e => setBCond3(p => ({...p, enabled: e.target.checked}))} /><span>启用</span></label>
             </div>
-            <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-              <div><div>干缩比上限(短/长)</div><input type="number" step="0.01" className="mt-1 px-2 py-1 border rounded w-full" value={bCond3.dryness_ratio_max} onChange={e => setBCond3(p => ({...p, dryness_ratio_max: parseFloat(e.target.value||'0.8')}))} /></div>
-              <div className="flex items-center gap-2"><input type="checkbox" checked={bCond3.require_vol_le_vma10} onChange={e => setBCond3(p => ({...p, require_vol_le_vma10: e.target.checked}))} /><span>量≤长均</span></div>
-              <div><div>短期天数</div><input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={bCond3.short_days} onChange={e => setBCond3(p => ({...p, short_days: parseInt(e.target.value||'5',10)}))} /></div>
-              <div><div>长期天数</div><input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={bCond3.long_days} onChange={e => setBCond3(p => ({...p, long_days: parseInt(e.target.value||'10',10)}))} /></div>
+            {/* 子模块1：非放量（VR1 ≤ 阈值） */}
+            <div className="mt-2 border rounded p-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">子模块1：非放量（VR1）</div>
+                <label className="inline-flex items-center space-x-2 text-sm"><input type="checkbox" checked={(bCond3 as any).vr1_enabled ?? false} onChange={e => setBCond3(p => ({...p, vr1_enabled: e.target.checked}))} /><span>启用</span></label>
+              </div>
+              <div className="mt-1 text-xs text-gray-500">说明：与 C 点“放量VR1”相反，这里要求 VR1 ≤ 阈值（今天量不超过近N日最大量的若干倍）。</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <div>参照天数 N（默认 10）</div>
+                  <input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={(bCond3 as any).recent_n ?? 10} onChange={e => setBCond3(p => ({...p, recent_n: parseInt(e.target.value||'10',10)}))} />
+                </div>
+                <div>
+                  <div>VR1 阈值倍数（默认 1.2）</div>
+                  <input type="number" step="0.01" className="mt-1 px-2 py-1 border rounded w-full" value={(bCond3 as any).vr1_max ?? 1.2} onChange={e => setBCond3(p => ({...p, vr1_max: parseFloat(e.target.value||'1.2')}))} />
+                </div>
+              </div>
+            </div>
+            {/* 子模块2：量均比较（短≤长） */}
+            <div className="mt-2 border rounded p-3">
+              <div className="flex items-center justify-between"><div className="text-sm font-medium">子模块2：量均比较（短≤长）</div><label className="inline-flex items-center space-x-2 text-sm"><input type="checkbox" checked={(bCond3 as any).vma_rel_enabled ?? false} onChange={e => setBCond3(p => ({...p, vma_rel_enabled: e.target.checked}))} /><span>启用</span></label></div>
+              <div className="mt-1 text-xs text-gray-500">说明：与 C 点“短量均&gt;长量均”相反，这里要求短期量均≤长期量均。</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <div>短天数（默认 5）</div>
+                  <input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={bCond3.short_days} onChange={e => setBCond3(p => ({...p, short_days: parseInt(e.target.value||'5',10)}))} />
+                </div>
+                <div>
+                  <div>长天数（默认 10）</div>
+                  <input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={bCond3.long_days} onChange={e => setBCond3(p => ({...p, long_days: parseInt(e.target.value||'10',10)}))} />
+                </div>
+              </div>
+            </div>
+            {/* 子模块3：近X日量连降（严格递减） */}
+            <div className="mt-2 border rounded p-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-medium">子模块3：近X日量连降</div>
+                <label className="inline-flex items-center space-x-2 text-sm"><input type="checkbox" checked={(bCond3 as any).vol_down_enabled ?? false} onChange={e => setBCond3(p => ({...p, vol_down_enabled: e.target.checked}))} /><span>启用</span></label>
+              </div>
+              <div className="mt-1 text-xs text-gray-500">说明：要求最近X日（含当日）成交量严格递减，体现缩量走稳。</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <div>X（日）</div>
+                  <input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={(bCond3 as any).vol_decreasing_days ?? 3} onChange={e => setBCond3(p => ({...p, vol_decreasing_days: parseInt(e.target.value||'3',10)}))} />
+                </div>
+              </div>
             </div>
           </div>
 
