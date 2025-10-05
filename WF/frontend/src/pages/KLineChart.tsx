@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
+import AParamsPanel from '../components/AParamsPanel';
+import BParamsPanel from '../components/BParamsPanel';
+import CParamsPanel from '../components/CParamsPanel';
 
 interface KLineData {
   '日期': string;
@@ -729,7 +732,40 @@ export default function KLineChart() {
         <Link to="/" className="text-indigo-600 hover:text-indigo-900">返回股票列表</Link>
       </div>
 
-      {/* 寻找A点（始终展示） */}
+      {/* A 点参数（复用通用面板） */}
+      <AParamsPanel
+        aCond1={aCond1} setACond1={setACond1}
+        aCond2={aCond2} setACond2={setACond2}
+        aCond3={aCond3} setACond3={setACond3}
+        aCondVol={aCondVol} setACondVol={setACondVol}
+        computingA={computingA}
+        actions={(
+          <div>
+            <button
+              className="px-3 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded disabled:opacity-50"
+              onClick={async () => {
+                if (!symbol) return;
+                try {
+                  setComputingA(true);
+                  const body = { '条件1_长期下跌': aCond1, '条件2_短均线上穿': aCond2, '条件3_价格确认': aCond3, '条件4_放量确认': aCondVol };
+                  const r = await fetch(`/api/stocks/${symbol}/a_points_v2`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                  if (!r.ok) throw new Error('计算A点失败');
+                  const data = await r.json();
+                  setAPoints(data.points || []);
+                  setATable(Array.isArray(data.table) ? data.table : []);
+                } catch (e: any) {
+                  alert(e.message || '请求失败');
+                } finally {
+                  setComputingA(false);
+                }
+              }}
+              disabled={computingA}
+            >计算A点</button>
+          </div>
+        )}
+      />
+      {/* 旧版A表单保留为隐藏，逐步删除 */}
+      {false && (
       <div className="mt-4 bg-white p-4 rounded shadow">
         <div className="font-semibold mb-2">寻找A点（基于“长期下跌 + 当日短均线上穿 + 可选价格确认”的原始逻辑）</div>
         <div className="mt-3 space-y-4">
@@ -913,6 +949,7 @@ export default function KLineChart() {
           </div>
         </div>
       </div>
+      )}
 
       
       {/* A点诊断表格 */}
@@ -1053,7 +1090,61 @@ export default function KLineChart() {
         );
       })()}
 
-      {/* 寻找B点（与A点同样每行一个条件，按钮在下） */}
+      {/* B 点参数（复用通用面板） */}
+      <BParamsPanel
+        bCond1={bCond1} setBCond1={setBCond1}
+        bCond2MA={bCond2MA} setBCond2MA={setBCond2MA}
+        bCond2={bCond2} setBCond2={setBCond2}
+        bCond4VR={bCond4VR} setBCond4VR={setBCond4VR}
+        bCond3={bCond3} setBCond3={setBCond3}
+        bCond4={bCond4} setBCond4={setBCond4}
+        computingB={computingB}
+        actions={(
+          <div>
+            <button
+              className="px-3 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded disabled:opacity-50"
+              onClick={async () => {
+                if (!symbol) return;
+                try {
+                  setComputingB(true);
+                  const body: any = {
+                    cond1: { enabled: bCond1.enabled, min_days_from_a: bCond1.min_days_from_a, max_days_from_a: bCond1.max_days_from_a === '' ? null : bCond1.max_days_from_a, allow_multi_b_per_a: bCond1.allow_multi_b_per_a },
+                    cond2: {
+                      enabled: bCond2MA.enabled,
+                      above_maN_window: bCond2MA.above_maN_window,
+                      above_maN_days: bCond2MA.above_maN_days,
+                      above_maN_consecutive: bCond2MA.above_maN_consecutive,
+                      max_maN_below_days: bCond2MA.max_maN_below_days,
+                      long_ma_window: bCond2MA.long_ma_days,
+                      above_maN_ratio: (!bCond2MA.above_maN_consecutive && bCond2MA.above_maN_ratio != null) ? (bCond2MA.above_maN_ratio / 100) : undefined,
+                    },
+                    cond3: bCond2,
+                    cond4: { enabled: bCond4VR.enabled, vr1_max: bCond4VR.vr1_max === '' ? null : bCond4VR.vr1_max, recent_max_vol_window: bCond4VR.recent_max_vol_window },
+                    cond5: { ...bCond3, vma_short_window: bCond3.short_days, vma_long_window: bCond3.long_days, vol_compare_long_window: bCond3.vol_compare_long_window },
+                    cond6: bCond4,
+                    a_points_dates: aPoints.map(p => p.date),
+                  };
+                  const r = await fetch(`/api/stocks/${symbol}/b_points`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                  if (!r.ok) throw new Error('计算B点失败');
+                  const data = await r.json();
+                  setBPoints(data.points || []);
+                  setBTable(Array.isArray(data.table) ? data.table : []);
+                } catch (e: any) {
+                  alert(e.message || '请求失败');
+                } finally {
+                  setComputingB(false);
+                }
+              }}
+              disabled={computingB || aTable.length === 0}
+              title={aTable.length === 0 ? '请先计算A点' : ''}
+            >计算B点</button>
+            {aTable.length === 0 && (
+              <span className="ml-3 text-xs text-gray-500">请先计算A点后再计算B点</span>
+            )}
+          </div>
+        )}
+      />
+      {false && (
       <div className="mt-4 bg-white p-4 rounded shadow">
         <div className="font-semibold mb-2">寻找B点（基于 A→B 条件组合）</div>
         <div className="mt-3 space-y-4">
@@ -1369,6 +1460,8 @@ export default function KLineChart() {
         </div>
       </div>
 
+      )}
+
       {computingB && (
         <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center">
           <div className="bg-white rounded px-6 py-4 shadow text-sm">正在计算B点，请稍候...</div>
@@ -1529,7 +1622,48 @@ export default function KLineChart() {
         );
       })()}
 
-      {/* 寻找C点（基于 B→C 条件组合） */}
+      {/* C 点参数（复用通用面板） */}
+      <CParamsPanel
+        cCond1={cCond1} setCCond1={setCCond1}
+        cCond2={cCond2} setCCond2={setCCond2}
+        cCond3={cCond3} setCCond3={setCCond3}
+        computingC={computingC}
+        actions={(
+          <div>
+            <button
+              className="px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded disabled:opacity-50"
+              onClick={async () => {
+                if (!symbol) return;
+                try {
+                  setComputingC(true);
+                  const body: any = {
+                    cond1: cCond1,
+                    cond2: cCond2,
+                    cond3: cCond3,
+                    a_points_dates: aPoints.map(p => p.date),
+                    b_points_dates: bPoints.map(p => p.date),
+                  };
+                  const r = await fetch(`/api/stocks/${symbol}/c_points`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                  if (!r.ok) throw new Error('计算C点失败');
+                  const data = await r.json();
+                  setCPoints(data.points || []);
+                  setCTable(Array.isArray(data.table) ? data.table : []);
+                } catch (e: any) {
+                  alert(e.message || '请求失败');
+                } finally {
+                  setComputingC(false);
+                }
+              }}
+              disabled={computingC || bPoints.length === 0}
+              title={bPoints.length === 0 ? '请先计算B点' : ''}
+            >计算C点</button>
+            {bPoints.length === 0 && (
+              <span className="ml-3 text-xs text-gray-500">请先计算B点后再计算C点</span>
+            )}
+          </div>
+        )}
+      />
+      {false && (
       <div className="mt-6 bg-white p-4 rounded shadow">
         <div className="font-semibold mb-2">寻找C点（基于 B→C 条件组合）</div>
         <div className="grid grid-cols-1 gap-3">
@@ -1671,8 +1805,9 @@ export default function KLineChart() {
               <span className="ml-3 text-xs text-gray-500">请先计算B点后再计算C点</span>
             )}
           </div>
+        </div>
       </div>
-    </div>
+      )}
 
     {computingC && (
       <div className="fixed inset-0 bg-black/30 z-50 flex items-center justify-center" aria-live="polite" aria-busy>
