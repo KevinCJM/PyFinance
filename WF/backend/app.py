@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any
 
 # Assuming data_service.py is in the services directory
 from services.data_service import get_stock_data, get_stock_info
-from services.tushare_get_data import fetch_stock_daily
+from services.tushare_get_data import fetch_stock_daily, fetch_many_daily
 from services.analysis_service import find_a_points, find_b_points, find_c_points
 from starlette.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse, FileResponse
@@ -221,31 +221,41 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
             raise RuntimeError("股票列表缺少 symbol 列")
         with JOBS_LOCK:
             job['total'] = len(symbols)
-        for i, sym in enumerate(symbols, start=1):
+
+        # 从 job 读取并发、限频、增量参数
+        with JOBS_LOCK:
+            max_workers = int(job.get('max_workers', 4) or 4)
+            max_cps = float(job.get('max_calls_per_second', 8.0) or 8.0)
+            resume = bool(job.get('resume', True))
+            force = bool(job.get('force', False))
+            start_date = job.get('start_date', None)
+            end_date = job.get('end_date', None)
+
+        def _on_progress(res):
             with JOBS_LOCK:
                 job = JOBS.get(job_id)
-                if not job or job.get('status') == 'cancelled':
+                if not job:
                     return
-            try:
-                _log(job, f"开始获取 {sym} (tushare) ...")
-                # 使用 Tushare 接口抓取并保存到 backend/data/{code}.parquet
-                data = fetch_stock_daily(sym)
-                if data is None or data.empty:
-                    raise RuntimeError("返回空数据")
-                with JOBS_LOCK:
-                    job['done'] += 1
+                job['done'] += 1
+                if res.ok:
                     job['success'] += 1
-                    job['last_symbol'] = sym
-                _log(job, f"成功 {sym}（{i}/{len(symbols)}）")
-            except Exception as e:
-                with JOBS_LOCK:
-                    job['done'] += 1
+                else:
                     job['fail'] += 1
-                    job.setdefault('failed', []).append(sym)
-                    job['last_symbol'] = sym
-                _log(job, f"失败 {sym}: {type(e).__name__} {e}")
-            # 0~1 秒随机休眠
-            time.sleep(random.random() * float(sleep_max))
+                    job.setdefault('failed', []).append(res.code)
+                job['last_symbol'] = res.code
+                action = getattr(res, 'action', None)
+            _log(job, f"完成 {res.code} ({'ok' if res.ok else 'fail'}) action={action}")
+
+        fetch_many_daily(
+            symbols,
+            start_date=start_date,
+            end_date=end_date,
+            max_workers=max_workers,
+            max_calls_per_second=max_cps,
+            resume=resume,
+            force=force,
+            on_progress=_on_progress,
+        )
         with JOBS_LOCK:
             job['status'] = 'finished'
             job['finished_at'] = datetime.datetime.now().isoformat()
@@ -285,6 +295,20 @@ def start_fetch_all(payload: Dict[str, Any] = Body(default=None), sleep_max: flo
             JOBS[job_id]['symbols'] = [str(s).strip() for s in syms if str(s).strip()]
         if mkt:
             JOBS[job_id]['market'] = str(mkt).strip()
+        # 可选参数：并发与限频/增量
+        if isinstance(payload, dict):
+            if 'max_workers' in payload:
+                JOBS[job_id]['max_workers'] = int(payload.get('max_workers') or 4)
+            if 'max_calls_per_second' in payload:
+                JOBS[job_id]['max_calls_per_second'] = float(payload.get('max_calls_per_second') or 8.0)
+            if 'resume' in payload:
+                JOBS[job_id]['resume'] = bool(payload.get('resume'))
+            if 'force' in payload:
+                JOBS[job_id]['force'] = bool(payload.get('force'))
+            if 'start_date' in payload:
+                JOBS[job_id]['start_date'] = payload.get('start_date')
+            if 'end_date' in payload:
+                JOBS[job_id]['end_date'] = payload.get('end_date')
     t = threading.Thread(target=_run_fetch_all, args=(job_id, sleep_max), daemon=True)
     t.start()
     return {'job_id': job_id}

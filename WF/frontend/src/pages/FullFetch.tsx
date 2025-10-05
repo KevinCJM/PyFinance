@@ -24,6 +24,11 @@ export default function FullFetch() {
   // 过滤参数
   const [symbolsText, setSymbolsText] = useState('');
   const [market, setMarket] = useState('');
+  // 并发与限频
+  const [maxWorkers, setMaxWorkers] = useState<number>(Math.max(1, navigator.hardwareConcurrency ? navigator.hardwareConcurrency - 1 : 4));
+  const [maxCps, setMaxCps] = useState<number>(8);
+  const [resume, setResume] = useState<boolean>(true);
+  const [force, setForce] = useState<boolean>(false);
 
   useEffect(() => {
     if (!jobId) return;
@@ -78,6 +83,19 @@ export default function FullFetch() {
               </select>
               <div className="text-xs text-gray-500 mt-1">若同时指定股票与板块，则仅对交集执行。</div>
             </div>
+            <div>
+              <div className="font-medium">最大并发线程数</div>
+              <input className="mt-1 w-full border rounded p-2" type="number" value={maxWorkers} onChange={e => setMaxWorkers(Math.max(1, parseInt(e.target.value||'1',10)))} />
+            </div>
+            <div>
+              <div className="font-medium">每秒最大调用次数（限频）</div>
+              <input className="mt-1 w-full border rounded p-2" type="number" step="0.1" value={maxCps} onChange={e => setMaxCps(Math.max(0.1, parseFloat(e.target.value||'8')))} />
+            </div>
+          </div>
+          <div className="text-xs text-gray-600">增量与重抓：默认增量（自动断点续跑）；如果发现历史异常可勾选“强制重抓”。</div>
+          <div className="text-sm flex items-center gap-4">
+            <label className="inline-flex items-center gap-2"><input type="checkbox" checked={resume} onChange={e => setResume(e.target.checked)} /><span>增量续跑</span></label>
+            <label className="inline-flex items-center gap-2"><input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} /><span>强制重抓</span></label>
           </div>
           <div>
             <button className="px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded" onClick={async () => {
@@ -86,6 +104,10 @@ export default function FullFetch() {
                 const payload: any = {};
                 if (symbols.length) payload.symbols = symbols;
                 if (market) payload.market = market;
+                payload.max_workers = maxWorkers;
+                payload.max_calls_per_second = maxCps;
+                payload.resume = resume;
+                payload.force = force;
                 const r = await fetch('/api/fetch_all/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 if (!r.ok) throw new Error('启动任务失败');
                 const data = await r.json();

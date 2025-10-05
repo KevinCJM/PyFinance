@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Callable, Any
 
 import pandas as pd
 
@@ -52,9 +52,14 @@ def _load_token() -> str:
 # Keep consistent with data_service.py
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+META_DIR = DATA_DIR / ".meta"
+META_DIR.mkdir(parents=True, exist_ok=True)
+META_INDEX = META_DIR / "meta_index.json"
 
 
 _PRO = None
+_TRADE_CAL_CACHE: Optional[pd.DataFrame] = None
+_TRADE_CAL_LAST_FETCH: Optional[str] = None  # YYYYMMDD
 
 
 def get_pro():
@@ -105,6 +110,71 @@ def _normalize_daily_df(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
+def _today_yyyymmdd() -> str:
+    return pd.to_datetime("today").strftime("%Y%m%d")
+
+
+def get_trade_calendar(pro=None) -> pd.DataFrame:
+    """Get and cache trade calendar from Tushare (SSE)."""
+    global _TRADE_CAL_CACHE, _TRADE_CAL_LAST_FETCH
+    today = _today_yyyymmdd()
+    if _TRADE_CAL_CACHE is not None and _TRADE_CAL_LAST_FETCH == today:
+        return _TRADE_CAL_CACHE
+    pro = pro or get_pro()
+    df = pro.trade_cal(exchange='SSE', start_date='20100101', end_date=today)
+    # Expect columns: cal_date, is_open
+    _TRADE_CAL_CACHE = df
+    _TRADE_CAL_LAST_FETCH = today
+    return df
+
+
+def get_last_trading_day(pro=None) -> str:
+    """Return last trading day as YYYY-MM-DD (based on SSE calendar)."""
+    cal = get_trade_calendar(pro)
+    d = cal[cal['is_open'] == 1]['cal_date'].max()
+    if not isinstance(d, str):
+        d = str(d)
+    # to YYYY-MM-DD
+    return pd.to_datetime(d).strftime('%Y-%m-%d')
+
+
+def _read_parquet_last_date_fast(code: str) -> Optional[str]:
+    p = DATA_DIR / f"{code}.parquet"
+    if not p.exists():
+        return None
+    try:
+        df = pd.read_parquet(p, columns=['日期'])
+        if df.empty:
+            return None
+        return str(df['日期'].iloc[-1])
+    except Exception:
+        return None
+
+
+def load_meta_index() -> Dict[str, Dict[str, Any]]:
+    if not META_INDEX.exists():
+        return {}
+    try:
+        return pd.read_json(META_INDEX).to_dict(orient='index')
+    except Exception:
+        # Fallback to plain json
+        import json
+        try:
+            return json.loads(META_INDEX.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+
+
+def save_meta_index(meta: Dict[str, Dict[str, Any]]):
+    try:
+        import json, tempfile, os
+        tmp = META_INDEX.with_suffix('.json.tmp')
+        tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=0), encoding='utf-8')
+        os.replace(tmp, META_INDEX)
+    except Exception:
+        pass
+
+
 def fetch_stock_daily(
     code: str,
     *,
@@ -145,18 +215,176 @@ class FetchResult:
 
 
 class RateLimiter:
-    """Simple time-based rate limiter: allow up to `max_calls_per_second` across threads."""
+    """Adaptive time-based rate limiter shared across threads."""
 
-    def __init__(self, max_calls_per_second: float):
-        self.interval = 1.0 / max(float(max_calls_per_second), 0.1)
+    def __init__(self, max_calls_per_second: float, min_cps: float = 1.0, max_cps: float | None = None):
+        import threading
+        self._lock = threading.Lock()
+        self._cps0 = float(max(0.1, max_calls_per_second))
+        self._cps = float(max(0.1, max_calls_per_second))
+        self._min = float(max(0.1, min_cps))
+        self._max = float(max_cps) if max_cps else float(max_calls_per_second)
         self._last = 0.0
+        self._penalty = 0  # error bursts lower CPS
 
     def acquire(self):
+        with self._lock:
+            interval = 1.0 / max(self._min, min(self._cps, self._max))
+            last = self._last
         now = time.time()
-        delta = now - self._last
-        if delta < self.interval:
-            time.sleep(self.interval - delta)
-        self._last = time.time()
+        delta = now - last
+        if delta < interval:
+            time.sleep(interval - delta)
+        with self._lock:
+            self._last = time.time()
+
+    def feedback(self, ok: bool):
+        with self._lock:
+            if ok:
+                # slowly increase
+                self._penalty = max(0, self._penalty - 1)
+                self._cps = min(self._max, self._cps * (1.0 + 0.02))
+            else:
+                # shrink quickly when errors (e.g., rate limit)
+                self._penalty += 1
+                factor = 0.5 if self._penalty >= 2 else 0.7
+                self._cps = max(self._min, self._cps * factor)
+
+
+@dataclass
+class IncrementalResult(FetchResult):
+    action: str = 'skip'  # 'skip' | 'incremental' | 'full'
+    added_rows: int = 0
+    last_date: Optional[str] = None
+
+
+def fetch_stock_daily_incremental(
+    code: str,
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    resume: bool = True,
+    force: bool = False,
+    limiter: Optional[RateLimiter] = None,
+) -> IncrementalResult:
+    """Incremental fetch for a single stock using meta_index + last trading day.
+
+    - If resume and data up-to-date to last trading day: skip
+    - Else, fetch from max(meta_last_date+1, start_date) to end_date (or today)
+    - Merge and write atomically; update meta_index
+    """
+    pro = get_pro()
+    ts_c = _guess_ts_code(code)
+    meta = load_meta_index()
+    last_trading = get_last_trading_day(pro)
+    end_ymd = (end_date or _today_yyyymmdd())
+    # convert for comparison
+    last_trading_iso = last_trading
+    mi = meta.get(code, {}) if resume else {}
+    meta_last = mi.get('last_date')
+
+    # Up-to-date check
+    if resume and not force and meta_last:
+        try:
+            if pd.to_datetime(meta_last) >= pd.to_datetime(last_trading_iso):
+                return IncrementalResult(code=code, ok=True, rows=int(mi.get('rows', 0)), action='skip', added_rows=0, last_date=meta_last)
+        except Exception:
+            pass
+
+    # Determine fetch start
+    if resume and meta_last:
+        s_dt = (pd.to_datetime(meta_last) + pd.Timedelta(days=1)).strftime('%Y%m%d')
+    else:
+        s_dt = start_date
+    params: Dict[str, Optional[str]] = {"ts_code": ts_c}
+    if s_dt:
+        params['start_date'] = s_dt
+    if end_ymd:
+        params['end_date'] = end_ymd
+
+    # Call API
+    if limiter:
+        limiter.acquire()
+    try:
+        raw = pro.daily(**params)
+        if limiter:
+            limiter.feedback(True)
+    except Exception as e:
+        if limiter:
+            limiter.feedback(False)
+        return IncrementalResult(code=code, ok=False, rows=int(mi.get('rows', 0)), error=f"{type(e).__name__}: {e}")
+
+    new_df = _normalize_daily_df(raw)
+
+    p = DATA_DIR / f"{code}.parquet"
+    old_df = None
+    if p.exists():
+        try:
+            old_df = pd.read_parquet(p)
+        except Exception:
+            old_df = None
+
+    if (old_df is None or old_df.empty) and (resume and meta_last) and new_df.empty:
+        # meta 声称有数据，但文件丢失且没有新数据；降级为读历史全量
+        params_f = {"ts_code": ts_c}
+        if start_date:
+            params_f['start_date'] = start_date
+        if end_ymd:
+            params_f['end_date'] = end_ymd
+        if limiter:
+            limiter.acquire()
+        try:
+            raw_full = pro.daily(**params_f)
+            if limiter:
+                limiter.feedback(True)
+        except Exception as e:
+            if limiter:
+                limiter.feedback(False)
+            return IncrementalResult(code=code, ok=False, rows=0, error=f"{type(e).__name__}: {e}")
+        new_df = _normalize_daily_df(raw_full)
+        action = 'full'
+        merged = new_df
+    else:
+        if old_df is None or old_df.empty:
+            merged = new_df
+            action = 'full'
+        else:
+            if new_df.empty:
+                # nothing to add
+                cur_rows = len(old_df)
+                last = str(old_df['日期'].iloc[-1]) if cur_rows else None
+                meta[code] = {
+                    'last_date': last,
+                    'rows': cur_rows,
+                    'updated_at': pd.Timestamp.utcnow().isoformat(),
+                    'source': 'tushare_daily',
+                    'schema_version': 1,
+                }
+                save_meta_index(meta)
+                return IncrementalResult(code=code, ok=True, rows=cur_rows, action='skip', added_rows=0, last_date=last)
+            merged = pd.concat([old_df, new_df], ignore_index=True)
+            merged = merged.drop_duplicates(subset=['日期'], keep='last').sort_values('日期').reset_index(drop=True)
+            action = 'incremental'
+
+    rows = len(merged)
+    last = str(merged['日期'].iloc[-1]) if rows else None
+    # atomic write
+    tmp = p.with_suffix('.parquet.tmp')
+    merged.to_parquet(tmp, index=False)
+    import os as _os
+    _os.replace(tmp, p)
+
+    meta[code] = {
+        'last_date': last,
+        'rows': rows,
+        'updated_at': pd.Timestamp.utcnow().isoformat(),
+        'source': 'tushare_daily',
+        'schema_version': 1,
+    }
+    save_meta_index(meta)
+
+    added = 0 if action == 'full' else (0 if old_df is None else max(0, rows - len(old_df)))
+    return IncrementalResult(code=code, ok=True, rows=rows, action=action, added_rows=int(added), last_date=last)
 
 
 def fetch_many_daily(
@@ -166,8 +394,11 @@ def fetch_many_daily(
     end_date: Optional[str] = None,
     max_workers: int = 4,
     max_calls_per_second: float = 8.0,
+    resume: bool = True,
+    force: bool = False,
+    on_progress: Optional[Callable[[IncrementalResult], None]] = None,
 ) -> Dict[str, FetchResult]:
-    """Batch fetch daily kline for multiple stocks with basic rate limiting.
+    """Batch fetch daily kline (incremental) with adaptive rate limiting.
 
     Returns dict of code -> FetchResult.
     """
@@ -177,9 +408,20 @@ def fetch_many_daily(
 
     def _task(c: str) -> FetchResult:
         try:
-            limiter.acquire()
-            df = fetch_stock_daily(c, start_date=start_date, end_date=end_date)
-            return FetchResult(code=c, ok=True, rows=int(len(df)))
+            res = fetch_stock_daily_incremental(
+                c,
+                start_date=start_date,
+                end_date=end_date,
+                resume=resume,
+                force=force,
+                limiter=limiter,
+            )
+            if on_progress:
+                try:
+                    on_progress(res)
+                except Exception:
+                    pass
+            return FetchResult(code=res.code, ok=res.ok, rows=res.rows, error=res.error)
         except Exception as e:  # pragma: no cover - error path covered in separate test
             return FetchResult(code=c, ok=False, error=f"{type(e).__name__}: {e}")
 
@@ -193,6 +435,11 @@ def fetch_many_daily(
 
 __all__ = [
     "fetch_stock_daily",
+    "fetch_stock_daily_incremental",
     "fetch_many_daily",
     "get_pro",
+    "get_trade_calendar",
+    "get_last_trading_day",
+    "load_meta_index",
+    "save_meta_index",
 ]
