@@ -13,7 +13,7 @@ from services.data_service import get_stock_data, get_stock_info
 from services.tushare_get_data import fetch_stock_daily
 from services.analysis_service import find_a_points, find_b_points, find_c_points
 from starlette.staticfiles import StaticFiles
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, FileResponse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
@@ -1360,7 +1360,16 @@ def get_stock_info_api(symbol: str):
 # ---- 静态页面托管 ----
 DIST_DIR = Path(__file__).parent.parent / "frontend" / "dist"
 if DIST_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="static")
+    # 仅挂载静态资源目录，SPA 路由由下方 fallback 处理
+    assets_dir = DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+    # Vite 的图标
+    vite_svg = DIST_DIR / "vite.svg"
+    if vite_svg.exists():
+        @app.get("/vite.svg")
+        def vite_svg_file():
+            return FileResponse(str(vite_svg))
 
 
 @app.get("/{full_path:path}")
