@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any
 
 # Assuming data_service.py is in the services directory
 from services.data_service import get_stock_data, get_stock_info
-from services.tushare_get_data import fetch_stock_daily, fetch_many_daily, get_last_trading_day
+from services.tushare_get_data import fetch_stock_daily, fetch_many_daily, get_last_trading_day, fetch_stock_basic_and_save
 from services.analysis_service import find_a_points, find_b_points, find_c_points
 from starlette.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse, FileResponse
@@ -424,6 +424,16 @@ def abc_batch_active():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/api/stocks_basic/refresh")
+def refresh_stock_basic(list_status: str = 'L'):
+    """Fetch stock basic list via Tushare and save to data/stock_basic.parquet."""
+    try:
+        df = fetch_stock_basic_and_save(list_status=list_status)
+        return {"count": int(len(df))}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"刷新股票基础信息失败: {e}")
 
 
 @app.get("/api/stocks")

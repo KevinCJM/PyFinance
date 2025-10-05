@@ -440,3 +440,23 @@ __all__ = [
     "load_meta_index",
     "save_meta_index",
 ]
+
+
+def fetch_stock_basic_and_save(list_status: str = 'L') -> pd.DataFrame:
+    """Fetch stock_basic from Tushare and save to backend/data/stock_basic.parquet.
+
+    Args:
+      list_status: 'L' 上市, 'D' 退市, 'P' 暂停上市。默认仅拉取在市股票。
+    """
+    pro = get_pro()
+    # 选择常用字段，减少体积
+    fields = 'ts_code,symbol,name,fullname,market,exchange,area,industry,list_status,list_date'
+    df = pro.stock_basic(exchange='', list_status=list_status, fields=fields)
+    # 统一字段类型与格式：list_date -> YYYY-MM-DD
+    if 'list_date' in df.columns:
+        s = pd.to_datetime(df['list_date'], errors='coerce')
+        df['list_date'] = s.dt.strftime('%Y-%m-%d')
+    out = df.copy()
+    out_path = DATA_DIR / 'stock_basic.parquet'
+    out.to_parquet(out_path, index=False)
+    return out
