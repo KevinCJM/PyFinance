@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any
 
 # Assuming data_service.py is in the services directory
 from services.data_service import get_stock_data, get_stock_info
-from services.tushare_get_data import fetch_stock_daily, fetch_many_daily
+from services.tushare_get_data import fetch_stock_daily, fetch_many_daily, get_last_trading_day
 from services.analysis_service import find_a_points, find_b_points, find_c_points
 from starlette.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse, FileResponse
@@ -62,6 +62,7 @@ def _abc_worker(symbol: str, a_params: Dict[str, Any], b_params: Dict[str, Any],
     out_dir = (ANALYSIS_DIR / symbol)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    t0 = pd.Timestamp.utcnow()
     # A 点
     a_res = compute_a_points_v2(symbol, a_params)
     a_pts = a_res.get('points', []) or []
@@ -103,12 +104,14 @@ def _abc_worker(symbol: str, a_params: Dict[str, Any], b_params: Dict[str, Any],
     if not c_tbl.empty:
         c_tbl.to_excel(out_dir / 'C_point.xlsx', index=False)
 
+    elapsed = (pd.Timestamp.utcnow() - t0).total_seconds() * 1000.0
     return {
         'symbol': symbol,
         'a_count': int(len(a_pts)),
         'b_count': int(len(b_pts)),
         'c_count': int(len(c_res.get('points', []) or [])),
         'b_recent': bool(b_recent),
+        'elapsed_ms': int(elapsed),
     }
 
 
@@ -152,6 +155,8 @@ def _run_abc_batch(job_id: str):
             max_workers = max(1, min(cpu_n, req_workers))
         else:
             max_workers = max(1, cpu_n - 1)
+        # 记录启动信息
+        _log(job, f"启动ABC批量：目标股票数={len(symbols)} 并发进程={max_workers}")
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
             futures = [ex.submit(_abc_worker, sym, a_params, b_params, c_params) for sym in symbols]
             for fut in as_completed(futures):
@@ -172,7 +177,7 @@ def _run_abc_batch(job_id: str):
                             }
                             job.setdefault('b_recent', [])
                             job['b_recent'].append(entry)
-                    _log(job, f"完成 {sym}")
+                    _log(job, f"完成 {sym} A={res.get('a_count')} B={res.get('b_count')} C={res.get('c_count')} 耗时={res.get('elapsed_ms')}ms")
                 except Exception as e:
                     with JOBS_LOCK:
                         job = JOBS.get(job_id)
@@ -231,6 +236,13 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
             start_date = job.get('start_date', None)
             end_date = job.get('end_date', None)
 
+        # 日志：参数与交易日
+        try:
+            last_trading = get_last_trading_day()
+            _log(job, f"启动获取：目标股票数={len(symbols)} 并发线程={max_workers} 限频CPS={max_cps} resume={resume} force={force} 最后交易日={last_trading}")
+        except Exception:
+            _log(job, f"启动获取：目标股票数={len(symbols)} 并发线程={max_workers} 限频CPS={max_cps} resume={resume} force={force}")
+
         def _on_progress(res):
             with JOBS_LOCK:
                 job = JOBS.get(job_id)
@@ -259,7 +271,7 @@ def _run_fetch_all(job_id: str, sleep_max: float = 1.0):
         with JOBS_LOCK:
             job['status'] = 'finished'
             job['finished_at'] = datetime.datetime.now().isoformat()
-        _log(job, "全量获取完成")
+        _log(job, f"全量获取完成：done={job['done']} success={job['success']} fail={job['fail']}")
     except Exception as e:
         with JOBS_LOCK:
             job['status'] = 'error'
@@ -388,8 +400,24 @@ def abc_batch_status(job_id: str):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
-            raise HTTPException(status_code=404, detail='job not found')
+            return {'job_id': job_id, 'status': 'unknown'}
         return dict(job)
+
+
+@app.get("/api/abc_batch/active")
+def abc_batch_active():
+    """Return the latest running abc_batch job if any."""
+    with JOBS_LOCK:
+        items = [j for j in JOBS.values() if j.get('type') == 'abc_batch' and j.get('status') == 'running']
+    if not items:
+        return {'job_id': None}
+    def _ts(j):
+        try:
+            return datetime.datetime.fromisoformat(j.get('started_at') or '')
+        except Exception:
+            return datetime.datetime.min
+    items.sort(key=_ts, reverse=True)
+    return dict(items[0])
 
 
 @app.get("/api/health")

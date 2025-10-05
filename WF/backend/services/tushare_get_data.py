@@ -152,17 +152,14 @@ def _read_parquet_last_date_fast(code: str) -> Optional[str]:
 
 
 def load_meta_index() -> Dict[str, Dict[str, Any]]:
+    """Load meta index using json to avoid pandas datetime inference warnings."""
     if not META_INDEX.exists():
         return {}
+    import json
     try:
-        return pd.read_json(META_INDEX).to_dict(orient='index')
+        return json.loads(META_INDEX.read_text(encoding='utf-8'))
     except Exception:
-        # Fallback to plain json
-        import json
-        try:
-            return json.loads(META_INDEX.read_text(encoding='utf-8'))
-        except Exception:
-            return {}
+        return {}
 
 
 def save_meta_index(meta: Dict[str, Dict[str, Any]]):
