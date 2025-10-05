@@ -30,6 +30,23 @@ export default function FullFetch() {
   const [resume, setResume] = useState<boolean>(true);
   const [force, setForce] = useState<boolean>(false);
 
+  // 进入页面时，若已有运行中的任务，则直接接管显示
+  useEffect(() => {
+    if (jobId) return;
+    const probe = async () => {
+      try {
+        const r = await fetch('/api/fetch_all/active');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j && j.job_id) {
+          setJobId(j.job_id);
+          setStatus(j);
+        }
+      } catch {}
+    };
+    probe();
+  }, [jobId]);
+
   useEffect(() => {
     if (!jobId) return;
     let timer: any;

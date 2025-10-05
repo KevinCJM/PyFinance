@@ -272,6 +272,7 @@ def start_fetch_all(payload: Dict[str, Any] = Body(default=None), sleep_max: flo
     job_id = uuid.uuid4().hex[:8]
     job = {
         'job_id': job_id,
+        'type': 'fetch_all',
         'status': 'running',
         'started_at': datetime.datetime.now().isoformat(),
         'finished_at': None,
@@ -324,6 +325,24 @@ def fetch_all_status(job_id: str):
         return dict(job)
 
 
+@app.get("/api/fetch_all/active")
+def fetch_all_active():
+    """Return the latest running fetch_all job if any."""
+    with JOBS_LOCK:
+        items = [j for j in JOBS.values() if j.get('type') == 'fetch_all' and j.get('status') == 'running']
+    if not items:
+        return {'job_id': None}
+    # pick the latest by started_at
+    def _ts(j):
+        try:
+            return datetime.datetime.fromisoformat(j.get('started_at') or '')
+        except Exception:
+            return datetime.datetime.min
+    items.sort(key=_ts, reverse=True)
+    job = dict(items[0])
+    return job
+
+
 # ---- ABC 批量分析 API ----
 
 @app.post("/api/abc_batch/start")
@@ -331,6 +350,7 @@ def start_abc_batch(params: Dict[str, Any]):
     job_id = uuid.uuid4().hex[:8]
     job = {
         'job_id': job_id,
+        'type': 'abc_batch',
         'status': 'running',
         'started_at': datetime.datetime.now().isoformat(),
         'finished_at': None,
