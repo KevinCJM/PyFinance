@@ -374,19 +374,24 @@ if __name__ == "__main__":
     #     output_dir=OUTPUT_DIR,
     # )
 
-    # 获取 ETF 日线行情数据
-    main_candle(
-        pro=the_pro,
-        max_workers=MAX_WORKERS,
-        max_retries=MAX_RETRIES,
-        backoff_sec=RETRY_BACKOFF_SEC,
-        output_dir=OUTPUT_DIR,
-    )
-
+    # # 获取 ETF 日线行情数据
+    # main_candle(
+    #     pro=the_pro,
+    #     max_workers=MAX_WORKERS,
+    #     max_retries=MAX_RETRIES,
+    #     backoff_sec=RETRY_BACKOFF_SEC,
+    #     output_dir=OUTPUT_DIR,
+    # )
+    #
     # 获取交易日历数据
-    trade_day_df = the_pro.trade_cal(exchange='SSE', start_date='20100101',
-                                     end_date=pd.to_datetime('today').strftime('%Y%m%d'))
+    trade_day_df = pro.trade_cal(exchange='SSE', start_date='20100101', end_date=pd.to_datetime('today').strftime('%Y%m%d'))
     trade_day_df.to_parquet(os.path.join(OUTPUT_DIR, "trade_day_df.parquet"), index=False)
     print(f"已保存交易日历 Parquet：{os.path.join(OUTPUT_DIR, 'trade_day_df.parquet')}，共 {len(trade_day_df)} 行")
     df = pd.read_parquet("data/etf_daily_df.parquet")
     print(df)
+
+    data = the_pro.stock_basic(exchange='', list_status='L',
+                               fields='ts_code,symbol,name,fullname,market,exchange,area,industry,list_date,list_status')
+    data.to_parquet("data/stock_basic.parquet", index=False)
+    data.to_excel("data/stock_basic.xlsx", index=False)
+    print(data)

@@ -332,7 +332,8 @@ def fetch_all_status(job_id: str):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
-            raise HTTPException(status_code=404, detail='job not found')
+            # 返回未知状态，避免 404 噪音；前端据此停止旧任务轮询
+            return {"job_id": job_id, "status": "unknown"}
         # 返回浅拷贝，避免并发修改
         return dict(job)
 

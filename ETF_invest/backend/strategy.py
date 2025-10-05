@@ -151,6 +151,25 @@ def compute_target_weights(
         res = minimize(lambda w: -ret_of(w), np.full(n, 1.0/n), method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter':400,'ftol':1e-9})
         w = res.x if res.success else np.full(n, 1.0/n)
         return [float(x) for x in w / max(1e-12, w.sum())]
+    elif target == 'max_sharpe_traditional':
+        from scipy.optimize import minimize
+        # This target uses a fixed traditional Sharpe Ratio definition.
+        days = int(return_cfg.get('days', 252)) # Still need days for annualization
+        
+        def neg_traditional_sharpe(w: np.ndarray) -> float:
+            p = X @ w
+            # Hardcoded traditional metrics
+            r = calculate_return(p, {'metric': 'annual', 'days': days})
+            v = calculate_risk(p, {'metric': 'annual_vol', 'days': days})
+            if v <= 1e-12:
+                return 1e6
+            # Traditional formula with risk-free rate
+            return - (r - float(risk_free_rate)) / v
+            
+        w0 = np.full(n, 1.0/n)
+        res = minimize(neg_traditional_sharpe, w0, method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter': 500, 'ftol': 1e-9})
+        w = res.x if res.success else w0
+        return [float(x) for x in w / max(1e-12, w.sum())]
     elif target == 'max_sharpe':
         from scipy.optimize import minimize
         def neg_sharpe(w: np.ndarray) -> float:
@@ -159,7 +178,7 @@ def compute_target_weights(
             v = calculate_risk(p, risk_cfg)
             if v <= 1e-12:
                 return 1e6
-            return - (r - float(risk_free_rate)) / v
+            return - r / v
         w0 = np.full(n, 1.0/n)
         res = minimize(neg_sharpe, w0, method='SLSQP', bounds=bounds, constraints=cons, options={'maxiter': 500, 'ftol': 1e-9})
         w = res.x if res.success else w0

@@ -22,7 +22,7 @@ def calculate_return(returns: np.ndarray, config: Dict[str, Any]) -> float:
         return np.mean(returns)
     elif metric == 'cumulative':
         return np.sum(returns)
-    elif metric == 'annual':
+    elif metric == 'annual' or metric == 'annual_mean':
         days = int(config.get('days', 252))
         return np.mean(returns) * days
     elif metric == 'ewm':

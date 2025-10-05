@@ -32,7 +32,15 @@ except ImportError:
 
 
 def _make_rng(seed: int):
-    """Create a NumPy RandomState for compatibility with NumPy<=1.16."""
+    """
+    创建一个随机数生成器实例。
+
+    参数:
+        seed (int): 随机数生成器的种子值，用于初始化随机状态
+
+    返回:
+        numpy.random.RandomState: 基于指定种子初始化的随机数生成器对象
+    """
     return np.random.RandomState(int(seed))
 
 
@@ -418,10 +426,29 @@ if HAS_NUMBA:
             tol: float = 1e-9,
             damping: float = 1.0,
     ):
+        """
+        创建一个POCS（Projection Onto Convex Sets）投影器函数
+
+        该函数构建一个投影器，用于将向量投影到由单个变量约束和多个变量联合约束定义的凸集上。
+        使用numba加速的投影算法实现。
+
+        参数:
+            single_limits: 每个变量的单独边界约束，格式为[(low_0, high_0), (low_1, high_1), ...]
+            multi_limits: 多变量联合约束字典，键为变量索引元组，值为(下界, 上界)元组
+            max_iter: 最大迭代次数，默认为200
+            tol: 收敛容差，默认为1e-9
+            damping: 阻尼因子，默认为1.0
+
+        返回:
+            project: 投影函数，接受一个numpy数组作为输入，返回投影后的数组或None（如果失败）
+        """
+        # 处理单变量边界约束
         single_limits = tuple(single_limits)
         n = len(single_limits)
         lows = np.array([a for a, _ in single_limits], dtype=np.float32)
         highs = np.array([b for _, b in single_limits], dtype=np.float32)
+
+        # 构建多变量约束的组结构
         members, gid, gsize, low_g, up_g = _build_group_struct(multi_limits, n)
         members = members.astype(np.int64)
         gid = gid.astype(np.int64)
@@ -432,6 +459,15 @@ if HAS_NUMBA:
         inv_n = 1.0 / float(n)
 
         def project(v: np.ndarray):
+            """
+            执行POCS投影操作
+
+            参数:
+                v: 需要投影的输入向量
+
+            返回:
+                投影后的向量，如果投影失败则返回None
+            """
             vv = np.array(v, dtype=np.float32, copy=True)
             ok, x = _pocs_project_numba(
                 vv, lows, highs, members, gid, gsize, low_g, up_g,
@@ -1120,12 +1156,30 @@ def _quantize_weights_batch_if_needed(
         use_numba: Optional[bool] = None,
         parallel_workers: Optional[int] = None,
 ) -> np.ndarray:
-    """按需对一批权重量化；失败的行丢弃。precision_choice=None 时原样返回。"""
+    """
+    按需对一批权重量化；失败的行将被丢弃。
+
+    如果 precision_choice 为 None，则直接返回原始权重矩阵。
+
+    参数:
+        W: 权重矩阵，形状为 (M, N)，每一行代表一个权重向量。
+        precision_choice: 精度选项字符串，用于解析量化步长。若为 None 或无效值则跳过量化。
+        single_limits: 单个维度上的限制区间列表，用于投影量化。
+        multi_limits: 多个维度组合的限制区间字典，键为维度索引元组，值为对应的区间。
+        rounds: 量化轮数，默认为 4。
+        use_numba: 是否使用 numba 加速计算，默认根据环境自动判断。
+        parallel_workers: 并行处理的工作线程数，None 表示自动选择。
+
+    返回:
+        量化后的权重矩阵，如果所有行都量化失败，则返回空数组。
+    """
     if not precision_choice:
         return W
     step = _parse_precision(precision_choice)
     if step <= 0 or step >= 1:
         return W
+
+    # 决定是否启用 numba 加速
     if use_numba is None:
         use_numba = HAS_NUMBA
     projector = (
@@ -1139,16 +1193,20 @@ def _quantize_weights_batch_if_needed(
     )
 
     def _one(w: np.ndarray) -> Optional[np.ndarray]:
+        """对单个权重向量进行量化操作"""
         return quantize_with_projection(
             w, step, single_limits, multi_limits, projector=projector, rounds=rounds
         )
 
     out: List[np.ndarray] = []
     M = W.shape[0]
+
+    # 自动确定并行工作线程数：小批量串行更快，批量大时并行
     if parallel_workers is None:
         cpu = os.cpu_count() or 4
-        # 小批量串行更快，批量大时并行
         parallel_workers = 0 if M < 64 else min(8, max(2, cpu // 2))
+
+    # 根据并行配置执行量化任务
     if parallel_workers and M > 1:
         with ThreadPoolExecutor(max_workers=parallel_workers) as ex:
             futures = [ex.submit(_one, w) for w in W]
@@ -1161,6 +1219,8 @@ def _quantize_weights_batch_if_needed(
             xq = _one(w)
             if xq is not None:
                 out.append(xq)
+
+    # 若全部量化失败，返回空数组；否则堆叠有效结果
     if not out:
         return np.empty((0, W.shape[1]), dtype=np.float64)
     return np.vstack(out).astype(np.float64, copy=False)
@@ -1222,14 +1282,33 @@ def generate_weights_random_walk(
         projector_damping: float = 1.0,
         use_numba: Optional[bool] = None,
 ) -> np.ndarray:
-    """使用带约束的随机游走生成一批合法权重 (M,N)。"""
+    """
+    使用带约束的随机游走生成一批合法权重 (M,N)。
+
+    参数:
+        N: 权重向量的维度，即资产数量。
+        single_limits: 每个资产的单独边界限制，格式为 [(min_0, max_0), ..., (min_N-1, max_N-1)]。
+        multi_limits: 多资产联合限制，格式为 { (idx_tuple): (min_sum, max_sum) }。
+        seed: 随机数种子，默认为 12345。
+        num_samples: 生成的样本数量，默认为 200。
+        step_size: 随机游走每步的标准差，默认为 0.99。
+        projector_iters: 投影器最大迭代次数，默认为 200。
+        projector_tol: 投影器收敛容差，默认为 1e-9。
+        projector_damping: 投影器阻尼系数，默认为 1.0。
+        use_numba: 是否启用 numba 加速，默认为 None（自动检测）。
+
+    返回:
+        np.ndarray: 形状为 (M, N) 的合法权重矩阵，其中 M <= num_samples。
+    """
     log(
         "开始通过约束随机游走生成投资组合: "
         f"N={N}, samples={num_samples}, step={step_size}"
     )
+    # 初始化随机数生成器
     rng = _make_rng(seed)
     if use_numba is None:
         use_numba = HAS_NUMBA
+    # 根据是否启用 numba 选择合适的投影器构造函数
     projector = (
         make_pocs_projector_numba if (use_numba and HAS_NUMBA) else make_pocs_projector
     )(
@@ -1240,9 +1319,11 @@ def generate_weights_random_walk(
         damping=projector_damping,
     )
 
+    # 初始化当前权重为均匀分布
     current = np.full(N, 1.0 / N, dtype=np.float64)
     out: List[np.ndarray] = []
     t0 = time.time()
+    # 执行随机游走并收集满足约束的样本
     for _ in range(num_samples):
         proposal = current + rng.normal(loc=0.0, scale=step_size, size=N)
         adjusted = projector(proposal)
@@ -1252,6 +1333,7 @@ def generate_weights_random_walk(
     dt = time.time() - t0
     log(f"随机游走完成，生成 {len(out)} 条候选，用时 {dt:.2f}s")
 
+    # 若未生成任何有效样本，则返回空数组；否则堆叠结果并返回
     if not out:
         return np.empty((0, N), dtype=np.float64)
     return np.vstack(out).astype(np.float64, copy=False)

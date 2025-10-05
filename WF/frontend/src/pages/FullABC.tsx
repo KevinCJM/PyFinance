@@ -80,6 +80,23 @@ export default function FullABC() {
     return () => timer && clearTimeout(timer);
   }, [jobId]);
 
+  // 进入页面时探测是否已有运行中的任务，若有则接管显示
+  useEffect(() => {
+    if (jobId) return;
+    const probe = async () => {
+      try {
+        const r = await fetch('/api/abc_batch/active');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j && j.job_id) {
+          setJobId(j.job_id);
+          setStatus(j);
+        }
+      } catch {}
+    };
+    probe();
+  }, [jobId]);
+
   const percent = status && status.total > 0 ? Math.floor((status.done / status.total) * 100) : 0;
 
   return (

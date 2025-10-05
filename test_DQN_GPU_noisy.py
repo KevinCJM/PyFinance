@@ -93,8 +93,7 @@ class NoisyLinear(nn.Module):
         return nn.functional.linear(x, weight, bias)
 
 
-# --- 1. 配置中心 (CONFIG) ---
-# 将所有超参数和配置集中管理，方便修改和实验
+# --- 1. 配置中心, 将所有超参数和配置集中管理，方便修改和实验 (CONFIG) ---
 CONFIG = {
     # --- 数据相关配置 ---
     "data": {
@@ -867,7 +866,7 @@ class StockTradingEnv(gym.Env):
         self.current_trade_portfolio_values = []  # 存储当前交易周期内的每日组合净值
         self.current_trade_peak_value = 0  # 当前交易周期内的峰值净值，用于计算最大回撤
         self.current_trade_entry_step = 0  # 当前交易周期的起始步数
-        self.current_trade_max_drawdown = 0 # 当前交易周期内，实时记录的最大回撤值
+        self.current_trade_max_drawdown = 0  # 当前交易周期内，实时记录的最大回撤值
         return self._get_observation()
 
     def _get_observation(self):
