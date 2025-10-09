@@ -23,6 +23,8 @@ Z03_insert_test_data.py
 import os
 import sys
 import random
+import re
+from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Tuple
 from sqlalchemy import text
@@ -37,6 +39,10 @@ try:
     from efficient_frontier_API.Y01_db_config import db_type, db_host, db_port, db_name, db_user, db_password
 except Exception:
     raise RuntimeError("请先在 Y01_db_config.py 中配置数据库连接参数")
+
+CUSTOM_INDEX_TABLE = "wind_cmfindexeod_alt"
+DDL_FILE = Path(__file__).with_name("Z02_crate_table_ddl.sql")
+CREATE_TABLE_PATTERN = re.compile(r"CREATE\s+TABLE\s+`?([A-Za-z0-9_\.]+)`?", re.IGNORECASE)
 
 # 基准组合权重配置, 用于在400w个点以及有效前沿表上 iis_aset_allc_indx_pub 和 iis_aset_allc_indx_wght
 C1 = {'现金管理类': 1.00, '固定收益类': 0.00, '混合策略类': 0.00, '权益投资类': 0.00, '另类投资类': 0.00}
@@ -198,6 +204,39 @@ def build_rsk_rel_rows(mdl_ver_id: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def recreate_tables_from_ddl(pool: DatabaseConnectionPool, ddl_path: Path) -> List[str]:
+    """根据 DDL 文件重新创建所有表。
+
+    步骤：
+    1. 解析 DDL 中的 CREATE TABLE 语句提取表名，并逐一 DROP TABLE IF EXISTS。
+    2. 顺序执行 DDL 中的所有语句，以完成建表。
+    """
+
+    if not ddl_path.exists():
+        raise FileNotFoundError(f"未找到 DDL 文件: {ddl_path}")
+
+    sql_text = ddl_path.read_text(encoding="utf-8")
+    table_names = CREATE_TABLE_PATTERN.findall(sql_text)
+    if not table_names:
+        raise RuntimeError(f"DDL 文件 {ddl_path} 未匹配到任何 CREATE TABLE 语句")
+
+    # 先删除旧表
+    with pool.begin() as conn:
+        for name in table_names:
+            conn.execute(text(f"DROP TABLE IF EXISTS {name}"))
+            print(f"[OK] DROP TABLE IF EXISTS {name}")
+
+    # 逐句执行 DDL，忽略空语句和 COMMIT
+    statements = [stmt.strip() for stmt in sql_text.split(';') if stmt.strip()]
+    with pool.begin() as conn:
+        for stmt in statements:
+            if stmt.upper() == "COMMIT":
+                continue
+            conn.execute(text(stmt))
+    print(f"[OK] 重新创建 {len(table_names)} 张表")
+    return table_names
+
+
 def main() -> None:
     # 连接串优先级：环境变量 DB_URL > 基于配置自动构造
     db_url = os.environ.get("DB_URL") or get_active_db_url(
@@ -217,12 +256,20 @@ def main() -> None:
         "ENV(DB_URL)" if os.environ.get("DB_URL") else "config(auto-detect host)"
     ))
 
+    # 先根据 DDL 文件重建所有表，确保新增的指数行情扩展表存在
+    try:
+        recreate_tables_from_ddl(pool, DDL_FILE)
+    except Exception as exc:
+        print(f"[ERROR] 重建表结构失败: {exc}")
+        sys.exit(2)
+
     # 清空相关表，避免主键重复/脏数据影响
     tables_to_truncate = [
         "iis_wght_cnfg_attc_mdl",
         "iis_wght_cnfg_mdl",
         "iis_fnd_indx_info",
         "wind_cmfindexeod",
+        CUSTOM_INDEX_TABLE,
         "iis_mdl_aset_pct_d",
         "iis_wght_cnfg_mdl_ast_rsk_rel",
     ]
@@ -261,10 +308,12 @@ def main() -> None:
     # 2.1) iis_fnd_indx_info: 基于配置插入指数来源信息
     try:
         df_cfg_all = pd.concat([df_cfg_1, df_cfg_2], ignore_index=True)
-        uniq = df_cfg_all[["indx_num", "indx_nm"]].drop_duplicates().copy()
-        df_indx_info = uniq.assign(
-            indx_rmk='测试数据', src_tab_ennm='wind_cmfindexeod', src_tab_cnnm='中国共同基金指数行情'
-        )
+        uniq = df_cfg_all[["indx_num", "indx_nm"]].drop_duplicates().reset_index(drop=True)
+        alt_mask = uniq.index % 2 == 1
+        df_indx_info = uniq.copy()
+        df_indx_info["indx_rmk"] = "测试数据"
+        df_indx_info["src_tab_ennm"] = np.where(alt_mask, CUSTOM_INDEX_TABLE, "wind_cmfindexeod")
+        df_indx_info["src_tab_cnnm"] = np.where(alt_mask, "中国共同基金指数行情(扩展)", "中国共同基金指数行情")
         insert_dataframe(pool, df_indx_info, table="iis_fnd_indx_info", batch_size=1000)
         print(f"[OK] 写入 iis_fnd_indx_info: {len(df_indx_info)} 行")
     except Exception as e:
@@ -276,14 +325,17 @@ def main() -> None:
 
     # 3.1) wind_cmfindexeod: 构造指数行情
     try:
-        codes = uniq.reset_index(drop=True)
+        codes = df_indx_info[["indx_num", "indx_nm", "src_tab_ennm"]].reset_index(drop=True)
         dates = _mk_dates(start_dt, end_dt)
-        rows = []
-        obj_id = 1
+        table_rows: Dict[str, List[Dict[str, object]]] = {}
+        obj_id_map: Dict[str, int] = {}
         rng = np.random.RandomState(2025)
         for _, r in codes.iterrows():
             code = str(r['indx_num'])
             name = str(r['indx_nm'])
+            table_name = str(r['src_tab_ennm'])
+            table_rows.setdefault(table_name, [])
+            obj_id_map.setdefault(table_name, 1)
             n = len(dates)
             rets = rng.normal(0.0002, 0.01, size=n)
             prices = 100.0 * np.cumprod(1.0 + rets)
@@ -297,8 +349,8 @@ def main() -> None:
                 low_px = float(round(min(open_px, close) * (1.0 - spread2), 4))
                 vol = int(rng.randint(1_000_000, 5_000_000))
                 amt = float(round(close * vol, 2))
-                rows.append({
-                    'object_id': obj_id,
+                table_rows[table_name].append({
+                    'object_id': obj_id_map[table_name],
                     's_info_windcode': code,
                     's_info_name': name,
                     'trade_dt': dt,
@@ -310,14 +362,17 @@ def main() -> None:
                     's_dq_volume': vol,
                     's_dq_amount': amt,
                 })
-                obj_id += 1
-        df_wind = pd.DataFrame(rows)
-        # wind_cmfindexeod.trade_dt 多为 CHAR(8)/VARCHAR(8) 或 INT(8)，统一格式化为 'YYYYMMDD'
-        df_wind['trade_dt'] = pd.to_datetime(df_wind['trade_dt']).dt.strftime('%Y%m%d')
-        insert_dataframe(pool, df_wind, table="wind_cmfindexeod", batch_size=2000)
-        print(f"[OK] 写入 wind_cmfindexeod: {len(df_wind)} 行 | 指数数={df_wind['s_info_windcode'].nunique()}")
+                obj_id_map[table_name] += 1
+
+        for table_name, rows in table_rows.items():
+            df_wind = pd.DataFrame(rows)
+            if df_wind.empty:
+                continue
+            df_wind['trade_dt'] = pd.to_datetime(df_wind['trade_dt']).dt.strftime('%Y%m%d')
+            insert_dataframe(pool, df_wind, table=table_name, batch_size=2000)
+            print(f"[OK] 写入 {table_name}: {len(df_wind)} 行 | 指数数={df_wind['s_info_windcode'].nunique()}")
     except Exception as e:
-        print(f"[ERR] 插入 wind_cmfindexeod 失败: {e}")
+        print(f"[ERR] 插入指数行情数据失败: {e}")
 
     try:
         df_pct_d = build_pct_d_rows("MDL_SIM_001", start=start_dt, end=end_dt, seed=2024)

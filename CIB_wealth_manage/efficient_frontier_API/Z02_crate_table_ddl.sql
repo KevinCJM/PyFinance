@@ -216,4 +216,26 @@ CREATE TABLE wind_cmfindexeod
     PRIMARY KEY (object_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='中国共同基金指数行情';
 
+CREATE TABLE wind_cmfindexeod_alt
+(
+    object_id       varchar(100) NOT NULL COMMENT '对象ID',
+    s_info_windcode varchar(40)    DEFAULT NULL COMMENT 'Wind代码',
+    s_info_name     varchar(100)   DEFAULT NULL COMMENT '指数简称',
+    trade_dt        varchar(8)     DEFAULT NULL COMMENT '交易日期',
+    crncy_code      varchar(10)    DEFAULT NULL COMMENT '货币代码',
+    s_dq_preclose   decimal(20, 4) DEFAULT NULL COMMENT '昨收盘价',
+    s_dq_open       decimal(20, 4) DEFAULT NULL COMMENT '开盘价',
+    s_dq_high       decimal(20, 4) DEFAULT NULL COMMENT '最高价',
+    s_dq_low        decimal(20, 4) DEFAULT NULL COMMENT '最低价',
+    s_dq_close      decimal(20, 4) DEFAULT NULL COMMENT '最新价',
+    s_dq_volume     decimal(20, 4) DEFAULT NULL COMMENT '成交量手',
+    s_dq_amount     decimal(20, 4) DEFAULT NULL COMMENT '成交金额千元',
+    sec_id          varchar(10)    DEFAULT NULL COMMENT '证券ID',
+    s_dq_change     decimal(20, 4) DEFAULT NULL COMMENT '涨跌点',
+    s_dq_pctchange  decimal(20, 4) DEFAULT NULL COMMENT '涨跌幅',
+    opdate          datetime       DEFAULT NULL,
+    opmode          varchar(1)     DEFAULT NULL,
+    PRIMARY KEY (object_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='中国共同基金指数行情(扩展)';
+
 COMMIT;

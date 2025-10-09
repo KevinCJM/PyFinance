@@ -2,15 +2,14 @@
 """
 B02_construct_category_yield.py
 
-根据模型配置汇总指数来源，并从 wind_cmfindexeod 抽取成分指数的净值数据。
+根据模型配置汇总指数来源，并从对应的成份指数表抽取净值数据。
 
 步骤
 1) 从 iis_wght_cnfg_attc_mdl 取第一条记录：mdl_ver_id, cal_strt_dt, cal_end_dt
 2) 读取 iis_wght_cnfg_mdl 中该 mdl_ver_id 的配置：mdl_ver_id, aset_bclass_cd, indx_num, indx_nm, wght
 3) 在 iis_fnd_indx_info 中查询这些 indx_num 的来源表：indx_num, src_tab_ennm
-4) 如果存在 src_tab_ennm != 'wind_cmfindexeod' 的记录，抛出错误
-5) 合并所有 src_tab_ennm 为 'wind_cmfindexeod' 的 indx_num，
-   到 wind_cmfindexeod 中查询 s_info_windcode in (indx_num) 的数据（s_info_windcode, s_info_name, trade_dt, s_dq_close）
+4) 按 src_tab_ennm 分组，从对应的成份指数表中查询数据（字段保持一致：s_info_windcode, s_info_name, trade_dt, s_dq_close）
+5) 汇总所有来源表的结果，进入后续收益计算流程
 
 依赖
 - T05_db_utils: DatabaseConnectionPool, read_dataframe, get_active_db_url
@@ -28,6 +27,7 @@ sys.path.append(ppp_file)
 import time
 import json
 import traceback
+import re
 from datetime import timedelta
 
 import numpy as np
@@ -81,6 +81,18 @@ def _build_in_clause(name_prefix: str, values: List[str]) -> Tuple[str, Dict[str
     return "(" + ",".join(holders) + ")", params
 
 
+_TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$")
+
+
+def _sanitize_table_name(table_name: str) -> str:
+    table = str(table_name).strip()
+    if not table:
+        raise ValueError("表名不能为空")
+    if not _TABLE_NAME_PATTERN.match(table):
+        raise ValueError(f"非法表名: {table}")
+    return table
+
+
 def fetch_first_model(pool: DatabaseConnectionPool) -> pd.Series:
     log("读取 iis_wght_cnfg_attc_mdl 表的第一条记录")
     sql = (
@@ -117,14 +129,17 @@ def fetch_index_sources(pool: DatabaseConnectionPool, codes: List[str]) -> pd.Da
     return read_dataframe(pool, sql, params=params)
 
 
-def fetch_wind_index_eod(pool: DatabaseConnectionPool, codes: List[str]) -> pd.DataFrame:
-    log("读取 wind_cmfindexeod 中抽取成分指数的净值数据")
+def fetch_index_eod(pool: DatabaseConnectionPool, table_name: str, codes: List[str]) -> pd.DataFrame:
+    table = _sanitize_table_name(table_name)
+    log(f"读取 {table} 中抽取成分指数的净值数据")
     if not codes:
         raise RuntimeError("无可查询的指数代码")
-    in_clause, params = _build_in_clause("w", list(codes))
+    str_codes = [str(c) for c in codes]
+    prefix = f"{table.replace('.', '_')}_"
+    in_clause, params = _build_in_clause(prefix, str_codes)
     sql = (
         f"SELECT s_info_windcode, s_info_name, trade_dt, s_dq_close "
-        f"FROM wind_cmfindexeod WHERE s_info_windcode IN {in_clause} and s_dq_close is not null"
+        f"FROM {table} WHERE s_info_windcode IN {in_clause} and s_dq_close is not null"
     )
     return read_dataframe(pool, sql, params=params)
 
@@ -212,31 +227,45 @@ def run():
         }, ensure_ascii=False)
 
     # 3) 指数来源表
+    table_to_codes: Dict[str, List[str]] = {}
     try:
         src_df = fetch_index_sources(pool, codes)
         if src_df.empty:
             raise RuntimeError("iis_fnd_indx_info 未返回任何指数来源信息")
-        invalid_src = src_df["src_tab_ennm"].astype(str).unique().tolist()
-        invalid = [s for s in invalid_src if s != 'wind_cmfindexeod']
-        if invalid:
-            return json.dumps({
-                "code": 1,
-                "msg": f"存在不支持的数据来源表: {invalid}，目前仅支持 'wind_cmfindexeod'"
-            }, ensure_ascii=False)
+        if src_df["src_tab_ennm"].isnull().any():
+            raise RuntimeError("iis_fnd_indx_info 存在缺失的来源表字段")
+        src_df["indx_num"] = src_df["indx_num"].astype(str)
+        src_df["src_tab_ennm"] = src_df["src_tab_ennm"].astype(str)
+        missing_codes = sorted(set(codes) - set(src_df["indx_num"]))
+        if missing_codes:
+            raise RuntimeError(f"iis_fnd_indx_info 缺少指数来源信息: {missing_codes}")
+        table_to_codes = {
+            str(tbl): sorted(set(group["indx_num"].tolist()))
+            for tbl, group in src_df.groupby("src_tab_ennm")
+        }
     except Exception as e:
         return json.dumps({
             "code": 1,
             "msg": f"读取 iis_fnd_indx_info 中的指数来源表失败: {e}"
         }, ensure_ascii=False)
 
-    # 4) 从 wind_cmfindexeod 抽取数据
+    # 4) 从对应来源表抽取数据
     try:
-        df_eod = fetch_wind_index_eod(pool, codes)
-        if df_eod.empty:
+        dfs: List[pd.DataFrame] = []
+        for table_name, table_codes in table_to_codes.items():
+            df_piece = fetch_index_eod(pool, table_name, table_codes)
+            if df_piece.empty:
+                raise RuntimeError(f"{table_name} 中未查询到对应指数的数据")
+            df_piece["s_info_windcode"] = df_piece["s_info_windcode"].astype(str)
+            dfs.append(df_piece)
+
+        if not dfs:
             return json.dumps({
                 "code": 1,
-                "msg": f"wind_cmfindexeod 中未查询到对应指数的数据"
+                "msg": "未能从任一来源表查询到指数数据"
             }, ensure_ascii=False)
+
+        df_eod = pd.concat(dfs, ignore_index=True)
 
         # 统一数据类型与排序
         df_eod["trade_dt"] = pd.to_datetime(df_eod["trade_dt"])  # 日期
@@ -244,7 +273,7 @@ def run():
     except Exception as e:
         return json.dumps({
             "code": 1,
-            "msg": f"从 wind_cmfindexeod 抽取指数数据失败: {e}"
+            "msg": f"抽取指数数据失败: {e}"
         }, ensure_ascii=False)
 
     ''' 2. 大类收益计算 ------------------------------------------------------------------------- '''
