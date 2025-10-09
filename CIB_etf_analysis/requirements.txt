@@ -1,9 +1,0 @@
-pandas
-tushare
-scikit-learn
-scipy
-numpy
-plotly
-nbformat
-openpyxl
-pyarrow
