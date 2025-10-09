@@ -384,7 +384,7 @@ if __name__ == "__main__":
     # )
     #
     # 获取交易日历数据
-    trade_day_df = pro.trade_cal(exchange='SSE', start_date='20100101', end_date=pd.to_datetime('today').strftime('%Y%m%d'))
+    trade_day_df = the_pro.trade_cal(exchange='SSE', start_date='20100101', end_date=pd.to_datetime('today').strftime('%Y%m%d'))
     trade_day_df.to_parquet(os.path.join(OUTPUT_DIR, "trade_day_df.parquet"), index=False)
     print(f"已保存交易日历 Parquet：{os.path.join(OUTPUT_DIR, 'trade_day_df.parquet')}，共 {len(trade_day_df)} 行")
     df = pd.read_parquet("data/etf_daily_df.parquet")

@@ -1172,5 +1172,15 @@ def spa_fallback(full_path: str):
 
 if __name__ == "__main__":
     import uvicorn
+    import os
+    import argparse
 
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    parser = argparse.ArgumentParser(description="Run FastAPI app (direct mode)")
+    parser.add_argument(
+        "--port", "-p", type=int,
+        default=int(os.getenv("APP_PORT") or os.getenv("PORT") or 8000),
+        help="Port to listen on (env: APP_PORT or PORT). Default 8000.",
+    )
+    args = parser.parse_args()
+
+    uvicorn.run("app:app", host="0.0.0.0", port=args.port, reload=True)

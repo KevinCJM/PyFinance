@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import sys
+import os
 import time
 import uvicorn
 import threading
 import webbrowser
 from pathlib import Path
+import argparse
 
 
 def open_browser_when_ready(url: str, timeout: float = 8.0):
@@ -22,7 +24,15 @@ def open_browser_when_ready(url: str, timeout: float = 8.0):
 
 
 def main():
-    port = 8000
+    parser = argparse.ArgumentParser(description="Run FastAPI app with optional auto-open.")
+    parser.add_argument(
+        "--port", "-p", type=int,
+        default=int(os.getenv("APP_PORT") or os.getenv("PORT") or 8000),
+        help="Port to listen on (env: APP_PORT or PORT). Default 8000.",
+    )
+    args = parser.parse_args()
+
+    port = args.port
     url = f"http://127.0.0.1:{port}"
 
     # 检查前端是否已构建
