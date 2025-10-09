@@ -1,21 +1,31 @@
+# IDE & OS
+.DS_Store
+
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
 .venv/
 venv/
 
-# macOS
-.DS_Store
-
-# Data outputs
-data/*.parquet
-data/*.xlsx
-data/*.csv
+# Local data outputs
+.data/
+data/
+parquet_cache/
+*.parquet
+*.csv
+*.xlsx
+*.xls
+*.xlsm
 
 # Frontend build
 frontend/node_modules/
 frontend/dist/
 
-# Env/config
+# Tooling metadata
+.gemini/
+.specify/
+
+# Secrets
 .env
 

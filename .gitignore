@@ -1,21 +1,69 @@
-# 忽略 .idea 配置文件（PyCharm 或 JetBrains 系列 IDE 自动生成）
+# IDE & OS artifacts
+.DS_Store
 .idea/
+.vscode/
 
-# 忽略 __pycache__ 缓存文件（PyCharm 或 JetBrains 系列 IDE 自动生成）
+# Python caches & environments
 __pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+pip-wheel-metadata/
 
-# 忽略 data 文件夹下的所有文件, 但是保留 data 文件夹本身
-#data/.gitkeep
-#data/*
+# JavaScript tooling
+node_modules/
+.pnpm-store/
+npm-debug.log
+yarn-error.log
 
-# 忽略所有 parquet 数据文件
+# Build outputs
+build/
+dist/
+**/build/
+**/dist/
+
+# Data & research artefacts
+Data/
+ETF_invest/data/
+CIB_Brinsion_Campisi_demo/what_data_we_need/
+CIB_wealth_manage/efficient_frontier_API/data/
+ppo_tensorboard_logs/
+rag_index/
+report_paper/
+
+# Binary / large artefacts
 *.parquet
-
-# 忽略所有 joblib 文件
-*.joblib
-
-# 忽略所有 pickle 文件
+*.feather
+*.arrow
+*.h5
+*.hdf5
 *.pkl
-
-# 忽略所有 CSV 文件
+*.pickle
+*.joblib
+*.npy
+*.npz
+*.sav
 *.csv
+*.tsv
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.bak
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.tgz
+
+# Local tooling metadata
+.gemini/
+.specify/
+
+# Secrets
+.env
+*.env
