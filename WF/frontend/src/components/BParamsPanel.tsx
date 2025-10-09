@@ -61,29 +61,53 @@ export default function BParamsPanel({
                 <div>长期窗口</div>
                 <input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={bCond2MA.long_ma_days} onChange={e => setBCond2MA((p: any) => ({...p, long_ma_days: parseInt(e.target.value||'60',10)}))} disabled={computingB} />
               </div>
-              <div>
+              <div className="hidden">
                 <div>在上方天数（累计）</div>
                 <input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={bCond2MA.above_maN_days} onChange={e => setBCond2MA((p: any) => ({...p, above_maN_days: parseInt(e.target.value||'15',10)}))} disabled={computingB} />
               </div>
-              <div>
+              <div className="hidden">
                 <div>在上方比例%</div>
                 <input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={bCond2MA.above_maN_ratio as any} onChange={e => setBCond2MA((p: any) => ({...p, above_maN_ratio: parseInt(e.target.value||'60',10)}))} disabled={computingB} />
               </div>
-              <div className="flex items-center gap-2 col-span-2">
+              <div className="hidden">
                 <input type="checkbox" className="mr-2" checked={bCond2MA.above_maN_consecutive} onChange={e => setBCond2MA((p: any) => ({...p, above_maN_consecutive: e.target.checked}))} disabled={computingB} />
                 <span>“在上方天数”是否要求连续（默认否）</span>
-              </div>
-              <div className="flex items-center gap-2 col-span-2">
-                <input type="checkbox" className="mr-2" checked={bCond2MA.max_maN_below_days > 0} onChange={e => setBCond2MA((p: any) => ({...p, max_maN_below_days: e.target.checked ? 5 : 0}))} disabled={computingB} />
-                <span>容忍短期小幅跌破（最大天数）</span>
               </div>
             </div>
           </div>
         </div>
+          <div className="mt-2 border rounded p-3">
+            <div className="text-sm font-medium mb-2">统计参数</div>
+            <div className="text-xs text-gray-500 mb-2">统计方式二选一：按比例 或 按累计天数。</div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+              <label className="inline-flex items-center space-x-2 border rounded p-2">
+                <input type="radio" name="bcond2_mode" checked={(bCond2MA.mode ?? "ratio")==='ratio'} onChange={() => setBCond2MA((p: any) => ({...p, mode: "ratio"}))} />
+                <span>比例 ≥</span>
+                <input type="number" className="px-2 py-1 border rounded w-20" value={bCond2MA.above_maN_ratio as any} onChange={e => setBCond2MA((p: any) => ({...p, above_maN_ratio: parseInt(e.target.value||'60',10)}))} disabled={computingB || (bCond2MA.mode ?? "ratio")==='days'} />
+                <span>%</span>
+              </label>
+              <label className="inline-flex items-center space-x-2 border rounded p-2">
+                <input type="radio" name="bcond2_mode" checked={(bCond2MA.mode ?? "ratio")==='days'} onChange={() => setBCond2MA((p: any) => ({...p, mode: "days"}))} />
+                <span>累计在上方 ≥</span>
+                <input type="number" className="px-2 py-1 border rounded w-20" value={bCond2MA.above_maN_days} onChange={e => setBCond2MA((p: any) => ({...p, above_maN_days: parseInt(e.target.value||'15',10)}))} disabled={computingB || (bCond2MA.mode ?? "ratio")==='ratio'} />
+                <span>天</span>
+              </label>
+            </div>
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+              <label className="inline-flex items-center space-x-2">
+                <input type="checkbox" checked={bCond2MA.above_maN_consecutive} onChange={e => setBCond2MA((p: any) => ({...p, above_maN_consecutive: e.target.checked}))} disabled={computingB || (bCond2MA.mode ?? "ratio")==='ratio'} />
+                <span>是否要求连续（仅累计模式）</span>
+              </label>
+              <label className="inline-flex items-center space-x-2">
+                <span>最大允许在下方（天）</span>
+                <input type="number" className="px-2 py-1 border rounded w-24" value={bCond2MA.max_maN_below_days} onChange={e => setBCond2MA((p: any) => ({...p, max_maN_below_days: parseInt(e.target.value||'5',10)}))} disabled={computingB || (bCond2MA.mode ?? "ratio")==='ratio'} />
+              </label>
+            </div>
+          </div>
 
         {/* 条件3：接近长期线 + 阴线/收≤昨收 */}
         <div className="border rounded p-3">
-          <div className="flex items-center justify之间">
+          <div className="flex items-center justify-between">
             <div className="font-medium">条件3：接近长期线 + 阴线/收≤昨收</div>
             <label className="inline-flex items-center space-x-2 text-sm"><input type="checkbox" checked={bCond2.enabled} onChange={e => setBCond2((p: any) => ({...p, enabled: e.target.checked}))} disabled={computingB} /><span>启用</span></label>
           </div>
@@ -109,9 +133,14 @@ export default function BParamsPanel({
 
         {/* 条件4：量能上限（VR1） */}
         <div className="border rounded p-3">
-          <div className="flex items中心 justify-between">
+          <div className="flex items-center justify-between">
             <div className="font-medium">条件4：量能上限（VR1）</div>
             <label className="inline-flex items-center space-x-2 text-sm"><input type="checkbox" checked={bCond4VR.enabled} onChange={e => setBCond4VR((p: any) => ({...p, enabled: e.target.checked}))} disabled={computingB} /><span>启用</span></label>
+          </div>
+          <div className="mt-1 text-xs text-gray-500">
+            说明：VR1 = 当日成交量 ÷ 近 N 日(不含当日)的最大成交量。设置“VR1上限”可限制当天不出现放量。
+            示例：N=10，VR1上限=1.2，表示“当日量 ≤ 近10日最大量的1.2倍”。
+            参数：VR1上限(倍数)、回看天数N。
           </div>
           <div className="mt-2 grid grid-cols-2 gap-3 text-sm">
             <div><div>VR1上限</div><input type="number" className="mt-1 px-2 py-1 border rounded w-full" value={bCond4VR.vr1_max as any} onChange={e => setBCond4VR((p: any) => ({...p, vr1_max: e.target.value === '' ? '' : parseFloat(e.target.value)}))} disabled={computingB || !bCond4VR.enabled} /></div>

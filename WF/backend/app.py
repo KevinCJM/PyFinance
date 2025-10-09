@@ -12,6 +12,8 @@ from typing import List, Optional, Dict, Any
 from services.data_service import get_stock_data, get_stock_info
 from services.tushare_get_data import fetch_stock_daily, fetch_many_daily, get_last_trading_day, fetch_stock_basic_and_save
 from services.analysis_service import find_a_points, find_b_points, find_c_points
+from opt.a_core import compute_a_core_single_code
+from opt.numba_accel import HAS_NUMBA
 from starlette.staticfiles import StaticFiles
 from starlette.responses import HTMLResponse, FileResponse
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -48,7 +50,7 @@ def _log(job: Dict[str, Any], msg: str):
 
 # ---------------- 批量 ABC 择时（进程池） ----------------
 
-def _abc_worker(symbol: str, a_params: Dict[str, Any], b_params: Dict[str, Any], c_params: Dict[str, Any]) -> Dict[str, Any]:
+def _abc_worker(symbol: str, a_params: Dict[str, Any], b_params: Dict[str, Any], c_params: Dict[str, Any], b_recent_days: int = 5) -> Dict[str, Any]:
     """子进程执行：单只股票的 A/B/C 分析与结果落盘。
     返回：{symbol, a_count, b_count, c_count, b_recent: bool}
     """
@@ -81,12 +83,22 @@ def _abc_worker(symbol: str, a_params: Dict[str, Any], b_params: Dict[str, Any],
         b_tbl.to_excel(out_dir / 'B_point.xlsx', index=False)
     b_dates = [p.get('date') for p in b_pts if p.get('date')]
 
-    # 近5天是否有 B 点
+    # 近 N 天是否有 B 点
     b_recent = False
+    last_b_date: Optional[str] = None
     try:
         if b_dates:
+            # 记录最后一个 B 点日期（用于前端展示）
+            try:
+                last_b_date = max(pd.to_datetime(ds, errors='coerce') for ds in b_dates if pd.to_datetime(ds, errors='coerce') is not pd.NaT)
+                if isinstance(last_b_date, pd.Timestamp):
+                    last_b_date = last_b_date.strftime('%Y-%m-%d')
+            except Exception:
+                last_b_date = None
             today = pd.Timestamp.today().normalize()
-            thresh = today - pd.Timedelta(days=5)
+            ndays = int(b_recent_days) if isinstance(b_recent_days, (int, float)) else 5
+            ndays = max(1, ndays)
+            thresh = today - pd.Timedelta(days=ndays)
             for ds in b_dates:
                 dt = pd.to_datetime(ds, errors='coerce')
                 if pd.notna(dt) and dt.normalize() >= thresh:
@@ -104,6 +116,21 @@ def _abc_worker(symbol: str, a_params: Dict[str, Any], b_params: Dict[str, Any],
     if not c_tbl.empty:
         c_tbl.to_excel(out_dir / 'C_point.xlsx', index=False)
 
+    # 查找最后一个 B 点之后的首/末 C 点
+    first_c_after_last_b: Optional[str] = None
+    last_c_after_last_b: Optional[str] = None
+    if last_b_date:
+        try:
+            c_pts = c_res.get('points', []) or []
+            c_dates = [p.get('date') for p in c_pts if p.get('date')]
+            # 筛选出在 last_b_date 之后的所有 C 点日期
+            c_dates_after_b = sorted([d for d in c_dates if d > last_b_date])
+            if c_dates_after_b:
+                first_c_after_last_b = c_dates_after_b[0]
+                last_c_after_last_b = c_dates_after_b[-1]
+        except Exception:
+            pass  # 忽略日期转换或比较中的任何错误
+
     elapsed = (pd.Timestamp.utcnow() - t0).total_seconds() * 1000.0
     return {
         'symbol': symbol,
@@ -111,6 +138,9 @@ def _abc_worker(symbol: str, a_params: Dict[str, Any], b_params: Dict[str, Any],
         'b_count': int(len(b_pts)),
         'c_count': int(len(c_res.get('points', []) or [])),
         'b_recent': bool(b_recent),
+        'last_b_date': last_b_date,
+        'first_c_after_last_b': first_c_after_last_b,
+        'last_c_after_last_b': last_c_after_last_b,
         'elapsed_ms': int(elapsed),
     }
 
@@ -139,12 +169,14 @@ def _run_abc_batch(job_id: str):
         # 映射：代码->名称/市场
         name_map = {str(r['symbol']): r.get('name') for _, r in base.iterrows()}
         market_map = {str(r['symbol']): r.get('market') for _, r in base.iterrows()}
+        industry_map = {str(r['symbol']): r.get('industry') for _, r in base.iterrows()}
 
         with JOBS_LOCK:
             job['total'] = len(symbols)
         a_params = job.get('a_params', {}) or {}
         b_params = job.get('b_params', {}) or {}
         c_params = job.get('c_params', {}) or {}
+        b_recent_days = int(job.get('b_recent_days', 5) or 5)
 
         # 读取并发设置；默认 CPU-1，范围 [1, CPU]
         req_workers = None
@@ -156,10 +188,26 @@ def _run_abc_batch(job_id: str):
         else:
             max_workers = max(1, cpu_n - 1)
         # 记录启动信息
-        _log(job, f"启动ABC批量：目标股票数={len(symbols)} 并发进程={max_workers}")
+        _log(job, f"启动ABC批量：目标股票数={len(symbols)} 并发进程={max_workers} 近B点统计天数={b_recent_days}")
         with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = [ex.submit(_abc_worker, sym, a_params, b_params, c_params) for sym in symbols]
+            futures = [ex.submit(_abc_worker, sym, a_params, b_params, c_params, b_recent_days) for sym in symbols]
             for fut in as_completed(futures):
+                # 支持取消：检测标志位并尝试取消未开始的任务
+                with JOBS_LOCK:
+                    job_now = JOBS.get(job_id)
+                    cancel_requested = bool(job_now.get('cancel')) if job_now else False
+                if cancel_requested:
+                    try:
+                        ex.shutdown(cancel_futures=True)
+                    except Exception:
+                        pass
+                    with JOBS_LOCK:
+                        job = JOBS.get(job_id)
+                        if job:
+                            job['status'] = 'cancelled'
+                            job['finished_at'] = datetime.datetime.now().isoformat()
+                    _log(job, "收到停止指令，已取消剩余未开始任务")
+                    return
                 res = None
                 try:
                     res = fut.result()
@@ -173,7 +221,11 @@ def _run_abc_batch(job_id: str):
                             entry = {
                                 'symbol': sym,
                                 'name': name_map.get(sym, ''),
+                                'industry': industry_map.get(sym, ''),
                                 'market': market_map.get(sym, ''),
+                                'last_b_date': res.get('last_b_date') or '',
+                                'first_c_date': res.get('first_c_after_last_b') or '',
+                                'last_c_date': res.get('last_c_after_last_b') or '',
                             }
                             job.setdefault('b_recent', [])
                             job['b_recent'].append(entry)
@@ -314,8 +366,7 @@ def start_fetch_all(payload: Dict[str, Any] = Body(default=None), sleep_max: flo
         if syms:
             JOBS[job_id]['symbols'] = [str(s).strip() for s in syms if str(s).strip()]
         if mkt:
-            JOBS[job_id]['market'] = str(mkt).strip()
-        # 可选参数：并发与限频/增量
+            JOBS[job_id]['market'] = str(mkt).strip()        # 可选参数：并发与限频/增量
         if isinstance(payload, dict):
             if 'max_workers' in payload:
                 JOBS[job_id]['max_workers'] = int(payload.get('max_workers') or 4)
@@ -381,8 +432,10 @@ def start_abc_batch(params: Dict[str, Any]):
         'failed': [],
         'logs': [],
         'last_symbol': None,
-        # 记录近5天存在B点的股票
-        'b_recent': [],
+        # 存储符合筛选条件的股票结果
+        'results': [],
+        # 取消标志位
+        'cancel': False,
         # 记录参数以传递给子进程
         'a_params': params.get('a_params', {}),
         'b_params': params.get('b_params', {}),
@@ -398,6 +451,9 @@ def start_abc_batch(params: Dict[str, Any]):
             JOBS[job_id]['symbols'] = [str(s).strip() for s in syms if str(s).strip()]
         if mkt:
             JOBS[job_id]['market'] = str(mkt).strip()
+        # 筛选参数：近期B点/C点
+        JOBS[job_id]['filter_params'] = params.get('filter_params', {'point_type': 'B', 'days': 5})
+
     t = threading.Thread(target=_run_abc_batch, args=(job_id,), daemon=True)
     t.start()
     return {'job_id': job_id}
@@ -426,6 +482,22 @@ def abc_batch_active():
             return datetime.datetime.min
     items.sort(key=_ts, reverse=True)
     return dict(items[0])
+
+
+@app.post("/api/abc_batch/{job_id}/stop")
+def abc_batch_stop(job_id: str):
+    """Request to stop a running abc_batch job."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            return {'job_id': job_id, 'status': 'unknown'}
+        if job.get('status') != 'running':
+            # 非运行状态，直接返回当前状态
+            return dict(job)
+        job['cancel'] = True
+        job['status'] = 'canceling'
+    _log(job, "用户请求停止，任务进入取消流程…")
+    return {'job_id': job_id, 'status': 'canceling'}
 
 
 @app.get("/api/health")
@@ -727,6 +799,7 @@ def compute_a_points(symbol: str, params: Dict[str, Any]):
                     "price_close": None if price_close is None else float(price_close),
                 })
 
+        include_table = bool(params.get('include_table', True))
         # 组装每日诊断表（用于前端表格展示）
         table = []
         # 为避免键名混淆，cond1 使用 maY_long (Y)，cond2 使用 maY2 (Y2)
@@ -756,9 +829,13 @@ def compute_a_points(symbol: str, params: Dict[str, Any]):
                 "cond4": bool(cond4_ok.iat[i]) if not pd.isna(cond4_ok.iat[i]) else False,
                 "a_point": bool(A_mask.iat[i]) if not pd.isna(A_mask.iat[i]) else False,
             }
-            table.append(row)
+            if include_table:
+                table.append(row)
 
-        return {"points": pts, "count": len(pts), "table": table}
+        if include_table:
+            return {"points": pts, "count": len(pts), "table": table}
+        else:
+            return {"points": pts, "count": len(pts)}
     except HTTPException:
         raise
     except Exception as e:
@@ -831,8 +908,20 @@ def compute_b_points(symbol: str, params: Dict[str, Any]):
         # 条件4：生成/覆盖 VR1（今天成交量/最近窗口内最大成交量），若 find_b_points 内未自动生成
         p4 = params.get("cond4", {}) or {}
         recent_max_win = int(p4.get("recent_max_vol_window", 10) or 10)
-        prev_max = d_a.groupby("code")["volume"].shift(1).rolling(recent_max_win, min_periods=1).max()
-        d_a["vr1"] = d_a["volume"] / prev_max
+        if HAS_NUMBA:
+            vol_np = d_a["volume"].to_numpy(dtype=float)
+            try:
+                from opt.numba_accel import rolling_max_prev as _rmp
+                prev_max = _rmp(vol_np, int(recent_max_win))
+                import numpy as _np
+                with _np.errstate(divide='ignore', invalid='ignore'):
+                    d_a["vr1"] = vol_np / prev_max
+            except Exception:
+                prev_max = d_a.groupby("code")["volume"].shift(1).rolling(recent_max_win, min_periods=1).max()
+                d_a["vr1"] = d_a["volume"] / prev_max
+        else:
+            prev_max = d_a.groupby("code")["volume"].shift(1).rolling(recent_max_win, min_periods=1).max()
+            d_a["vr1"] = d_a["volume"] / prev_max
 
         # 解析 B 条件参数
         cond1 = params.get("cond1", {}) or {}
@@ -841,6 +930,34 @@ def compute_b_points(symbol: str, params: Dict[str, Any]):
         cond4 = params.get("cond4", {}) or {}
         cond5 = params.get("cond5", {}) or {}
         cond6 = params.get("cond6", {}) or {}
+        # 兼容参数名/取值：前端不同页面可能传入 long_ma_days；这里统一为 long_ma_window
+        if isinstance(cond2, dict):
+            if 'long_ma_window' not in cond2 and 'long_ma_days' in cond2:
+                try:
+                    cond2['long_ma_window'] = int(cond2.pop('long_ma_days'))
+                except Exception:
+                    cond2['long_ma_window'] = cond2.pop('long_ma_days', 60)
+            # above_maN_ratio 若以百分比传入（>1），转为 0-1 比例
+            try:
+                if 'above_maN_ratio' in cond2 and cond2['above_maN_ratio'] is not None:
+                    v = float(cond2['above_maN_ratio'])
+                    if v > 1.0 and v <= 100.0:
+                        cond2['above_maN_ratio'] = v / 100.0
+            except Exception:
+                pass
+
+        # cond5 兼容：允许前端传 short_days/long_days，则转为 vma_short_window/vma_long_window
+        if isinstance(cond5, dict):
+            if 'vma_short_window' not in cond5 and 'short_days' in cond5:
+                try:
+                    cond5['vma_short_window'] = int(cond5.get('short_days'))
+                except Exception:
+                    pass
+            if 'vma_long_window' not in cond5 and 'long_days' in cond5:
+                try:
+                    cond5['vma_long_window'] = int(cond5.get('long_days'))
+                except Exception:
+                    pass
 
         out = find_b_points(
             d_a,
@@ -853,17 +970,9 @@ def compute_b_points(symbol: str, params: Dict[str, Any]):
 
         # 输出 B 点坐标
         bmask = out["B_point"].astype(bool)
-        pts = []
-        for i, ok in enumerate(bmask):
-            if bool(ok):
-                dt = out.at[i, "date"]
-                price_low = out.at[i, "low"] if pd.notna(out.at[i, "low"]) else None
-                price_close = out.at[i, "close"] if pd.notna(out.at[i, "close"]) else None
-                pts.append({
-                    "date": pd.to_datetime(dt).strftime("%Y-%m-%d"),
-                    "price_low": None if price_low is None else float(price_low),
-                    "price_close": None if price_close is None else float(price_close),
-                })
+        pts_df = out.loc[bmask, ['date','low','close']].copy()
+        pts_df['date'] = pd.to_datetime(pts_df['date']).dt.strftime('%Y-%m-%d')
+        pts = [{ 'date': r['date'], 'price_low': (None if pd.isna(r['low']) else float(r['low'])), 'price_close': (None if pd.isna(r['close']) else float(r['close'])) } for _, r in pts_df.iterrows()]
 
         # 组装诊断表格（仅输出基础列 + 已启用条件/子模块的相关列）
         # 读取前端开关，决定列的裁剪
@@ -897,83 +1006,31 @@ def compute_b_points(symbol: str, params: Dict[str, Any]):
         ratio_enabled = _bool(_c5.get("ratio_enabled", (False if has_new_flags else True)), (False if has_new_flags else True))
         vol_cmp_enabled = _bool(_c5.get("vol_cmp_enabled", (_c5.get("require_vol_le_vma10", True) if not has_new_flags else False)), (not has_new_flags))
 
-        table = []
-        for i in range(len(out)):
-            row = out.iloc[i]
-            rec = {
-                "date": pd.to_datetime(row.get("date")).strftime("%Y-%m-%d") if pd.notna(row.get("date")) else None,
-                "open": None if pd.isna(row.get("open")) else float(row.get("open")),
-                "close": None if pd.isna(row.get("close")) else float(row.get("close")),
-                "low": None if pd.isna(row.get("low")) else float(row.get("low")),
-                "high": None if pd.isna(row.get("high")) else float(row.get("high")),
-                "volume": None if pd.isna(row.get("volume")) else float(row.get("volume")),
-            }
-
-            if c1_enabled:
-                rec.update({
-                    "days_since_A": None if pd.isna(row.get("days_since_A")) else int(row.get("days_since_A")),
-                    "cond1": bool(row.get("cond1_ok")) if pd.notna(row.get("cond1_ok")) else False,
-                })
-
-            if c2_enabled:
-                rec.update({
-                    "cond2_ratio_pct": (None if pd.isna(row.get("maN_above_ratio")) else float(row.get("maN_above_ratio") * 100.0)),
-                    "cond2": bool(row.get("cond2_ok")) if pd.notna(row.get("cond2_ok")) else False,
-                })
-
-            if c3_enabled:
-                rec.update({
-                    "ma_long": None if pd.isna(row.get("ma_long_b")) else float(row.get("ma_long_b")),
-                    "cond3": bool(row.get("cond3_ok")) if pd.notna(row.get("cond3_ok")) else False,
-                    "bearish": bool(row.get("cond3_bearish_ok")) if pd.notna(row.get("cond3_bearish_ok")) else True,
-                    "close_le_prev": bool(row.get("cond3_close_le_prev_ok")) if pd.notna(row.get("cond3_close_le_prev_ok")) else True,
-                    "touch_ma60": bool(row.get("cond3_touch_ok")) if pd.notna(row.get("cond3_touch_ok")) else True,
-                })
-
-            if c4_enabled:
-                # 同时输出 vr1 数值便于校验
-                rec.update({
-                    "vr1": None if pd.isna(row.get("vr1")) else float(row.get("vr1")),
-                    "cond4": bool(row.get("cond4_ok")) if pd.notna(row.get("cond4_ok")) else False,
-                    "vr1_ok": bool(row.get("cond4_vr1_ok")) if pd.notna(row.get("cond4_vr1_ok")) else True,
-                })
-
-            if c5_enabled:
-                # cond5 总体结果
-                rec.update({"cond5": bool(row.get("cond5_ok")) if pd.notna(row.get("cond5_ok")) else False})
-                # 子模块明细（仅开启的才输出）
-                if vr1_sub_enabled:
-                    rec.update({
-                        "c5_vr1_ok": bool(row.get("c5_vr1_ok")) if "c5_vr1_ok" in row.index and pd.notna(row.get("c5_vr1_ok")) else False,
-                    })
-                if vma_rel_enabled:
-                    rec.update({
-                        "c5_vma_rel_ok": bool(row.get("c5_vma_rel_ok")) if "c5_vma_rel_ok" in row.index and pd.notna(row.get("c5_vma_rel_ok")) else False,
-                    })
-                if ratio_enabled:
-                    rec.update({
-                        "c5_ratio_ok": bool(row.get("c5_ratio_ok")) if "c5_ratio_ok" in row.index and pd.notna(row.get("c5_ratio_ok")) else False,
-                        "dryness_ratio": None if pd.isna(row.get("dryness_ratio")) else float(row.get("dryness_ratio")),
-                    })
-                if vol_cmp_enabled:
-                    rec.update({
-                        "c5_vol_cmp_ok": bool(row.get("c5_vol_cmp_ok")) if "c5_vol_cmp_ok" in row.index and pd.notna(row.get("c5_vol_cmp_ok")) else False,
-                    })
-                if vol_down_enabled:
-                    rec.update({
-                        "c5_down_ok": bool(row.get("c5_down_ok")) if "c5_down_ok" in row.index and pd.notna(row.get("c5_down_ok")) else False,
-                        "vol_down_streak": None if ("vol_down_streak" not in row.index or pd.isna(row.get("vol_down_streak"))) else int(row.get("vol_down_streak")),
-                    })
-
-            if c6_enabled:
-                rec.update({
-                    "cond6": bool(row.get("cond6_ok")) if pd.notna(row.get("cond6_ok")) else False,
-                    "cond6_metric": None if pd.isna(row.get("cond6_metric")) else float(row.get("cond6_metric")),
-                })
-
-            rec["B_point"] = bool(row.get("B_point")) if pd.notna(row.get("B_point")) else False
-            table.append(rec)
-
+        include_table = bool(params.get('include_table', True))
+        compact = bool(params.get('compact', False))
+        if not include_table:
+            return {"points": pts, "count": len(pts)}
+        df_tbl = out.copy()
+        df_tbl['date'] = pd.to_datetime(df_tbl['date']).dt.strftime('%Y-%m-%d')
+        base_cols = ['date','open','close','low','high','volume']
+        cols = base_cols[:]
+        if c1_enabled:
+            for c in ['days_since_A','cond1_ok']:
+                if c in df_tbl.columns: cols.append(c)
+        if c2_enabled:
+            for c in ['cond2_ok','vol_ratio_vs_prevNmax','c2_vr1_ok','vma_short','vma_long','c2_vma_ok','c2_up_ok']:
+                if c in df_tbl.columns: cols.append(c)
+        if c3_enabled:
+            for c in ['ma_long_b','cond3_ok','cond3_bearish_ok','cond3_close_le_prev_ok','cond3_touch_ok']:
+                if c in df_tbl.columns: cols.append(c)
+        for c in ['cond4_ok','cond5_ok','cond6_ok','B_point']:
+            if c in df_tbl.columns: cols.append(c)
+        if compact:
+            keep = ['date','open','high','low','close','volume','B_point']
+            for c in ['cond1_ok','cond2_ok','cond3_ok','cond4_ok','cond5_ok','cond6_ok']:
+                if c in df_tbl.columns: keep.append(c)
+            cols = [c for c in keep if c in df_tbl.columns]
+        table = df_tbl[cols].replace({np.nan: None}).to_dict(orient='records')
         return {"points": pts, "count": len(pts), "table": table}
     except HTTPException:
         raise
@@ -1057,17 +1114,9 @@ def compute_c_points(symbol: str, params: Dict[str, Any]):
 
         # C 点
         cmask = out["C_point"].astype(bool)
-        pts = []
-        for i, ok in enumerate(cmask):
-            if bool(ok):
-                dt = out.at[i, "date"]
-                price_low = out.at[i, "low"] if pd.notna(out.at[i, "low"]) else None
-                price_close = out.at[i, "close"] if pd.notna(out.at[i, "close"]) else None
-                pts.append({
-                    "date": pd.to_datetime(dt).strftime("%Y-%m-%d"),
-                    "price_low": None if price_low is None else float(price_low),
-                    "price_close": None if price_close is None else float(price_close),
-                })
+        pts_df = out.loc[cmask, ['date','low','close']].copy()
+        pts_df['date'] = pd.to_datetime(pts_df['date']).dt.strftime('%Y-%m-%d')
+        pts = [{'date': r['date'], 'price_low': (None if pd.isna(r['low']) else float(r['low'])), 'price_close': (None if pd.isna(r['close']) else float(r['close']))} for _, r in pts_df.iterrows()]
 
         # 诊断表（基础列 + 已启用条件/子模块）
         _c1 = cond1 or {}
@@ -1086,49 +1135,31 @@ def compute_c_points(symbol: str, params: Dict[str, Any]):
         vma_cmp_enabled = _bool(_c2.get("vma_cmp_enabled", False), False)
         vol_up_enabled = _bool(_c2.get("vol_up_enabled", False), False)
 
-        table = []
-        for i in range(len(out)):
-            r = out.iloc[i]
-            rec = {
-                "date": pd.to_datetime(r.get("date")).strftime("%Y-%m-%d") if pd.notna(r.get("date")) else None,
-                "open": None if pd.isna(r.get("open")) else float(r.get("open")),
-                "close": None if pd.isna(r.get("close")) else float(r.get("close")),
-                "low": None if pd.isna(r.get("low")) else float(r.get("low")),
-                "high": None if pd.isna(r.get("high")) else float(r.get("high")),
-                "volume": None if pd.isna(r.get("volume")) else float(r.get("volume")),
-            }
-            if c1_enabled:
-                rec.update({
-                    "days_since_B": None if pd.isna(r.get("days_since_B")) else int(r.get("days_since_B")),
-                    "cond1": bool(r.get("cond1_ok")) if pd.notna(r.get("cond1_ok")) else False,
-                })
-            if c2_enabled:
-                rec.update({
-                    "cond2": bool(r.get("cond2_ok")) if pd.notna(r.get("cond2_ok")) else False,
-                })
-                if vr1_enabled:
-                    rec.update({
-                        "vol_ratio": None if pd.isna(r.get("vol_ratio_vs_prevNmax")) else float(r.get("vol_ratio_vs_prevNmax")),
-                        "c2_vr1_ok": (None if 'c2_vr1_ok' not in r else bool(r.get("c2_vr1_ok")) if pd.notna(r.get("c2_vr1_ok")) else False),
-                    })
-                if vma_cmp_enabled:
-                    rec.update({
-                        "vma_short": None if pd.isna(r.get("vma_short")) else float(r.get("vma_short")),
-                        "vma_long": None if pd.isna(r.get("vma_long")) else float(r.get("vma_long")),
-                        "c2_vma_ok": (None if 'c2_vma_ok' not in r else bool(r.get("c2_vma_ok")) if pd.notna(r.get("c2_vma_ok")) else False),
-                    })
-                if vol_up_enabled:
-                    rec.update({
-                        "c2_up_ok": (None if 'c2_up_ok' not in r else bool(r.get("c2_up_ok")) if pd.notna(r.get("c2_up_ok")) else False),
-                    })
-            if c3_enabled:
-                rec.update({
-                    "ma_Y": None if pd.isna(r.get("maY")) else float(r.get("maY")),
-                    "cond3": bool(r.get("cond3_ok")) if pd.notna(r.get("cond3_ok")) else False,
-                })
-            rec["C_point"] = bool(r.get("C_point")) if pd.notna(r.get("C_point")) else False
-            table.append(rec)
-
+        include_table = bool(params.get('include_table', True))
+        compact = bool(params.get('compact', False))
+        if not include_table:
+            return {"points": pts, "count": len(pts)}
+        df_tbl = out.copy()
+        df_tbl['date'] = pd.to_datetime(df_tbl['date']).dt.strftime('%Y-%m-%d')
+        base_cols = ['date','open','close','low','high','volume']
+        cols = base_cols[:]
+        if c1_enabled:
+            for c in ['days_since_B','cond1_ok']:
+                if c in df_tbl.columns: cols.append(c)
+        if c2_enabled:
+            for c in ['cond2_ok','vol_ratio_vs_prevNmax','c2_vr1_ok','vma_short','vma_long','c2_vma_ok','c2_up_ok']:
+                if c in df_tbl.columns: cols.append(c)
+        if c3_enabled:
+            for c in ['maY','cond3_ok']:
+                if c in df_tbl.columns: cols.append(c)
+        for c in ['C_point']:
+            if c in df_tbl.columns: cols.append(c)
+        if compact:
+            keep = ['date','open','high','low','close','volume','C_point']
+            for c in ['cond1_ok','cond2_ok','cond3_ok']:
+                if c in df_tbl.columns: keep.append(c)
+            cols = [c for c in keep if c in df_tbl.columns]
+        table = df_tbl[cols].replace({np.nan: None}).to_dict(orient='records')
         return {"points": pts, "count": len(pts), "table": table}
     except HTTPException:
         raise
@@ -1246,14 +1277,19 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
             "confirm_price_col": str(p3.get("确认价格列", p3.get("confirm_price_col", "high"))),
         }
 
-        out = find_a_points(
-            d,
-            code_col="code", date_col="date", close_col="close", volume_col="volume",
-            with_explain_strings=False,
-            cond1=c1, cond2=c2, cond3=c3,
-        )
-        cnt = int(out["A_point"].astype(bool).sum())
-        print(f"[A_POINTS_V2] computed rows={len(out)} A_points_base={cnt}")
+        if HAS_NUMBA:
+            out = compute_a_core_single_code(d, c1, c2, c3, vr1_lookback=10, eps=0.0)
+            cnt = int(out["A_point"].astype(bool).sum())
+            print(f"[A_POINTS_V2] computed rows={len(out)} A_points_base={cnt} (accelerated)")
+        else:
+            out = find_a_points(
+                d,
+                code_col="code", date_col="date", close_col="close", volume_col="volume",
+                with_explain_strings=False,
+                cond1=c1, cond2=c2, cond3=c3,
+            )
+            cnt = int(out["A_point"].astype(bool).sum())
+            print(f"[A_POINTS_V2] computed rows={len(out)} A_points_base={cnt} (fallback)")
 
         # ---- 条件4（模块化）：放量确认（与 C 点 cond2 对齐）----
         # 统一参数解析：优先使用 p4_group；否则用旧的 p4/p5 生成等价配置
@@ -1328,85 +1364,72 @@ def compute_a_points_v2(symbol: str, params: Dict[str, Any]):
         cnt2 = int(A2.sum())
         print(f"[A_POINTS_V2] A_points_after_vol={cnt2} (cond4_group_enabled={g4_enabled})")
 
-        pts = []
-        a_rows = out[A2]
-        for _, r in a_rows.iterrows():
-            pts.append({
-                "date": pd.to_datetime(r["date"]).strftime("%Y-%m-%d"),
-                "price_low": None,
-                "price_close": None if pd.isna(r.get("close")) else float(r["close"]),
-            })
+        # points（向量化）
+        pts_df = out.loc[A2, ['date', 'close']].copy()
+        pts_df['date'] = pd.to_datetime(pts_df['date']).dt.strftime('%Y-%m-%d')
+        pts = [{ 'date': r['date'], 'price_low': None, 'price_close': (None if pd.isna(r['close']) else float(r['close'])) } for _, r in pts_df.iterrows()]
 
-        # 诊断表：仅输出“基本信息 + 已开启条件/子模块”的相关列
-        merged = out.copy()
-        lw = c1["long_window"]
-        long2 = c2["long_window"]
-        shorts = list(c2["short_windows"]) if isinstance(c2.get("short_windows"), tuple) else []
-        table = []
-        for i, r in merged.iterrows():
-            row = {
-                "date": pd.to_datetime(r.get("date")).strftime("%Y-%m-%d") if pd.notna(r.get("date")) else None,
-                "open": None if pd.isna(r.get("open")) else float(r.get("open")),
-                "close": None if pd.isna(r.get("close")) else float(r.get("close")),
-                "low": None if pd.isna(r.get("low")) else float(r.get("low")),
-                "high": None if pd.isna(r.get("high")) else float(r.get("high")),
-                "volume": None if pd.isna(r.get("volume")) else float(r.get("volume")),
-            }
+        # include_table/compact 参数，裁剪列
+        include_table = bool(params.get('include_table', True))
+        compact = bool(params.get('compact', False))
 
-            # 条件1：长均线下跌
-            if c1["enabled"]:
-                row.update({
-                    "ma_long_t1": None if pd.isna(r.get("ma_long_t1")) else float(r.get("ma_long_t1")),
-                    "ma_long_t1_prev": None if pd.isna(r.get("ma_long_t1_prev")) else float(r.get("ma_long_t1_prev")),
-                    "cond1": bool(r.get("cond1_ok")) if pd.notna(r.get("cond1_ok")) else False,
-                })
+        if not include_table:
+            print(f"[A_POINTS_V2] returning points={len(pts)} (no table)")
+            return {"points": pts, "count": len(pts)}
 
-            # 条件2：短均线上穿
-            if c2["enabled"]:
-                for k in shorts:
-                    key = f"ma_{k}"
-                    row[key] = None if pd.isna(r.get(key)) else float(r.get(key))
-                if long2 is not None:
-                    keyL = f"ma_{int(long2)}"
-                    row[keyL] = None if pd.isna(r.get(keyL)) else float(r.get(keyL))
-                row["cond2"] = bool(r.get("cond2_ok")) if pd.notna(r.get("cond2_ok")) else False
+        df_tbl = out.copy()
+        df_tbl['date'] = pd.to_datetime(df_tbl['date']).dt.strftime('%Y-%m-%d')
+        base_cols = ['date', 'open', 'close', 'low', 'high', 'volume']
+        cols = base_cols[:]
+        # cond1
+        if c1.get('enabled', True):
+            cols += [c for c in ['ma_long_t1', 'ma_long_t1_prev', 'cond1_ok'] if c in df_tbl.columns]
+        # cond2
+        if c2.get('enabled', True):
+            long2 = c2.get('long_window')
+            shorts = list(c2.get('short_windows') or [])
+            for k in shorts:
+                mk = f'ma_{k}'
+                if mk in df_tbl.columns: cols.append(mk)
+            if long2 is not None and f'ma_{int(long2)}' in df_tbl.columns:
+                cols.append(f'ma_{int(long2)}')
+            if 'cond2_ok' in df_tbl.columns: cols.append('cond2_ok')
+        # cond3
+        if c3.get('enabled', True):
+            for c in ['confirm_cross_cnt', 'cond3_ok']:
+                if c in df_tbl.columns: cols.append(c)
+        # cond4 group
+        if g4_enabled:
+            if vr1_enabled:
+                for c in ['vr1']:
+                    if c in df_tbl.columns: cols.append(c)
+                df_tbl['prevXmax'] = prevXmax
+                df_tbl['vol_ratio'] = df_tbl['volume'] / prevXmax.replace(0, np.nan)
+                cols += ['prevXmax', 'vol_ratio']
+                if 'c4_vr1_ok' not in df_tbl.columns:
+                    df_tbl['c4_vr1_ok'] = vr1_ok_series.astype(bool)
+                cols.append('c4_vr1_ok')
+            if vma_cmp_enabled:
+                df_tbl['vmaD'] = vmaD
+                df_tbl['vmaF'] = vmaF
+                df_tbl['c4_vma_ok'] = vma_ok_series.astype(bool)
+                cols += ['vmaD', 'vmaF', 'c4_vma_ok']
+            if vol_up_enabled:
+                df_tbl['c4_up_ok'] = up_ok_series.astype(bool)
+                cols += ['c4_up_ok']
+            df_tbl['cond4'] = cond4_ok.astype(bool)
+            cols += ['cond4']
 
-            # 条件3：价格确认
-            if c3["enabled"]:
-                row.update({
-                    "confirm_cross_cnt": None if pd.isna(r.get("confirm_cross_cnt")) else int(r.get("confirm_cross_cnt")),
-                    "cond3": bool(r.get("cond3_ok")) if pd.notna(r.get("cond3_ok")) else False,
-                })
+        df_tbl['A_point'] = A2.astype(bool)
+        cols += ['A_point']
 
-            # 条件4组：放量确认（仅开启的子模块输出）
-            if g4_enabled:
-                if vr1_enabled:
-                    pv = prevXmax.iat[i] if i < len(prevXmax) else None
-                    vol = r.get("volume")
-                    vol_ratio = (float(vol) / float(pv)) if (pd.notna(vol) and pd.notna(pv) and float(pv) != 0.0) else None
-                    row.update({
-                        "prevXmax": None if pv is None or pd.isna(pv) else float(pv),
-                        "vol_ratio": None if vol_ratio is None else float(vol_ratio),
-                        "VR1": None if pd.isna(r.get("vr1")) else float(r.get("vr1")),
-                        "c4_vr1_ok": bool(vr1_ok_series.iat[i]) if i < len(vr1_ok_series) and not pd.isna(vr1_ok_series.iat[i]) else False,
-                    })
-                if vma_cmp_enabled:
-                    vD = vmaD.iat[i] if i < len(vmaD) else None
-                    vF = vmaF.iat[i] if i < len(vmaF) else None
-                    row.update({
-                        "vmaD": None if vD is None or pd.isna(vD) else float(vD),
-                        "vmaF": None if vF is None or pd.isna(vF) else float(vF),
-                        "c4_vma_ok": bool(vma_ok_series.iat[i]) if i < len(vma_ok_series) and not pd.isna(vma_ok_series.iat[i]) else False,
-                    })
-                if vol_up_enabled:
-                    row.update({
-                        "c4_up_ok": bool(up_ok_series.iat[i]) if i < len(up_ok_series) and not pd.isna(up_ok_series.iat[i]) else False,
-                    })
-                row["cond4"] = bool(cond4_ok.iat[i]) if i < len(cond4_ok) and not pd.isna(cond4_ok.iat[i]) else False
+        if compact:
+            keep = ['date', 'open', 'high', 'low', 'close', 'volume', 'A_point']
+            for k in ['cond1_ok', 'cond2_ok', 'cond3_ok', 'cond4']:
+                if k in df_tbl.columns: keep.append(k)
+            cols = [c for c in keep if c in df_tbl.columns]
 
-            row["A_point"] = bool(A2.iat[i]) if i < len(A2) and not pd.isna(A2.iat[i]) else False
-            table.append(row)
-
+        table = df_tbl[cols].replace({np.nan: None}).to_dict(orient='records')
         print(f"[A_POINTS_V2] returning points={len(pts)} table_rows={len(table)}")
         return {"points": pts, "count": len(pts), "table": table}
     except HTTPException:

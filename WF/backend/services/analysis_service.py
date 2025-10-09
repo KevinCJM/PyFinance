@@ -4,6 +4,13 @@ from typing import Iterable, Optional, Tuple
 from pyecharts import options as opts
 from pyecharts.charts import Kline, Line, Bar, Grid, Scatter
 
+try:
+    from backend.opt.numba_accel import rolling_mean, rolling_max_prev, true_range
+
+    _HAS_NUMBA = True
+except Exception:
+    _HAS_NUMBA = False
+
 pd.set_option('display.max_columns', 1000)  # 显示字段的数量
 pd.set_option('display.width', 1000)  # 表格不分段显示
 
@@ -251,8 +258,14 @@ def find_a_points(
     d["cond3_expect"] = pd.Series(cond3_expect_str, index=d.index)
 
     # ---------- VR1 ----------
-    prev10max = g[volume_col].transform(lambda s: s.shift(1).rolling(int(vr1_lookback), min_periods=1).max())
-    d["vr1"] = d[volume_col] / prev10max
+    if _HAS_NUMBA and d[code_col].nunique() == 1:
+        vol = d[volume_col].to_numpy(dtype=float)
+        prev10max = rolling_max_prev(vol, int(vr1_lookback))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            d["vr1"] = vol / prev10max
+    else:
+        prev10max = g[volume_col].transform(lambda s: s.shift(1).rolling(int(vr1_lookback), min_periods=1).max())
+        d["vr1"] = d[volume_col] / prev10max
 
     # ---------- 综合判定：仅把“启用的条件”计入 ----------
     overall_ok = (
@@ -593,12 +606,18 @@ def find_b_points(
     # 仅在需要时计算量均
     need_vma = (c5_ratio_enabled or c5_vol_cmp_enabled or c5_vma_rel_enabled) or (not has_new_flags)
     if need_vma:
-        vma_short = g_code[volume_col].transform(
-            lambda s: s.rolling(int(max(1, c5_vma_short)), min_periods=int(max(1, c5_vma_short))).mean())
-        vma_long = g_code[volume_col].transform(
-            lambda s: s.rolling(int(max(1, c5_vma_long)), min_periods=int(max(1, c5_vma_long))).mean())
-        vma_long_cmp = g_code[volume_col].transform(
-            lambda s: s.rolling(int(max(1, c5_vol_cmp_long)), min_periods=int(max(1, c5_vol_cmp_long))).mean())
+        if _HAS_NUMBA and d[code_col].nunique() == 1:
+            vol = d[volume_col].to_numpy(dtype=float)
+            vma_short = pd.Series(rolling_mean(vol, int(max(1, c5_vma_short))), index=d.index)
+            vma_long = pd.Series(rolling_mean(vol, int(max(1, c5_vma_long))), index=d.index)
+            vma_long_cmp = pd.Series(rolling_mean(vol, int(max(1, c5_vol_cmp_long))), index=d.index)
+        else:
+            vma_short = g_code[volume_col].transform(
+                lambda s: s.rolling(int(max(1, c5_vma_short)), min_periods=int(max(1, c5_vma_short))).mean())
+            vma_long = g_code[volume_col].transform(
+                lambda s: s.rolling(int(max(1, c5_vma_long)), min_periods=int(max(1, c5_vma_long))).mean())
+            vma_long_cmp = g_code[volume_col].transform(
+                lambda s: s.rolling(int(max(1, c5_vol_cmp_long)), min_periods=int(max(1, c5_vol_cmp_long))).mean())
     else:
         vma_short = pd.Series(np.nan, index=d.index)
         vma_long = pd.Series(np.nan, index=d.index)
@@ -750,13 +769,20 @@ def find_b_points(
         d["cond6_actual"] = "low/prev_min=" + ratio_s + ", thresh=" + thr_s + ", margin=" + mar_s
 
     elif c6_price_stable_mode == "atr":
-        tr = pd.concat([
-            (d[high_col] - d[low_col]).abs(),
-            (d[high_col] - prev_close).abs(),
-            (d[low_col] - prev_close).abs()
-        ], axis=1).max(axis=1)
-        d["atr"] = g_code[tr.name].transform(
-            lambda s: s.rolling(int(c6_use_atr_window), min_periods=int(c6_use_atr_window)).mean())
+        if _HAS_NUMBA and d[code_col].nunique() == 1:
+            hi = d[high_col].to_numpy(dtype=float)
+            lo = d[low_col].to_numpy(dtype=float)
+            pc = d[close_col].shift(1).to_numpy(dtype=float)
+            tr = true_range(hi, lo, pc)
+            d["atr"] = rolling_mean(tr, int(c6_use_atr_window))
+        else:
+            tr = pd.concat([
+                (d[high_col] - d[low_col]).abs(),
+                (d[high_col] - prev_close).abs(),
+                (d[low_col] - prev_close).abs()
+            ], axis=1).max(axis=1)
+            d["atr"] = g_code[tr.name].transform(
+                lambda s: s.rolling(int(c6_use_atr_window), min_periods=int(c6_use_atr_window)).mean())
         thresh = prev_min - float(c6_atr_buffer) * d["atr"]
         cond6_price_stable_ok = d[low_col] >= thresh
         d["cond6_metric"] = d[low_col] - thresh
@@ -912,10 +938,18 @@ def find_c_points(
     c2_recent_n = int(_c2.get("recent_n", recent_n))
     c2_multiple = float(_c2.get("vol_multiple", vol_multiple))
     if vr1_enabled:
-        prevNmax = g_code[volume_col].shift(1).rolling(c2_recent_n, min_periods=1).max()
-        d["prevNmax_vol"] = prevNmax
-        d["vol_ratio_vs_prevNmax"] = d[volume_col] / prevNmax
-        c2_vr1_ok = (d[volume_col] >= (c2_multiple * prevNmax))
+        if _HAS_NUMBA and d[code_col].nunique() == 1:
+            vol = d[volume_col].to_numpy(dtype=float)
+            prevNmax = rolling_max_prev(vol, int(c2_recent_n))
+            d["prevNmax_vol"] = prevNmax
+            with np.errstate(divide='ignore', invalid='ignore'):
+                d["vol_ratio_vs_prevNmax"] = vol / prevNmax
+            c2_vr1_ok = (vol >= (c2_multiple * prevNmax))
+        else:
+            prevNmax = g_code[volume_col].shift(1).rolling(c2_recent_n, min_periods=1).max()
+            d["prevNmax_vol"] = prevNmax
+            d["vol_ratio_vs_prevNmax"] = d[volume_col] / prevNmax
+            c2_vr1_ok = (d[volume_col] >= (c2_multiple * prevNmax))
     else:
         d["prevNmax_vol"] = np.nan
         d["vol_ratio_vs_prevNmax"] = np.nan
@@ -925,8 +959,15 @@ def find_c_points(
     c2_vma_short = int(_c2.get("vma_short_days", vma_short_days))
     c2_vma_long = int(_c2.get("vma_long_days", vma_long_days))
     if vma_cmp_enabled:
-        d["vma_short"] = g_code[volume_col].transform(lambda s: s.rolling(c2_vma_short, min_periods=c2_vma_short).mean())
-        d["vma_long"] = g_code[volume_col].transform(lambda s: s.rolling(c2_vma_long, min_periods=c2_vma_long).mean())
+        if _HAS_NUMBA and d[code_col].nunique() == 1:
+            vol = d[volume_col].to_numpy(dtype=float)
+            d["vma_short"] = rolling_mean(vol, int(c2_vma_short))
+            d["vma_long"] = rolling_mean(vol, int(c2_vma_long))
+        else:
+            d["vma_short"] = g_code[volume_col].transform(
+                lambda s: s.rolling(c2_vma_short, min_periods=c2_vma_short).mean())
+            d["vma_long"] = g_code[volume_col].transform(
+                lambda s: s.rolling(c2_vma_long, min_periods=c2_vma_long).mean())
         c2_vma_ok = (d["vma_short"] > d["vma_long"])
     else:
         d["vma_short"] = np.nan
@@ -968,7 +1009,10 @@ def find_c_points(
     c3_field = str(_c3.get("price_field", price_field))
     c3_ma_days = int(_c3.get("ma_days", ma_days))
     c3_rel = str(_c3.get("relation", relation))
-    maY = g_code[close_col].transform(lambda s: s.rolling(c3_ma_days, min_periods=c3_ma_days).mean())
+    if _HAS_NUMBA and d[code_col].nunique() == 1:
+        maY = pd.Series(rolling_mean(d[close_col].to_numpy(dtype=float), int(c3_ma_days)), index=d.index)
+    else:
+        maY = g_code[close_col].transform(lambda s: s.rolling(c3_ma_days, min_periods=c3_ma_days).mean())
     d["maY"] = maY
     price_map = {"close": close_col, "high": high_col, "low": low_col}
     cmp_col = price_map.get(c3_field, high_col)

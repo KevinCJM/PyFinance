@@ -1,9 +1,5 @@
 import React from 'react';
-
-type ACond1 = { 启用: boolean; 长均线窗口: number; 下跌跨度: number };
-type ACond2 = { 启用: boolean; 短均线集合: string; 长均线窗口: number; 上穿完备窗口: number; 必须满足的短均线: string; 全部满足: boolean };
-type ACond3 = { 启用: boolean; 确认回看天数: number; 确认均线窗口: string; 确认价格列: string };
-type ACondVol = { 启用: boolean; vr1_enabled: boolean; 对比天数: number; 倍数: number; vma_cmp_enabled: boolean; 短期天数: number; 长期天数: number; vol_up_enabled: boolean; 量连升天数: number };
+import type { ACond1, ACond2, ACond3, ACondVol } from '../hooks/useABCDefaults';
 
 export default function AParamsPanel({
   aCond1, setACond1,
@@ -108,7 +104,7 @@ export default function AParamsPanel({
             </div>
             <div>
               <div>确认价格列</div>
-              <select className="mt-1 px-2 py-1 border rounded w-full" value={aCond3.确认价格列} onChange={e => setACond3(p => ({...p, 确认价格列: e.target.value}))} disabled={computingA}>
+              <select className="mt-1 px-2 py-1 border rounded w-full" value={aCond3.确认价格列} onChange={e => setACond3(p => ({...p, 确认价格列: e.target.value as 'open'|'high'|'low'|'close'}))} disabled={computingA}>
                 <option value="close">收盘价</option>
                 <option value="high">最高价</option>
                 <option value="low">最低价</option>

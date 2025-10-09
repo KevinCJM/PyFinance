@@ -57,7 +57,7 @@ export default function CParamsPanel({ cCond1, setCCond1, cCond2, setCCond2, cCo
 
         {/* 条件3：价格与均线 */}
         <div className="border rounded p-3">
-          <div className="flex items-center justify之间"><div className="font-medium">条件3：价格与均线</div><label className="inline-flex items-center space-x-2 text-sm"><input type="checkbox" checked={cCond3.enabled} onChange={e => setCCond3((p: any) => ({...p, enabled: e.target.checked}))} disabled={computingC} /><span>启用</span></label></div>
+          <div className="flex items-center justify-between"><div className="font-medium">条件3：价格与均线</div><label className="inline-flex items-center space-x-2 text-sm"><input type="checkbox" checked={cCond3.enabled} onChange={e => setCCond3((p: any) => ({...p, enabled: e.target.checked}))} disabled={computingC} /><span>启用</span></label></div>
           <div className="text-xs text-gray-500 mt-1">说明：选择用“收盘/最高/最低”与 MA(Y) 比较，要求在均线上方。</div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mt-2">
             <div>

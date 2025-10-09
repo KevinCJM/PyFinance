@@ -1,37 +1,37 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `backend/`: FastAPI service. Key files: `app.py`, `run.py`, `requirements.txt`.
-- `backend/services/`: data and analysis utilities (`data_service.py`, `analysis_service.py`).
-- `backend/data/`: cached parquet files (created at runtime). Do not commit large data.
-- `frontend/`: React + TypeScript + Vite app. Build output in `frontend/dist`.
+- `backend/`: FastAPI service entrypoints. `app.py` hosts routes, `run.py` powers autoreload dev server. Shared logic resides under `backend/services/` (e.g., `data_service.py`, `analysis_service.py`, `tushare_get_data.py`).
+- `backend/data/`: Parquet cache and analysis outputs; `.meta/meta_index.json` tracks incremental fetches. Keep large artifacts out of version control.
+- `frontend/`: React + TypeScript app scaffolded with Vite. Source lives in `frontend/src/` (`components/` for reusable UI, `pages/` for routed views). Build output is `frontend/dist/`.
+- Tests: place backend tests in `backend/tests/test_*.py`; frontend tests under `frontend/src/__tests__/`.
 
 ## Build, Test, and Development Commands
-- Backend setup: `python -m venv .venv && source .venv/bin/activate && pip install -r backend/requirements.txt`.
-- Run backend (auto-reload + opens browser): `python backend/run.py` (serves API on `http://127.0.0.1:8000`).
-- Frontend dev: `cd frontend && npm install && npm run dev`.
-- Frontend build: `cd frontend && npm run build` (backend serves `frontend/dist` at `/`).
-- Quick API checks: `curl http://127.0.0.1:8000/api/health`, `curl 'http://127.0.0.1:8000/api/stocks?page=1&page_size=5'`.
+- `python -m venv .venv && source .venv/bin/activate && pip install -r backend/requirements.txt`: create/activate virtualenv and install backend deps.
+- `python backend/run.py`: launch FastAPI dev server at `http://127.0.0.1:8000` with auto-reload.
+- `curl :8000/api/health`: quick backend health check; refresh data via `curl -X POST :8000/api/stocks_basic/refresh`.
+- `cd frontend && npm install && npm run dev`: install frontend packages and start Vite dev server.
+- `npm run build`: produce production bundle in `frontend/dist/`.
 
 ## Coding Style & Naming Conventions
-- Python: PEP 8, 4-space indent, type hints where practical. `snake_case` for files/functions, `PascalCase` for classes. Keep services in `backend/services/`.
-- TypeScript/React: follow ESLint config in `frontend/eslint.config.js`. `PascalCase` components, `camelCase` vars/functions. One component per file under `src/`.
-- Logs over prints; avoid committing notebooks or data dumps.
+- Python: PEP 8, 4-space indent, `snake_case` functions/modules, `PascalCase` classes. Add type hints where practical and prefer logging over prints.
+- TypeScript/React: ESLint + Prettier via `frontend/eslint.config.js`; `PascalCase` components, `camelCase` hooks/vars. Favor Tailwind utility classes for styling.
+- Centralize reusable backend logic in `backend/services/` and keep API payloads concise.
 
 ## Testing Guidelines
-- No test framework is configured yet. Preferred: `pytest` for backend (`backend/tests/test_*.py`).
-- Frontend: add `vitest` + React Testing Library; place tests under `frontend/src/__tests__/`.
-- Keep tests fast and deterministic; aim for critical-path coverage (services, API handlers, UI state).
+- Backend: run `pytest` from repo root; stub network interactions where needed for determinism.
+- Frontend: use `vitest` + React Testing Library; co-locate specs in `frontend/src/__tests__/`.
+- Ensure new features include regression coverage and mimic naming conventions (`test_<feature>.py`).
 
 ## Commit & Pull Request Guidelines
-- Commit format: `<scope>: <summary>` (e.g., `backend: add A-point API`). Chinese or English is fine; be specific and imperative.
-- Include rationale and user impact in bodies when non-trivial.
-- PRs: clear description, linked issues, repro steps, screenshots for UI, and notes on data/migration. Keep diffs focused.
+- Commit messages follow `<scope>: <summary>` (e.g., `frontend: unify ABC panels`). Keep scopes narrow and imperative.
+- PRs should describe changes, link issues, note API/UI impacts, and attach screenshots for UI updates. Highlight data migrations or configuration steps.
 
 ## Security & Configuration Tips
-- CORS is `*` for dev; restrict origins for production.
-- `akshare` triggers network calls; prefer cached parquet in `backend/data/` for local dev.
-- Do not commit credentials or large `.parquet` files.
+- Set `TUSHARE_TOKEN` via `config.py` or environment; never commit secrets.
+- Development CORS is open; tighten settings before production releases.
+- Exclude heavy artifacts such as `backend/data/`, `frontend/dist/`, and `node_modules/` from commits.
 
 ## Agent-Specific Instructions
-- Scope: this file applies to the whole repo. Prefer minimal, targeted changes; avoid broad refactors. Mirror existing patterns, update docs when endpoints or commands change.
+- Adhere to the established module layout when adding endpoints or shared UI assets.
+- Update this guide if you introduce significant architectural or workflow changes so future agents inherit the latest process.
