@@ -167,17 +167,17 @@ def main(json_input) -> str:
 if __name__ == '__main__':
     input_dict = {
         "in_data": {
-            "asset_list": ["MM", "FI", "MIX", "EQ", "ALT"],
+            "asset_list": ["01", "02", "03", "04", "05"],
             # 大类资产列表, 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_cd 一致
             "weight_range": {
-                "MM": [  # 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_cd 一致
+                "01": [  # 必须要和 iis_mdl_aset_pct_d 表的 aset_bclass_cd 一致
                     0.0,  # 代表权重下限%
                     1.0  # 代表权重上限%
                 ],
-                "FI": [0.0, 1.0],
-                "MIX": [0.0, 0.5],
-                "EQ": [0.0, 0.0],
-                "ALT": [0.0, 0.0]
+                "02": [0.0, 1.0],
+                "03": [0.0, 1.0],
+                "04": [0.0, 1.0],
+                "05": [0.0, 1.0]
             }
         }}
     with open("sample_A05_input.json", "w") as f:
@@ -185,3 +185,5 @@ if __name__ == '__main__':
 
     output_json = main(input_dict)
     log(output_json)
+    with open("sample_A05_output.json", "w") as f:
+        f.write(output_json)

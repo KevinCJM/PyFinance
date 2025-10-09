@@ -17,6 +17,10 @@ import pandas as pd
 
 API_URL = "https://open.lixinger.com/api/cn/index"
 
+# df显示多列
+pd.set_option('display.max_columns', 20)
+pd.set_option('display.width', 1000)
+
 
 def _post_with_retry(session: requests.Session, url: str, json: Dict[str, Any],
                      timeout: float = 15.0, max_retries: int = 3, backoff: float = 1.5):
@@ -123,16 +127,19 @@ def save_to_excel(df: pd.DataFrame, path: str) -> None:
 
 
 if __name__ == "__main__":
-    # ======= 使用示例 =======
-    # 1) 仅填你的 token，即可获取“全量指数信息”
-    TOKEN = "请把这里替换为你的Token"
+    # # ======= 使用示例 =======
+    # # 1) 仅填你的 token，即可获取“全量指数信息”
+    # TOKEN = "请把这里替换为你的Token"
+    #
+    # # 2) 若仅想要部分指数，填 codes；留空则拉取全量
+    # CODES = []  # 例如: ["000016", "000300", "000905"]
+    #
+    # df_idx = fetch_index_info(TOKEN, stock_codes=CODES or None, batch_size=200)
+    # print(f"共获取 {len(df_idx)} 条指数信息，示例：")
+    # print(df_idx.head(10))
+    #
+    # save_to_excel(df_idx, "index_info.xlsx")
+    # print("已保存到 index_info.xlsx")
 
-    # 2) 若仅想要部分指数，填 codes；留空则拉取全量
-    CODES = []  # 例如: ["000016", "000300", "000905"]
-
-    df_idx = fetch_index_info(TOKEN, stock_codes=CODES or None, batch_size=200)
-    print(f"共获取 {len(df_idx)} 条指数信息，示例：")
-    print(df_idx.head(10))
-
-    save_to_excel(df_idx, "index_info.xlsx")
-    print("已保存到 index_info.xlsx")
+    df = pd.read_parquet("/Users/chenjunming/Desktop/KevinGit/PyFinance/ETF_invest/data/etf_daily_df.parquet")
+    print(df)

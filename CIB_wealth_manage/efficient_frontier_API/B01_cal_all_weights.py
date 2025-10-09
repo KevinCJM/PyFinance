@@ -3,7 +3,7 @@
 @File: cal_all_weights.py
 @Modify Time: 2025/9/19 14:31       
 @Author: Kevin-Chen
-@Descriptions: 
+@Descriptions: 生成400万个网格搜索权重点
 """
 import os
 import sys
