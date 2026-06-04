@@ -1,0 +1,285 @@
+{
+  "schema_version": "1.2",
+  "scope": {
+    "root": ".",
+    "mode": "subtree_only",
+    "parent_inspection_allowed": false,
+    "notes": [
+      "initial AI Hermes routing scaffold",
+      "implementation facts require code confirmation"
+    ]
+  },
+  "modules": [
+    {
+      "id": "project_entrypoints",
+      "name": "project_entrypoints",
+      "path": "AGENTS.md",
+      "kind": "project_overview",
+      "purpose": "Initial project anchors discovered during AI Hermes routing bootstrap; implementation behavior still needs code confirmation.",
+      "module_tags": [
+        "project",
+        "bootstrap",
+        "needs_code_confirmation"
+      ],
+      "entry_files": [
+        "AGENTS.md"
+      ],
+      "key_symbols": [],
+      "child_modules": [],
+      "first_read_files": [
+        "AGENTS.md"
+      ],
+      "then_check_files": [],
+      "upstream_dependencies": [],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [],
+      "related_tests": [],
+      "related_configs": [
+        "AGENTS.md"
+      ],
+      "risk_flags": [
+        "bootstrap_facts_require_confirmation"
+      ],
+      "edit_risk": "unknown",
+      "blast_radius": [
+        "unknown until routed code is sampled"
+      ],
+      "pitfall_ids": [
+        "P01"
+      ],
+      "minimum_regression": [],
+      "routing_confidence": "low",
+      "scope_flags": [
+        "subtree_only",
+        "initial_bootstrap"
+      ],
+      "grounding": {
+        "fact_status": "needs_code_confirmation",
+        "evidence": [
+          "AGENTS.md"
+        ],
+        "unsampled_paths": [
+          "AGENTS.md"
+        ]
+      }
+    },
+    {
+      "id": "ai_routing_files",
+      "name": "ai_routing_files",
+      "path": "docs/repo_map.json",
+      "kind": "routing_docset",
+      "purpose": "AI Hermes routing files and project-local skill scripts created by the routing initializer.",
+      "module_tags": [
+        "ai_routing",
+        "bootstrap",
+        "skills",
+        "scripts"
+      ],
+      "entry_files": [
+        "AGENTS.md",
+        "docs/repo_map.json",
+        "docs/task_routes.json",
+        "docs/pitfalls.json",
+        "docs/ai_routing_evolution_policy.json",
+        "skills/ai-hermes-self-evolve/README.md",
+        "skills/ai-hermes-self-evolve/SKILL.md",
+        "skills/ai-hermes-self-evolve/agents/openai.yaml",
+        "skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py",
+        "skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "skills/ai-hermes-self-evolve/scripts/route_task.py",
+        "skills/ai-hermes-routing-init/README.md",
+        "skills/ai-hermes-routing-init/SKILL.md",
+        "skills/ai-hermes-routing-init/agents/openai.yaml",
+        "skills/ai-hermes-routing-init/scripts/init_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/evolve_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/validate_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/route_task.py"
+      ],
+      "key_symbols": [
+        "validate_docset",
+        "build_report",
+        "main"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "AGENTS.md",
+        "docs/repo_map.json",
+        "docs/task_routes.json",
+        "docs/pitfalls.json"
+      ],
+      "then_check_files": [
+        "docs/ai_routing_evolution_policy.json",
+        "skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py",
+        "skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "skills/ai-hermes-self-evolve/scripts/route_task.py",
+        "skills/ai-hermes-routing-init/scripts/init_ai_routing.py"
+      ],
+      "upstream_dependencies": [],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [
+        "unverified external runtime behavior"
+      ],
+      "related_tests": [],
+      "related_configs": [
+        "AGENTS.md",
+        "docs/ai_routing_evolution_policy.json"
+      ],
+      "risk_flags": [
+        "routing_memory_drift",
+        "bootstrap_facts_require_confirmation",
+        "routing_only_scope_leak"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "AI Hermes routing",
+        "future agent task narrowing"
+      ],
+      "pitfall_ids": [
+        "P01",
+        "P02"
+      ],
+      "minimum_regression": [
+        "python3 -m py_compile skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py skills/ai-hermes-self-evolve/scripts/route_task.py skills/ai-hermes-routing-init/scripts/init_ai_routing.py",
+        "python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --routing-only --changed-file docs/repo_map.json --changed-file skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --json",
+        "python3 skills/ai-hermes-self-evolve/scripts/route_task.py --route-id R02 --mode context",
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "routing_memory_coverage_check"
+      ],
+      "grounding": {
+        "fact_status": "grounded",
+        "evidence": [
+          "AGENTS.md",
+          "docs/repo_map.json",
+          "docs/task_routes.json",
+          "docs/pitfalls.json",
+          "docs/ai_routing_evolution_policy.json",
+          "skills/ai-hermes-self-evolve/README.md",
+          "skills/ai-hermes-self-evolve/SKILL.md",
+          "skills/ai-hermes-self-evolve/agents/openai.yaml",
+          "skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py",
+          "skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+          "skills/ai-hermes-self-evolve/scripts/route_task.py",
+          "skills/ai-hermes-routing-init/README.md",
+          "skills/ai-hermes-routing-init/SKILL.md",
+          "skills/ai-hermes-routing-init/agents/openai.yaml",
+          "skills/ai-hermes-routing-init/scripts/init_ai_routing.py",
+          "skills/ai-hermes-routing-init/scripts/evolve_ai_routing.py",
+          "skills/ai-hermes-routing-init/scripts/validate_ai_routing.py",
+          "skills/ai-hermes-routing-init/scripts/route_task.py"
+        ],
+        "unsampled_paths": []
+      }
+    },
+    {
+      "id": "metrics_factory_core",
+      "name": "MetricsFactory core metric calculators",
+      "path": "metrics_factory.py",
+      "kind": "financial_metrics_engine",
+      "purpose": "Wide-table financial product metric calculator. It computes period performance/risk/NAV/volume metrics and rolling technical indicators, then writes parquet outputs.",
+      "module_tags": [
+        "financial_metrics",
+        "period_metrics",
+        "rolling_metrics",
+        "dataframe_wide_format",
+        "adjusted_nav_recommended",
+        "point_in_time_adjustment_required",
+        "eod_feature_timing"
+      ],
+      "entry_files": [
+        "metrics_factory.py",
+        "metrics_cal_config.py",
+        "period_metrics_cal.py",
+        "rolling_metrics_cal.py"
+      ],
+      "key_symbols": [
+        "compute_metrics_for_period_initialize",
+        "compute_all_rolling_metrics",
+        "get_start_date",
+        "create_period_metrics_map",
+        "create_rolling_metrics_map",
+        "CalMetrics",
+        "CalRollingMetrics"
+      ],
+      "child_modules": [],
+      "first_read_files": [
+        "AGENTS.md",
+        "metrics_factory.py",
+        "metrics_cal_config.py"
+      ],
+      "then_check_files": [
+        "period_metrics_cal.py",
+        "rolling_metrics_cal.py"
+      ],
+      "upstream_dependencies": [],
+      "downstream_dependencies": [],
+      "out_of_scope_dependencies": [
+        "numpy",
+        "pandas",
+        "scipy.stats",
+        "numba",
+        "dateutil.relativedelta",
+        "tqdm",
+        "multiprocessing.shared_memory",
+        "parquet output files under caller-provided save_path",
+        "external market/NAV data source",
+        "caller package import path outside this directory",
+        "global/default Python runtime that has not passed check_runtime.py"
+      ],
+      "related_tests": [],
+      "related_configs": [
+        "metrics_cal_config.py"
+      ],
+      "risk_flags": [
+        "adjusted_nav_required_for_meaningful_results",
+        "adjusted_price_asof_must_be_point_in_time",
+        "eod_feature_timing_requires_shift_for_same_day_use",
+        "wide_dataframe_date_index_required",
+        "rolling_open_close_parameter_order_mismatch",
+        "configured_metrics_not_all_wired_to_entrypoints",
+        "default_period_list_does_not_match_all_configured_periods",
+        "default_python_architecture_mismatch_when_runtime_unchecked",
+        "checked_python_runtime_required_for_metrics_execution"
+      ],
+      "edit_risk": "medium",
+      "blast_radius": [
+        "financial metric correctness",
+        "parquet output schema",
+        "downstream factor research",
+        "rolling technical indicator interpretation"
+      ],
+      "pitfall_ids": [
+        "P03",
+        "P04",
+        "P05",
+        "P07"
+      ],
+      "minimum_regression": [
+        "python3 -m py_compile metrics_cal_config.py metrics_factory.py period_metrics_cal.py rolling_metrics_cal.py"
+      ],
+      "routing_confidence": "high",
+      "scope_flags": [
+        "subtree_only",
+        "code_sampled",
+        "checked_python_runtime_required"
+      ],
+      "grounding": {
+        "fact_status": "mixed",
+        "evidence": [
+          "AGENTS.md",
+          "metrics_factory.py",
+          "metrics_cal_config.py",
+          "period_metrics_cal.py",
+          "rolling_metrics_cal.py",
+          "python3 -m py_compile metrics_cal_config.py metrics_factory.py period_metrics_cal.py rolling_metrics_cal.py",
+          "python3 ${CODEX_HOME:-$HOME/.codex}/skills/metrics-factory/scripts/check_runtime.py --project-root .",
+          "python3 ${CODEX_HOME:-$HOME/.codex}/skills/metrics-factory/scripts/check_runtime.py --project-root ."
+        ],
+        "unsampled_paths": []
+      }
+    }
+  ]
+}

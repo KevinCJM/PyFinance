@@ -1,0 +1,326 @@
+{
+  "schema_version": "1.1",
+  "scope_mode": "subtree_only",
+  "pitfalls": [
+    {
+      "id": "P01",
+      "title": "initial_routing_facts_require_code_confirmation",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "bootstrap_fact_uncertainty",
+        "over_learning_from_scaffold"
+      ],
+      "symptoms": [
+        "routing facts are broader than verified code behavior",
+        "future agents treat bootstrap anchors as grounded implementation facts"
+      ],
+      "trigger_actions": [
+        "create initial routing files",
+        "edit routing facts before sampling code"
+      ],
+      "related_paths": [
+        "docs/repo_map.json",
+        "docs/task_routes.json",
+        "docs/pitfalls.json"
+      ],
+      "affected_modules": [
+        "project_entrypoints",
+        "ai_routing_files"
+      ],
+      "blast_radius": [
+        "future agent task narrowing"
+      ],
+      "check_before_edit": [
+        "read sampled code before promoting facts",
+        "keep fact_status as needs_code_confirmation until verified"
+      ],
+      "safe_observation_methods": [
+        "read grounding.unsampled_paths",
+        "run smallest visible smoke command"
+      ]
+    },
+    {
+      "id": "P02",
+      "title": "routing_files_are_machine_owned_contracts",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "routing_memory_drift",
+        "routing_only_scope_leak"
+      ],
+      "symptoms": [
+        "task_routes duplicates repo_map operational lists",
+        "routing-only changes include business code"
+      ],
+      "trigger_actions": [
+        "edit AGENTS.md or docs routing JSON",
+        "prepare routing-only commit"
+      ],
+      "related_paths": [
+        "AGENTS.md",
+        "docs/repo_map.json",
+        "docs/task_routes.json",
+        "docs/pitfalls.json",
+        "docs/ai_routing_evolution_policy.json",
+        "skills/ai-hermes-self-evolve/README.md",
+        "skills/ai-hermes-self-evolve/SKILL.md",
+        "skills/ai-hermes-self-evolve/agents/openai.yaml",
+        "skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py",
+        "skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py",
+        "skills/ai-hermes-self-evolve/scripts/route_task.py",
+        "skills/ai-hermes-routing-init/README.md",
+        "skills/ai-hermes-routing-init/SKILL.md",
+        "skills/ai-hermes-routing-init/agents/openai.yaml",
+        "skills/ai-hermes-routing-init/scripts/init_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/evolve_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/validate_ai_routing.py",
+        "skills/ai-hermes-routing-init/scripts/route_task.py"
+      ],
+      "affected_modules": [
+        "ai_routing_files"
+      ],
+      "blast_radius": [
+        "AI Hermes routing",
+        "future agent task narrowing"
+      ],
+      "check_before_edit": [
+        "keep routing facts in JSON owners",
+        "run evolve and validate after routing changes"
+      ],
+      "safe_observation_methods": [
+        "python3 skills/ai-hermes-self-evolve/scripts/evolve_ai_routing.py --routing-only --changed-file <path> --json",
+        "python3 skills/ai-hermes-self-evolve/scripts/validate_ai_routing.py"
+      ]
+    },
+    {
+      "id": "P03",
+      "title": "adjusted_nav_required_for_meaningful_metrics",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "unadjusted_nav_distorts_returns",
+        "mixed_price_basis_distorts_drawdown",
+        "inconsistent_ohlcv_basis",
+        "full_sample_adjustment_asof_leaks_future_factors"
+      ],
+      "symptoms": [
+        "TotalReturn, drawdown, NewHighRatio, NetEquitySlope, and rolling price indicators disagree with expected product performance",
+        "corporate actions, distributions, or unit-value changes appear as false gains/losses",
+        "OHLC columns are not on the same adjustment basis as close/log_return",
+        "full-sample adjusted prices leak future split/dividend/distribution factors into historical signals"
+      ],
+      "trigger_actions": [
+        "calculate period metrics",
+        "calculate rolling metrics",
+        "prepare input DataFrames",
+        "compare products across split/dividend/distribution dates"
+      ],
+      "related_paths": [
+        "AGENTS.md",
+        "metrics_factory.py",
+        "metrics_cal_config.py",
+        "period_metrics_cal.py",
+        "rolling_metrics_cal.py"
+      ],
+      "affected_modules": [
+        "metrics_factory_core"
+      ],
+      "blast_radius": [
+        "financial metric correctness",
+        "downstream factor ranking",
+        "research conclusions"
+      ],
+      "check_before_edit": [
+        "confirm close_price_df is adjusted NAV/adjusted close",
+        "confirm adjusted NAV/close factors are point-in-time as of each output date",
+        "confirm log_return_df is derived from the same adjusted close series",
+        "confirm open/high/low use the same adjustment basis as close",
+        "avoid interpreting volume metrics for products without real volume"
+      ],
+      "safe_observation_methods": [
+        "inspect caller data construction before metric calculation",
+        "compare a known distribution/split date against adjusted and unadjusted series",
+        "use run_metrics_job.py with data_contract.adjustment_asof=point_in_time for adjusted price/NAV jobs",
+        "run a small single-product smoke calculation on adjusted NAV"
+      ]
+    },
+    {
+      "id": "P04",
+      "title": "rolling_open_close_argument_order_mismatch",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "constructor_call_order_mismatch",
+        "technical_indicator_input_swap"
+      ],
+      "symptoms": [
+        "rolling indicators that use close price behave as if open price was used",
+        "AR/BR/DKX style indicators use swapped open/close inputs",
+        "manual recalculation does not match compute_all_rolling_metrics output"
+      ],
+      "trigger_actions": [
+        "use compute_all_rolling_metrics",
+        "modify CalRollingMetrics constructor",
+        "compare rolling outputs to external technical-analysis libraries"
+      ],
+      "related_paths": [
+        "metrics_factory.py",
+        "rolling_metrics_cal.py"
+      ],
+      "affected_modules": [
+        "metrics_factory_core"
+      ],
+      "blast_radius": [
+        "rolling technical indicators",
+        "factor signals based on rolling_metrics.parquet"
+      ],
+      "check_before_edit": [
+        "verify CalRollingMetrics constructor argument order before changing callers",
+        "add a tiny OHLC fixture where open and close intentionally differ",
+        "compare CloseMA, EMA, AR, BR, and DKX against hand calculations"
+      ],
+      "safe_observation_methods": [
+        "read metrics_factory.py call to CalRollingMetrics",
+        "read rolling_metrics_cal.py __init__ assignment of price_array/open_array",
+        "prefer ${CODEX_HOME:-$HOME/.codex}/skills/metrics-factory/scripts/run_metrics_job.py for rolling execution because it calls CalRollingMetrics with keyword arguments",
+        "run py_compile before and after any fix"
+      ]
+    },
+    {
+      "id": "P07",
+      "title": "eod_features_require_shift_for_same_day_trading",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "same_day_eod_feature_lookahead",
+        "output_date_contains_current_day_inputs",
+        "feature_availability_mismatch"
+      ],
+      "symptoms": [
+        "backtest uses metrics dated t to trade before t close",
+        "signals look unrealistically strong because t close/high/low/volume/log_return is already included",
+        "model features are not shifted before same-day open or intraday decision timestamps"
+      ],
+      "trigger_actions": [
+        "calculate period metrics for model features",
+        "calculate rolling metrics for model features",
+        "join MetricsFactory outputs to same-day labels or same-day orders",
+        "prepare backtest features without declaring signal_timing"
+      ],
+      "related_paths": [
+        "metrics_factory.py",
+        "period_metrics_cal.py",
+        "rolling_metrics_cal.py"
+      ],
+      "affected_modules": [
+        "metrics_factory_core"
+      ],
+      "blast_radius": [
+        "factor research validity",
+        "same-day trading backtests",
+        "model feature leakage"
+      ],
+      "check_before_edit": [
+        "treat outputs dated t as end-of-day features that include t row inputs",
+        "use signal_timing=eod_next_period or research_eod for safe unshifted usage",
+        "shift metric features by at least one trading row before t-day pre-close trading use",
+        "do not treat absence of future-row access as proof that same-day signal usage is safe"
+      ],
+      "safe_observation_methods": [
+        "compare full-data versus truncated-at-t outputs to test future-row leakage",
+        "inspect metrics_factory.py period slices and rolling_metrics_cal.py rolling windows",
+        "run run_metrics_job.py dry-run and require data_contract.signal_timing to be declared"
+      ]
+    },
+    {
+      "id": "P05",
+      "title": "configured_metrics_not_all_wired_to_entrypoints",
+      "severity": "medium",
+      "confidence": "high",
+      "risk_codes": [
+        "config_entry_not_executable_by_default",
+        "default_period_list_mapping_mismatch",
+        "unused_metric_dictionary"
+      ],
+      "symptoms": [
+        "period_list contains 3y, 5y, mtd, qtd, ytd, max but no default metrics are mapped for them",
+        "30d, 35d, and 70d have metric mappings but are not in the default period_list",
+        "log_return_relative_metrics_dict and long_short_metrics are not used by current public entrypoints"
+      ],
+      "trigger_actions": [
+        "add or document supported metrics",
+        "update global metrics-factory skill documentation",
+        "pass a custom p_list",
+        "assume every config dictionary is executable",
+        "request relative history, BBI, DMA, DIF, DEA, MACD, or ADXSlop metrics"
+      ],
+      "related_paths": [
+        "详细设计.md",
+        "metrics_cal_config.py",
+        "metrics_factory.py",
+        "period_metrics_cal.py",
+        "rolling_metrics_cal.py"
+      ],
+      "affected_modules": [
+        "metrics_factory_core"
+      ],
+      "blast_radius": [
+        "user-facing supported-metric documentation",
+        "batch output completeness"
+      ],
+      "check_before_edit": [
+        "trace config dictionary through create_period_metrics_map or create_rolling_metrics_map",
+        "confirm cal_metric dispatch exists before claiming support",
+        "distinguish default period_list from explicitly passable p_list values"
+      ],
+      "safe_observation_methods": [
+        "static-parse metrics_cal_config.py instead of importing when NumPy runtime is broken",
+        "read metrics_factory.py loops for p_list/period_list and roll_list behavior",
+        "run py_compile as a minimum smoke check"
+      ]
+    },
+    {
+      "id": "P06",
+      "title": "unchecked_python_runtime_can_fail",
+      "severity": "high",
+      "confidence": "high",
+      "risk_codes": [
+        "unchecked_default_python",
+        "native_wheel_architecture_mismatch",
+        "runtime_import_failure"
+      ],
+      "symptoms": [
+        "importing NumPy or Pandas fails with incompatible architecture or missing dependency",
+        "py_compile passes but MetricsFactory runtime import fails",
+        "run_metrics_job.py reports runtime_import_failed under an unchecked Python"
+      ],
+      "trigger_actions": [
+        "run MetricsFactory with a Python that has not passed check_runtime.py",
+        "execute run_metrics_job.py through its shebang",
+        "import pandas, numpy, or MetricsFactory runtime"
+      ],
+      "related_paths": [
+        "AGENTS.md"
+      ],
+      "affected_modules": [
+        "metrics_factory_core"
+      ],
+      "blast_radius": [
+        "runtime validation",
+        "AI job execution",
+        "metric calculation smoke tests"
+      ],
+      "check_before_edit": [
+        "use a Python that passes ${CODEX_HOME:-$HOME/.codex}/skills/metrics-factory/scripts/check_runtime.py --project-root .",
+        "verify sys.executable and platform.machine before diagnosing code imports",
+        "do not treat default-python native import failure as MetricsFactory logic failure"
+      ],
+      "safe_observation_methods": [
+        "python3 ${CODEX_HOME:-$HOME/.codex}/skills/metrics-factory/scripts/check_runtime.py --project-root .",
+        "python3 ${CODEX_HOME:-$HOME/.codex}/skills/metrics-factory/scripts/run_metrics_job.py --project-root . --help",
+        "python3 -m py_compile metrics_cal_config.py metrics_factory.py period_metrics_cal.py rolling_metrics_cal.py"
+      ]
+    }
+  ]
+}
